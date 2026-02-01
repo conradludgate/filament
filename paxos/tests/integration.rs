@@ -271,6 +271,7 @@ impl Connector<TestState> for ChannelConnector {
 #[tokio::test]
 async fn test_basic_consensus_channels() {
     let _guard = init_tracing();
+    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
     let acceptor_addrs = vec![
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)),
@@ -289,7 +290,13 @@ async fn test_basic_consensus_channels() {
 
         let state = TestState::new(*addr, acceptor_addrs.clone());
         let handle = tokio::spawn(async move {
-            let _ = run_acceptor(state, SharedAcceptorState::new(), acceptor_conn).await;
+            let _ = run_acceptor(
+                state,
+                SharedAcceptorState::new(),
+                acceptor_conn,
+                proposer_id,
+            )
+            .await;
         });
         acceptor_handles.push(handle);
     }
@@ -300,7 +307,6 @@ async fn test_basic_consensus_channels() {
     };
 
     // Create proposer state (use unique ID for proposer)
-    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 
@@ -335,6 +341,7 @@ async fn test_multiple_proposals() {
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)),
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 3)),
     ];
+    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
 
     let learned = Arc::new(Mutex::new(Vec::<String>::new()));
 
@@ -347,7 +354,13 @@ async fn test_multiple_proposals() {
 
         let state = TestState::new(*addr, acceptor_addrs.clone());
         let handle = tokio::spawn(async move {
-            let _ = run_acceptor(state, SharedAcceptorState::new(), acceptor_conn).await;
+            let _ = run_acceptor(
+                state,
+                SharedAcceptorState::new(),
+                acceptor_conn,
+                proposer_id,
+            )
+            .await;
         });
         acceptor_handles.push(handle);
     }
@@ -356,7 +369,6 @@ async fn test_multiple_proposals() {
         connections: Arc::new(Mutex::new(proposer_conns)),
     };
 
-    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 
@@ -394,6 +406,7 @@ async fn test_minority_slow() {
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)),
         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 3)),
     ];
+    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
 
     let learned = Arc::new(Mutex::new(Vec::<String>::new()));
 
@@ -409,7 +422,13 @@ async fn test_minority_slow() {
         if i < 2 {
             // Normal acceptors
             let handle = tokio::spawn(async move {
-                let _ = run_acceptor(state, SharedAcceptorState::new(), acceptor_conn).await;
+                let _ = run_acceptor(
+                    state,
+                    SharedAcceptorState::new(),
+                    acceptor_conn,
+                    proposer_id,
+                )
+                .await;
             });
             acceptor_handles.push(handle);
         } else {
@@ -417,7 +436,13 @@ async fn test_minority_slow() {
             let handle = tokio::spawn(async move {
                 // Keep connection alive but don't respond quickly enough
                 tokio::time::sleep(Duration::from_secs(100)).await;
-                let _ = run_acceptor(state, SharedAcceptorState::new(), acceptor_conn).await;
+                let _ = run_acceptor(
+                    state,
+                    SharedAcceptorState::new(),
+                    acceptor_conn,
+                    proposer_id,
+                )
+                .await;
             });
             acceptor_handles.push(handle);
         }
@@ -427,7 +452,6 @@ async fn test_minority_slow() {
         connections: Arc::new(Mutex::new(proposer_conns)),
     };
 
-    let proposer_id = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 

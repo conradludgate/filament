@@ -48,13 +48,10 @@ impl<P: Proposal> Clone for ProposalKey<P> {
 
 impl<P: Proposal> Hash for ProposalKey<P> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            Self(round, attempt, node_id) => {
-                round.hash(state);
-                attempt.hash(state);
-                node_id.hash(state);
-            }
-        }
+        let ProposalKey(round, attempt, node_id) = self;
+        round.hash(state);
+        attempt.hash(state);
+        node_id.hash(state);
     }
 }
 
@@ -62,11 +59,9 @@ impl<P: Proposal> Eq for ProposalKey<P> {}
 
 impl<P: Proposal> PartialEq for ProposalKey<P> {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self(round1, attempt1, node1), Self(round2, attempt2, node2)) => {
-                round1 == round2 && attempt1 == attempt2 && node1 == node2
-            }
-        }
+        let ProposalKey(round1, attempt1, node1) = self;
+        let ProposalKey(round2, attempt2, node2) = other;
+        round1 == round2 && attempt1 == attempt2 && node1 == node2
     }
 }
 
@@ -78,12 +73,11 @@ impl<P: Proposal> PartialOrd for ProposalKey<P> {
 
 impl<P: Proposal> Ord for ProposalKey<P> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (Self(round1, attempt1, node1), Self(round2, attempt2, node2)) => round1
-                .cmp(round2)
-                .then(attempt1.cmp(attempt2))
-                .then(node1.cmp(node2)),
-        }
+        let ProposalKey(round1, attempt1, node1) = self;
+        let ProposalKey(round2, attempt2, node2) = other;
+        (round1.cmp(round2))
+            .then(attempt1.cmp(attempt2))
+            .then(node1.cmp(node2))
     }
 }
 
@@ -116,8 +110,8 @@ impl<P: Proposal> ProposalKey<P> {
 /// State machine that learns from consensus
 #[expect(async_fn_in_trait)]
 pub trait Learner: Send + Sync + 'static {
-    type Proposal: Proposal + Send + Sync + 'static;
-    type Message: Clone + Send + Sync + 'static;
+    type Proposal: Proposal + fmt::Debug + Send + Sync + 'static;
+    type Message: Clone + fmt::Debug + Send + Sync + 'static;
     type Error: core::error::Error + Send;
 
     /// This node's unique identifier
@@ -160,6 +154,18 @@ pub trait Acceptor: Learner {
 /// This is the key abstraction for multi-proposer support - all connections
 /// to the same acceptor must share this state. State is tracked per-round
 /// to support Multi-Paxos. Also handles broadcasting to learners.
+///
+/// # Persistence Safety
+///
+/// For crash recovery, implementations should:
+/// 1. Persist state BEFORE returning success from `promise()`/`accept()`
+/// 2. Use fsync/sync_all to ensure durability
+/// 3. On restart, reload state before accepting new requests
+///
+/// # Concurrency Safety
+///
+/// Both `promise()` and `accept()` must be atomic with respect to the
+/// round's state. Use appropriate locking to prevent race conditions.
 pub trait AcceptorStateStore<L: Learner> {
     /// Receiver type for learner subscriptions.
     type Receiver: futures::Stream<Item = (L::Proposal, L::Message)> + Unpin;
@@ -169,15 +175,34 @@ pub trait AcceptorStateStore<L: Learner> {
 
     /// Try to promise this proposal for a round.
     ///
+    /// # Safety Requirements
+    ///
+    /// MUST reject if ANY of the following are true:
+    /// - A higher proposal was already promised for this round
+    /// - A higher proposal was already accepted for this round
+    ///
+    /// The second check prevents promising to a proposal that would be
+    /// superseded by an already-accepted value, maintaining consistency.
+    ///
     /// # Errors
-    /// Returns `Err(current_state)` if the proposal is dominated by a higher promise.
+    /// Returns `Err(current_state)` if the proposal is dominated.
     fn promise(&self, proposal: &L::Proposal) -> Result<(), crate::RoundState<L>>;
 
     /// Try to accept this proposal + message for a round.
     /// On success, broadcasts to all subscribed learners.
     ///
+    /// # Safety Requirements
+    ///
+    /// MUST reject if ANY of the following are true:
+    /// - A higher proposal was already promised for this round
+    /// - A higher proposal was already accepted for this round
+    ///
+    /// The second check is critical: without it, concurrent proposers can
+    /// cause different acceptors to have different "winning" values for
+    /// the same round, violating consensus.
+    ///
     /// # Errors
-    /// Returns `Err(current_state)` if the proposal is dominated by a higher promise.
+    /// Returns `Err(current_state)` if the proposal is dominated.
     fn accept(
         &self,
         proposal: &L::Proposal,

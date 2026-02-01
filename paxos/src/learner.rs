@@ -34,7 +34,7 @@ where
     where
         I: IntoIterator<Item = C>,
     {
-        let mut connections: Vec<C> = connections.into_iter().collect();
+        let mut connections: Vec<_> = connections.into_iter().collect();
         let num_connections = connections.len();
         let tracker: QuorumTracker<L> = QuorumTracker::new(num_connections);
 
@@ -95,6 +95,8 @@ where
 
         while let Some(result) = self.merged.next().await {
             let msg = result?;
+
+            trace!(?msg, "received message");
 
             // Learners only care about accepted (proposal, message) pairs
             let Some((proposal, message)) = msg.accepted else {

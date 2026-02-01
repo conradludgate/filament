@@ -3,7 +3,7 @@
 //! Uses a persistent actor model where each acceptor connection runs as an
 //! independent spawned task, managed via `JoinMap`. Actors persist across rounds.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, pin::pin, time::Duration};
 
 use futures::{SinkExt, Stream, StreamExt};
 use rand::Rng;
@@ -87,7 +87,7 @@ impl<L: Learner> Clone for CoordinatorState<L> {
 ///
 /// This task lives as long as the acceptor is in the active set.
 /// It handles connection lifecycle and responds to coordinator commands.
-#[instrument(skip_all, name = "actor", fields(proposer = ?proposer_id, acceptor = ?acceptor_id))]
+#[instrument(skip_all, name = "actor", fields(node_id = ?proposer_id, acceptor = ?acceptor_id))]
 async fn run_actor<L, C>(
     proposer_id: <L::Proposal as Proposal>::NodeId,
     acceptor_id: <L::Proposal as Proposal>::NodeId,
@@ -433,6 +433,8 @@ where
                 msg.clone(),
                 &mut tracker,
                 round,
+                &config.sleep,
+                config.phase_timeout,
             )
             .await;
 
@@ -478,7 +480,7 @@ fn process_background_message<L: Learner>(
 }
 
 /// Run a single proposal attempt through both phases
-async fn run_proposal<L, C>(
+async fn run_proposal<L, C, S>(
     manager: &ActorManager<L, C>,
     msg_rx: &mut mpsc::UnboundedReceiver<ActorMessage<L>>,
     learner: &L,
@@ -486,12 +488,15 @@ async fn run_proposal<L, C>(
     message: L::Message,
     tracker: &mut QuorumTracker<L>,
     round: <L::Proposal as Proposal>::RoundId,
+    sleep: &S,
+    phase_timeout: Option<Duration>,
 ) -> ProposeResult<L>
 where
     L: Learner,
     C: Connector<L>,
     C::ConnectFuture: Unpin,
     C::Connection: Unpin,
+    S: Sleep,
 {
     let quorum = tracker.quorum();
     let proposal_key = proposal.key();
@@ -501,12 +506,34 @@ where
     let seq = manager.current_seq();
     trace!(seq, quorum, "collecting promises");
 
-    // Collect promises
+    // Collect promises with optional timeout
     let mut promises = 0;
     let mut highest_accepted: Option<(L::Proposal, L::Message)> = None;
 
+    // Create timeout future for prepare phase
+    let prepare_timeout = async {
+        if let Some(timeout) = phase_timeout {
+            sleep.sleep(timeout).await;
+            true
+        } else {
+            std::future::pending::<bool>().await
+        }
+    };
+    let mut prepare_timeout = pin!(prepare_timeout);
+
     loop {
-        let Some(actor_msg) = msg_rx.recv().await else {
+        let actor_msg = tokio::select! {
+            biased;
+            msg = msg_rx.recv() => msg,
+            _ = &mut prepare_timeout => {
+                debug!("prepare phase timed out");
+                return ProposeResult::Rejected {
+                    min_attempt: L::Proposal::next_attempt(proposal.attempt()),
+                };
+            }
+        };
+
+        let Some(actor_msg) = actor_msg else {
             debug!("message channel closed during prepare phase");
             return ProposeResult::Rejected {
                 min_attempt: L::Proposal::next_attempt(proposal.attempt()),
@@ -587,11 +614,33 @@ where
     manager.transition_to_accept(proposal.clone(), message.clone());
     trace!("collecting accepts");
 
-    // Collect accepts
+    // Collect accepts with optional timeout
     let mut accepts = 0;
 
+    // Create timeout future for accept phase
+    let accept_timeout = async {
+        if let Some(timeout) = phase_timeout {
+            sleep.sleep(timeout).await;
+            true
+        } else {
+            std::future::pending::<bool>().await
+        }
+    };
+    let mut accept_timeout = pin!(accept_timeout);
+
     loop {
-        let Some(actor_msg) = msg_rx.recv().await else {
+        let actor_msg = tokio::select! {
+            biased;
+            msg = msg_rx.recv() => msg,
+            _ = &mut accept_timeout => {
+                debug!("accept phase timed out");
+                return ProposeResult::Rejected {
+                    min_attempt: L::Proposal::next_attempt(proposal.attempt()),
+                };
+            }
+        };
+
+        let Some(actor_msg) = actor_msg else {
             debug!("message channel closed during accept phase");
             return ProposeResult::Rejected {
                 min_attempt: L::Proposal::next_attempt(proposal.attempt()),

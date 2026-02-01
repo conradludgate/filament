@@ -56,6 +56,9 @@ impl Sleep for TokioSleep {
 pub struct ProposerConfig<S: Sleep, R: Rng = StdRng> {
     /// Backoff configuration for retries
     pub backoff: BackoffConfig,
+    /// Timeout for prepare/accept phases (None = no timeout)
+    /// If a phase doesn't complete within this time, the proposal is retried.
+    pub phase_timeout: Option<Duration>,
     /// Sleep implementation
     pub sleep: S,
     /// RNG for jitter (seeded for deterministic tests)
@@ -67,9 +70,17 @@ impl<S: Sleep, R: Rng> ProposerConfig<S, R> {
     pub fn new(backoff: BackoffConfig, sleep: S, rng: R) -> Self {
         Self {
             backoff,
+            phase_timeout: None,
             sleep,
             rng,
         }
+    }
+
+    /// Set the phase timeout
+    #[must_use]
+    pub fn with_phase_timeout(mut self, timeout: Duration) -> Self {
+        self.phase_timeout = Some(timeout);
+        self
     }
 }
 
@@ -79,6 +90,7 @@ impl<S: Sleep> ProposerConfig<S, StdRng> {
     pub fn with_seed(backoff: BackoffConfig, sleep: S, seed: u64) -> Self {
         Self {
             backoff,
+            phase_timeout: None,
             sleep,
             rng: StdRng::seed_from_u64(seed),
         }
@@ -89,6 +101,7 @@ impl Default for ProposerConfig<TokioSleep, StdRng> {
     fn default() -> Self {
         Self {
             backoff: BackoffConfig::default(),
+            phase_timeout: None,
             sleep: TokioSleep,
             rng: StdRng::from_os_rng(),
         }

@@ -22,8 +22,13 @@ use crate::{Acceptor, AcceptorMessage, AcceptorRequest, AcceptorStateStore, Prop
 /// Returns an error if:
 /// - Communication with the client fails
 /// - The acceptor fails to persist an accepted proposal
-#[instrument(skip_all, name = "acceptor", fields(node_id = ?acceptor.node_id()))]
-pub async fn run_acceptor<A, S, C>(mut acceptor: A, state: S, mut conn: C) -> Result<(), A::Error>
+#[instrument(skip_all, name = "acceptor", fields(node_id = ?acceptor.node_id(), proposer = ?proposer_id))]
+pub async fn run_acceptor<A, S, C>(
+    mut acceptor: A,
+    state: S,
+    mut conn: C,
+    proposer_id: <A::Proposal as Proposal>::NodeId,
+) -> Result<(), A::Error>
 where
     A: Acceptor,
     S: AcceptorStateStore<A>,
@@ -66,9 +71,18 @@ where
         };
 
         // Send historical accepted values first
+        // Skip from_round since it's included in the promise response below.
+        // This prevents learners from double-counting the same value.
         let historical = state.accepted_from(from_round);
-        debug!(count = historical.len(), "sending historical values");
+        let historical_count = historical
+            .iter()
+            .filter(|(p, _)| p.round() != from_round)
+            .count();
+        debug!(count = historical_count, "sending historical values");
         for (p, m) in historical {
+            if p.round() == from_round {
+                continue;
+            }
             trace!(round = ?p.round(), "sending historical value");
             conn.send(AcceptorMessage {
                 promised: None,

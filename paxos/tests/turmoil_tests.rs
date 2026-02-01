@@ -264,8 +264,8 @@ impl<Enc: serde::Serialize, Dec> Encoder<Enc> for PostcardCodec<Enc, Dec> {
     type Error = io::Error;
 
     fn encode(&mut self, item: Enc, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let encoded =
-            postcard::to_allocvec(&item).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let encoded = postcard::to_allocvec(&item)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         dst.put_u32_le(encoded.len() as u32);
         dst.extend_from_slice(&encoded);
         Ok(())
@@ -392,12 +392,13 @@ fn start_acceptor(
         let state = TestState::new(my_node_id, acceptor_addrs);
         let shared = SharedAcceptorState::new();
         loop {
-            let (stream, _) = listener.accept().await?;
+            let (stream, mut addr) = listener.accept().await?;
+            addr.set_port(0);
             let conn = Framed::new(stream, AcceptorCodec::default());
             let state = state.clone();
             let shared = shared.clone();
             tokio::spawn(async move {
-                let _ = run_acceptor(state, shared, conn).await;
+                let _ = run_acceptor(state, shared, conn, addr).await;
             });
         }
     });
@@ -659,12 +660,13 @@ fn turmoil_one_acceptor_slow() {
             let state = TestState::new(my_node_id, acceptor_addrs);
             let shared = SharedAcceptorState::new();
             loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, mut addr) = listener.accept().await?;
+                addr.set_port(0);
                 let conn = Framed::new(stream, AcceptorCodec::default());
                 let state = state.clone();
                 let shared = shared.clone();
                 tokio::spawn(async move {
-                    let _ = run_acceptor(state, shared, conn).await;
+                    let _ = run_acceptor(state, shared, conn, addr).await;
                 });
             }
         });
@@ -820,12 +822,13 @@ fn start_acceptor_with_learner_support(
             turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, ACCEPTOR_PORT)).await?;
 
         loop {
-            let (stream, _) = listener.accept().await.unwrap();
+            let (stream, mut addr) = listener.accept().await.unwrap();
+            addr.set_port(0);
             let conn = Framed::new(stream, AcceptorCodec::default());
             let state = TestState::new(my_node_id, acceptor_addrs.clone());
             let shared = shared.clone();
             tokio::spawn(async move {
-                let _ = run_acceptor(state, shared, conn).await;
+                let _ = run_acceptor(state, shared, conn, addr).await;
             });
         }
     });

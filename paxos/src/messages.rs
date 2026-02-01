@@ -1,5 +1,7 @@
 //! Paxos protocol messages
 
+use std::fmt;
+
 use crate::{Learner, RoundState};
 
 #[cfg(feature = "serde")]
@@ -40,7 +42,6 @@ impl<L: Learner> Clone for AcceptorRequest<L> {
 ///
 /// For proposers: both `promised` and `accepted` are relevant.
 /// For learners: only `accepted` is used (learners just track accepted values).
-#[derive(Debug)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -54,6 +55,16 @@ pub struct AcceptorMessage<L: Learner> {
     pub promised: Option<L::Proposal>,
     /// Highest accepted proposal + message
     pub accepted: Option<(L::Proposal, L::Message)>,
+}
+
+impl<L: Learner> fmt::Debug for AcceptorMessage<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let AcceptorMessage { promised, accepted } = self;
+        f.debug_struct("AcceptorMessage")
+            .field("promised", promised)
+            .field("accepted", accepted)
+            .finish()
+    }
 }
 
 impl<L: Learner> Clone for AcceptorMessage<L> {
