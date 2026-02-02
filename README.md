@@ -1,4 +1,4 @@
-# Federtaed sync engine based on MLS, Paxos, iroh, and CRDTs.
+# Federated sync engine based on MLS, Paxos, iroh, and CRDTs.
 
 With a federated set of untrusted backup servers, synchronise a document between multiple devices
 with full encryption and local-first support. Devices sync periodically with the federated backup servers
@@ -10,11 +10,11 @@ and the shared document is eventually consistent and rebuilt using extensible CR
 
 Devices send messages through a small set of federated servers. These servers are untrusted but expected
 to maintain availability and to not withhold messages. With enough federated servers controlled by seperate owners,
-availability and withholding of messages is not a pracitcal attack. These servers can be changes over time and at any time.
+availability and withholding of messages is not a practical attack. These servers can be changed over time and at any time.
 
 All device messages are signed and encrypted using MLS to ensure forward secrecy and post compromise secrecy.
 This also prevents the federated servers from knowing the contents of the messages, or to forge messages. The
-federated servers however do understand the group and who is in it. 
+federated servers, however, do understand the group and who is in it.
 
 The design of MLS allows messages to be encrypted and decrypted asynchronously, 
 which allows for a local-first architecture when combined with CRDTs.
@@ -47,8 +47,8 @@ Only admins can change the membership properties of the group.
 
 ### Paxos
 
-Most of messages sent through MLS can work asynchrously, commits to the group must all
-be processed in the same order. To provide the serialisation of commits, and to ensure all
+Most messages sent through MLS can work asynchronously, but commits to the group must all
+be processed in a globally consistent order. To provide the serialisation of commits, and to ensure all
 members can see every commit, we use the Paxos consensus protocol.
 
 * Group members are all "Learners" of the protocol. They will receive updates about new commits.
@@ -56,8 +56,8 @@ members can see every commit, we use the Paxos consensus protocol.
 * The federated backup servers will be the "Acceptors" of the protocol.
 
 When a new device is to be added to the sync group, an existing device will propose this and send the commit
-to all the federated acceptors. If all the devices observe a quorom of acceptance messages, then they know that this
-commit has been officiall accepted and add the new device to the group.
+to all the federated acceptors. If all the devices observe a quorum of acceptance messages, then they know that this
+commit has been officially accepted and add the new device to the group.
 
 The federated acceptors are community run and know which devices are in the group, but they do not know
 what messages are sent through the group. They might prevent messages from being sent, but users are recommended
@@ -65,7 +65,7 @@ to use multiple sync servers with multiple administrators to ensure availability
 
 ### [iroh](https://www.iroh.computer/)
 
-All device communication occurs with Iroh. While all MLS messages go over the federation servers, adding a new
+All device communication occurs with Iroh. While all MLS messages go over the federated servers, adding a new
 device to a group requires an initial sync. This initial sync is done peer-to-peer using Iroh.
 
 To simplify the setup, all federated sync servers also use iroh when communicating to devices, and these federated servers
