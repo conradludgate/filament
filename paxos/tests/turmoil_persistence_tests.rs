@@ -3,30 +3,29 @@
 //! These tests use turmoil's `unstable-fs` feature to test acceptor crash recovery
 //! with file-based persistence.
 
-use std::{
-    collections::BTreeMap,
-    io::{self, Read, Seek, Write},
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-};
+use std::collections::BTreeMap;
+use std::io::{self, Read, Seek, Write};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
-use basic_paxos::{
-    Acceptor, AcceptorHandler, AcceptorMessage, AcceptorRequest, AcceptorStateStore, BackoffConfig,
-    Connector, Learner, Proposal, Proposer, ProposerConfig, RoundState, Sleep, run_acceptor,
-};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::{Stream, StreamExt, stream};
 use rand::Rng;
-
 // Turmoil's filesystem shim
 use rand::rngs::StdRng;
 use tokio::sync::broadcast;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use turmoil::Builder;
 use turmoil::fs::shim::std::fs::{self, File, OpenOptions};
+use universal_sync_paxos::acceptor::{AcceptorHandler, RoundState, run_acceptor};
+use universal_sync_paxos::config::{BackoffConfig, ProposerConfig, Sleep};
+use universal_sync_paxos::proposer::Proposer;
+use universal_sync_paxos::{
+    Acceptor, AcceptorMessage, AcceptorRequest, AcceptorStateStore, Connector, Learner, Proposal,
+};
 
 fn init_tracing() -> impl Sized {
     use tracing::Dispatch;
@@ -48,8 +47,9 @@ fn init_tracing() -> impl Sized {
         .with_test_writer()
         .with_span_events(fmt::format::FmtSpan::CLOSE);
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("basic_paxos=debug,turmoil_persistence_tests=debug"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("universal_sync_paxos=debug,turmoil_persistence_tests=debug")
+    });
 
     let subscriber = tracing_subscriber::registry().with(filter).with(fmt_layer);
 

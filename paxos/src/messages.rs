@@ -1,11 +1,15 @@
 //! Paxos protocol messages
+//!
+//! These are the high-level message types bound to the [`Learner`] trait,
+//! used by the async runtime. For the generic core types, see [`crate::core::types`].
 
 use std::fmt;
 
-use crate::{Learner, RoundState};
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::acceptor::RoundState;
+use crate::traits::Learner;
 
 /// Messages from proposer/learner to acceptor
 ///

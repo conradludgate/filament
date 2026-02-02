@@ -10,12 +10,12 @@ use std::borrow::Cow;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use basic_paxos::core::{
+use stateright::actor::{Actor, ActorModel, Id, Network, Out};
+use stateright::{Checker, Model};
+use universal_sync_paxos::core::{
     AcceptorCore, AcceptorRequest, AcceptorResponse, PreparePhaseResult,
     ProposalKey as ProposalKeyGeneric, ProposerCore,
 };
-use stateright::actor::{Actor, ActorModel, Id, Network, Out};
-use stateright::{Checker, Model};
 
 /// Message value (simplified to an integer for model checking)
 type Value = u64;
@@ -261,14 +261,14 @@ impl PaxosActor {
             let result = new_core.handle_accepted(src, accepted_key, proposal);
 
             match result {
-                basic_paxos::core::AcceptPhaseResult::Learned { value, .. } => {
+                universal_sync_paxos::core::AcceptPhaseResult::Learned { value, .. } => {
                     *state.to_mut() = PaxosActorState::Proposer(ProposerState {
                         core: new_core,
                         current_round: prop_state.current_round,
                         learned: Some((proposal.round, value)),
                     });
                 }
-                basic_paxos::core::AcceptPhaseResult::Rejected { superseded_by } => {
+                universal_sync_paxos::core::AcceptPhaseResult::Rejected { superseded_by } => {
                     // Retry with higher attempt
                     let new_attempt = superseded_by.attempt + 1;
                     let new_proposal = ProposalKey {
@@ -293,7 +293,7 @@ impl PaxosActor {
                         learned: None,
                     });
                 }
-                basic_paxos::core::AcceptPhaseResult::Pending => {
+                universal_sync_paxos::core::AcceptPhaseResult::Pending => {
                     *state.to_mut() = PaxosActorState::Proposer(ProposerState {
                         core: new_core,
                         current_round: prop_state.current_round,

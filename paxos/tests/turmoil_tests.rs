@@ -3,26 +3,27 @@
 //! These tests use turmoil's network simulation for more realistic
 //! distributed systems testing with network partitions, latency, etc.
 
-use std::{
-    collections::BTreeMap,
-    io,
-    net::{Ipv4Addr, SocketAddr},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::collections::BTreeMap;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use basic_paxos::{
-    Acceptor, AcceptorHandler, AcceptorMessage, AcceptorRequest, BackoffConfig, Connector, Learner,
-    Proposal, Proposer, ProposerConfig, SharedAcceptorState, Sleep, run_acceptor,
-};
 use bytes::{Buf, BufMut, BytesMut};
-use futures::{SinkExt, Stream, StreamExt, channel::mpsc};
+use futures::channel::mpsc;
+use futures::{SinkExt, Stream, StreamExt};
 use rand::Rng;
 use rand::rngs::StdRng;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use turmoil::Builder;
+use universal_sync_paxos::acceptor::{AcceptorHandler, SharedAcceptorState, run_acceptor};
+use universal_sync_paxos::config::{BackoffConfig, ProposerConfig, Sleep};
+use universal_sync_paxos::proposer::Proposer;
+use universal_sync_paxos::{
+    Acceptor, AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal,
+};
 
 /// Initialize tracing for tests. Call at the start of each test.
 /// Uses RUST_LOG env var for filtering (defaults to "debug" for this crate).
@@ -34,7 +35,7 @@ fn init_tracing() -> impl Sized {
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("basic_paxos=debug")),
+                .unwrap_or_else(|_| EnvFilter::new("universal_sync_paxos=debug")),
         )
         .with_span_events(FmtSpan::CLOSE)
         .with_test_writer()

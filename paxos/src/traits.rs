@@ -1,10 +1,22 @@
 //! Core Paxos traits
+//!
+//! This module defines the core abstractions for the Paxos protocol:
+//!
+//! - [`Proposal`]: A proposal that can be ordered and compared
+//! - [`ProposalKey`]: Ordering key for proposals
+//! - [`Learner`]: State machine that learns from consensus
+//! - [`Acceptor`]: Acceptor that can persist accepted proposals
+//! - [`AcceptorStateStore`]: Shared state for acceptors
+//! - [`Connector`]: Connects to acceptors by node ID
+//! - [`AcceptorConn`]: Connection to an acceptor
 
+use core::fmt;
 use core::future::Future;
-use core::{fmt, hash::Hash};
+use core::hash::Hash;
 
 use futures::{Sink, Stream};
 
+use crate::acceptor::RoundState;
 use crate::messages::{AcceptorMessage, AcceptorRequest};
 
 /// A proposal that can be ordered by (`node_id`, round, attempt)
@@ -171,7 +183,7 @@ pub trait AcceptorStateStore<L: Learner> {
     type Subscription: futures::Stream<Item = (L::Proposal, L::Message)>;
 
     /// Get the state for a specific round.
-    fn get(&self, round: <L::Proposal as Proposal>::RoundId) -> crate::RoundState<L>;
+    fn get(&self, round: <L::Proposal as Proposal>::RoundId) -> RoundState<L>;
 
     /// Try to promise this proposal for a round.
     ///
@@ -186,7 +198,7 @@ pub trait AcceptorStateStore<L: Learner> {
     ///
     /// # Errors
     /// Returns `Err(current_state)` if the proposal is dominated.
-    fn promise(&self, proposal: &L::Proposal) -> Result<(), crate::RoundState<L>>;
+    fn promise(&self, proposal: &L::Proposal) -> Result<(), RoundState<L>>;
 
     /// Try to accept this proposal + message for a round.
     /// On success, broadcasts to all subscribed learners.
@@ -203,11 +215,7 @@ pub trait AcceptorStateStore<L: Learner> {
     ///
     /// # Errors
     /// Returns `Err(current_state)` if the proposal is dominated.
-    fn accept(
-        &self,
-        proposal: &L::Proposal,
-        message: &L::Message,
-    ) -> Result<(), crate::RoundState<L>>;
+    fn accept(&self, proposal: &L::Proposal, message: &L::Message) -> Result<(), RoundState<L>>;
 
     /// Subscribe to accepted (proposal, message) pairs from a given round onwards.
     ///

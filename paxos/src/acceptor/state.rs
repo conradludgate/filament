@@ -1,16 +1,14 @@
 //! Shared acceptor state implementation
 
-use std::{
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, ready},
-};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, ready};
 
 use futures::{Stream, StreamExt, stream};
 use tokio::sync::broadcast;
 
 use crate::core::{AcceptResult, AcceptorCore, PrepareResult};
-use crate::{AcceptorStateStore, Learner, Proposal, ProposalKey};
+use crate::traits::{AcceptorStateStore, Learner, Proposal, ProposalKey};
 
 /// Type alias for the core state machine with Learner-specific types
 type CoreState<L> = AcceptorCore<

@@ -1,16 +1,17 @@
-use std::{
-    io,
-    net::{IpAddr, Ipv4Addr},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
-use basic_paxos::{
-    Acceptor, AcceptorHandler, AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal,
-    Proposer, ProposerConfig, SharedAcceptorState, run_acceptor,
+use futures::channel::mpsc;
+use futures::{Sink, SinkExt, Stream};
+use universal_sync_paxos::acceptor::{AcceptorHandler, SharedAcceptorState, run_acceptor};
+use universal_sync_paxos::config::ProposerConfig;
+use universal_sync_paxos::proposer::Proposer;
+use universal_sync_paxos::{
+    Acceptor, AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal,
 };
-use futures::{Sink, SinkExt, Stream, channel::mpsc};
 
 /// Initialize tracing for tests. Call at the start of each test.
 /// Uses RUST_LOG env var for filtering (defaults to "debug" for this crate).
@@ -22,7 +23,7 @@ fn init_tracing() -> impl Sized {
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("basic_paxos=debug")),
+                .unwrap_or_else(|_| EnvFilter::new("universal_sync_paxos=debug")),
         )
         .with_span_events(FmtSpan::CLOSE)
         .with_test_writer()

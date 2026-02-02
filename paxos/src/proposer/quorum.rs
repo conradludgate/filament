@@ -1,8 +1,8 @@
-//! Quorum tracking utilities shared between proposer and learner
+//! Quorum tracking utilities for the proposer/learner runtime
 
 use std::collections::BTreeMap;
 
-use crate::{Learner, Proposal, ProposalKey};
+use crate::traits::{Learner, Proposal, ProposalKey};
 
 /// Key type for quorum tracking maps.
 type Key<L> = ProposalKey<<L as Learner>::Proposal>;

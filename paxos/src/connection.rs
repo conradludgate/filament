@@ -1,16 +1,19 @@
 //! Lazy connection wrapper
+//!
+//! Provides [`LazyConnection`], a connection wrapper that establishes
+//! the actual connection on first use.
 
-use std::{
-    pin::Pin,
-    task::{Context, Poll, ready},
-};
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
 
-use futures::{FutureExt, Sink, Stream, future::Fuse, future::FusedFuture};
+use futures::future::{Fuse, FusedFuture};
+use futures::{FutureExt, Sink, Stream};
 use pin_project_lite::pin_project;
 use tokio::task::coop;
 use tracing::{trace, warn};
 
-use crate::{AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal};
+use crate::messages::{AcceptorMessage, AcceptorRequest};
+use crate::traits::{Connector, Learner, Proposal};
 
 pin_project! {
     /// A lazy connection that establishes the actual connection on first use.
@@ -42,19 +45,6 @@ impl<L: Learner, C: Connector<L>> LazyConnection<L, C> {
             connection: None,
             consecutive_failures: 0,
         }
-    }
-
-    /// Returns the number of consecutive connection failures.
-    /// Resets to 0 when a connection succeeds.
-    #[must_use]
-    pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures
-    }
-
-    /// Returns true if there's an active connection.
-    #[must_use]
-    pub fn is_connected(&self) -> bool {
-        self.connection.is_some()
     }
 }
 

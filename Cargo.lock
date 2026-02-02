@@ -46,30 +46,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "basic-paxos"
-version = "0.1.0"
-dependencies = [
- "basic-paxos",
- "bytes",
- "futures",
- "num_cpus",
- "pin-project-lite",
- "postcard",
- "rand",
- "scopeguard",
- "serde",
- "serde_json",
- "stateright",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "turmoil",
- "zerocopy",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -930,6 +906,29 @@ name = "universal-sync"
 version = "0.1.0"
 dependencies = [
  "tokio",
+ "zerocopy",
+]
+
+[[package]]
+name = "universal-sync-paxos"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "num_cpus",
+ "pin-project-lite",
+ "postcard",
+ "rand",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "stateright",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "turmoil",
  "zerocopy",
 ]
 

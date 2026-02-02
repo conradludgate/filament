@@ -1,8 +1,10 @@
 //! Proposer configuration
 
-use std::{future::Future, time::Duration};
+use std::future::Future;
+use std::time::Duration;
 
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 /// Configuration for exponential backoff with jitter
 #[derive(Debug, Clone)]
