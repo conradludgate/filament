@@ -5,15 +5,15 @@
 
 use std::{collections::HashSet, time::Duration};
 
-use futures::{SinkExt, Stream, StreamExt};
-use rand::Rng;
+use futures::{SinkExt, StreamExt};
+use rand::{Rng, rngs::StdRng};
 use tokio::sync::{mpsc, watch};
 use tokio_util::task::JoinMap;
 use tracing::{debug, instrument, trace, warn};
 
 use crate::{
-    AcceptorMessage, AcceptorRequest, Connector, LazyConnection, Learner, Proposal, ProposerConfig,
-    Sleep,
+    AcceptorMessage, AcceptorRequest, BackoffConfig, Connector, LazyConnection, Learner, Proposal,
+    ProposerConfig, Sleep,
     core::{AcceptPhaseResult, PreparePhaseResult, ProposerCore},
     quorum::QuorumTracker,
 };
@@ -375,7 +375,7 @@ where
 /// - **Learn values**: Call [`learn_one`](Self::learn_one) to wait for a quorum-confirmed value
 ///
 /// Learners are just proposers that never call `propose()`.
-pub struct Proposer<L: Learner, C: Connector<L>>
+pub struct Proposer<L: Learner, C: Connector<L>, S: Sleep, R: Rng = StdRng>
 where
     L::Message: Send + Sync + 'static,
     C::ConnectFuture: Unpin + Send,
@@ -386,22 +386,36 @@ where
     attempt: <L::Proposal as Proposal>::AttemptId,
     /// Quorum tracker for learning - persists across `learn_one` calls to buffer future rounds
     learn_tracker: QuorumTracker<L>,
+    /// Backoff configuration for retries
+    backoff: BackoffConfig,
+    /// Timeout for prepare/accept phases (None = no timeout)
+    phase_timeout: Option<Duration>,
+    /// Sleep implementation
+    sleep: S,
+    /// RNG for jitter
+    rng: R,
 }
 
-impl<L, C> Proposer<L, C>
+impl<L, C, S, R> Proposer<L, C, S, R>
 where
     L: Learner + Send + Sync + 'static,
     L::Message: Send + Sync + 'static,
     C: Connector<L> + Send + 'static,
     C::ConnectFuture: Unpin + Send,
     C::Connection: Unpin + Send,
+    S: Sleep,
+    R: Rng,
 {
-    /// Create a new proposer.
+    /// Create a new proposer with the given configuration.
     ///
     /// The proposer starts with no active connections. Call [`sync_actors`](Self::sync_actors)
     /// to establish connections to acceptors.
     #[must_use]
-    pub fn new(node_id: <L::Proposal as Proposal>::NodeId, connector: C) -> Self {
+    pub fn new(
+        node_id: <L::Proposal as Proposal>::NodeId,
+        connector: C,
+        config: ProposerConfig<S, R>,
+    ) -> Self {
         debug!("creating proposer");
         let (msg_tx, msg_rx) = mpsc::unbounded_channel::<ActorMessage<L>>();
         let manager = ActorManager::new(node_id, connector, msg_tx);
@@ -411,6 +425,10 @@ where
             msg_rx,
             attempt: <L::Proposal as Proposal>::AttemptId::default(),
             learn_tracker: QuorumTracker::new(0),
+            backoff: config.backoff,
+            phase_timeout: config.phase_timeout,
+            sleep: config.sleep,
+            rng: config.rng,
         }
     }
 
@@ -460,6 +478,13 @@ where
     ///
     /// For proposers: this can be used without `start_sync` to learn from live
     /// broadcasts while waiting for messages to propose.
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This method is cancellation-safe. Messages received before cancellation are
+    /// buffered in an internal tracker that persists across calls. If cancelled,
+    /// calling `learn_one` again will first check for quorum from buffered messages
+    /// before waiting for new ones, so no progress is lost.
     pub async fn learn_one(&mut self, learner: &L) -> Option<(L::Proposal, L::Message)> {
         let current_round = learner.current_round();
 
@@ -519,11 +544,19 @@ where
     /// `learner.apply()` after receiving the result.
     ///
     /// Returns `None` if all connections are closed.
-    pub async fn propose<S: Sleep, R: Rng>(
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This method is cancellation-safe but progress may be lost. If cancelled
+    /// mid-proposal, the in-flight protocol state (which acceptors have promised
+    /// or accepted) is discarded. The internal attempt counter is preserved, so
+    /// calling `propose` again will use an appropriate proposal number. No messages
+    /// are lost from the channel, but you will need to restart the proposal from
+    /// scratch.
+    pub async fn propose(
         &mut self,
         learner: &L,
         message: L::Message,
-        config: &mut ProposerConfig<S, R>,
     ) -> Option<(L::Proposal, L::Message)> {
         let round = learner.current_round();
         let num_acceptors = self.manager.num_actors();
@@ -535,15 +568,15 @@ where
             let proposal = learner.propose(self.attempt);
             debug!(attempt = ?self.attempt, consecutive_rejections, "attempting proposal");
 
-            let mut ctx = ProposalContext {
-                manager: &self.manager,
-                msg_rx: &mut self.msg_rx,
-                learner,
-                tracker: &mut tracker,
-                sleep: &config.sleep,
-                phase_timeout: config.phase_timeout,
-            };
-            let result = run_proposal(&mut ctx, proposal.clone(), message.clone(), round).await;
+            let result = self
+                .run_proposal(
+                    &mut tracker,
+                    learner,
+                    proposal.clone(),
+                    message.clone(),
+                    round,
+                )
+                .await;
 
             match result {
                 ProposeResult::Accepted(proposal, message) => {
@@ -562,101 +595,14 @@ where
             }
 
             // Backoff before retry
-            let backoff = config
-                .backoff
-                .duration(consecutive_rejections, &mut config.rng);
+            let backoff = self.backoff.duration(consecutive_rejections, &mut self.rng);
             trace!(?backoff, "backing off before retry");
-            config.sleep.sleep(backoff).await;
+            self.sleep.sleep(backoff).await;
         }
 
         unreachable!("infinite loop should return from inside")
     }
-}
 
-/// Run a proposer loop that proposes messages from a stream.
-///
-/// This is a convenience wrapper around [`Proposer`] that runs a loop:
-/// 1. Wait for a message from `messages` (learning from broadcasts while waiting)
-/// 2. Propose the message
-/// 3. Apply the result
-/// 4. Repeat
-///
-/// # Errors
-///
-/// Returns an error if the learner fails to apply a learned proposal.
-#[instrument(skip_all, name = "proposer", fields(node_id = ?learner.node_id()))]
-pub async fn run_proposer<L, C, M, S, R>(
-    mut learner: L,
-    connector: C,
-    mut messages: M,
-    mut config: ProposerConfig<S, R>,
-) -> Result<(), L::Error>
-where
-    L: Learner + Send + Sync + 'static,
-    L::Message: Send + Sync + 'static,
-    C: Connector<L> + Send + 'static,
-    C::ConnectFuture: Unpin + Send,
-    C::Connection: Unpin + Send,
-    M: Stream<Item = L::Message> + Unpin,
-    S: Sleep,
-    R: Rng,
-{
-    debug!("proposer started");
-    let mut proposer = Proposer::new(learner.node_id(), connector);
-
-    loop {
-        let round = learner.current_round();
-        debug!(?round, "starting new round");
-
-        proposer.sync_actors(learner.acceptors());
-
-        // Wait for a message to propose, or learn from background
-        let msg = loop {
-            tokio::select! {
-                biased;
-                learn_result = proposer.learn_one(&learner) => {
-                    let Some((p, m)) = learn_result else {
-                        debug!("connections closed, proposer exiting");
-                        return Ok(());
-                    };
-                    debug!("learned value from background broadcast");
-                    learner.apply(p, m).await?;
-                    // Continue waiting for message to propose (with updated round)
-                    proposer.sync_actors(learner.acceptors());
-                }
-                msg = messages.next() => {
-                    let Some(msg) = msg else {
-                        debug!("message stream closed, proposer exiting");
-                        return Ok(());
-                    };
-                    debug!("received message to propose");
-                    break msg;
-                }
-            }
-        };
-
-        // Propose and apply
-        let Some((p, m)) = proposer.propose(&learner, msg, &mut config).await else {
-            debug!("connections closed during proposal, exiting");
-            return Ok(());
-        };
-        learner.apply(p, m).await?;
-    }
-}
-
-/// Context for running a proposal attempt.
-///
-/// Groups parameters to reduce argument count in `run_proposal`.
-struct ProposalContext<'a, L: Learner, C: Connector<L>, S> {
-    manager: &'a ActorManager<L, C>,
-    msg_rx: &'a mut mpsc::UnboundedReceiver<ActorMessage<L>>,
-    learner: &'a L,
-    tracker: &'a mut QuorumTracker<L>,
-    sleep: &'a S,
-    phase_timeout: Option<Duration>,
-}
-
-impl<L: Learner, C: Connector<L>, S: Sleep> ProposalContext<'_, L, C, S> {
     /// Receive and validate next actor message for proposal phase.
     async fn recv_for_phase(&mut self, expected_seq: u64) -> RecvResult<L> {
         let recv = if let Some(t) = self.phase_timeout {
@@ -687,6 +633,134 @@ impl<L: Learner, C: Connector<L>, S: Sleep> ProposalContext<'_, L, C, S> {
             msg: actor_msg.msg,
         }
     }
+
+    /// Run a single proposal attempt through both phases using `ProposerCore`
+    async fn run_proposal(
+        &mut self,
+        tracker: &mut QuorumTracker<L>,
+        learner: &L,
+        proposal: L::Proposal,
+        message: L::Message,
+        round: <L::Proposal as Proposal>::RoundId,
+    ) -> ProposeResult<L> {
+        let proposal_key = proposal.key();
+        let mut core = ProposerCore::new(proposal_key, message.clone(), self.manager.num_actors());
+        trace!(quorum = core.quorum(), "initialized proposer core");
+
+        self.manager.start_prepare(proposal.clone());
+        let seq = self.manager.current_seq();
+        trace!(seq, quorum = core.quorum(), "collecting promises");
+
+        // Prepare phase: collect promises
+        let chosen_message = loop {
+            let (acc_id, msg) = match self.recv_for_phase(seq).await {
+                RecvResult::Message { acceptor_id, msg } => (acceptor_id, msg),
+                RecvResult::Stale => continue,
+                RecvResult::Timeout => {
+                    debug!("prepare phase timed out");
+                    let min_attempt = L::Proposal::next_attempt(proposal.attempt());
+                    return ProposeResult::Rejected { min_attempt };
+                }
+                RecvResult::Closed => {
+                    debug!("message channel closed during prepare phase");
+                    return ProposeResult::Closed;
+                }
+            };
+
+            // Check for already accepted values in this round (learning from others)
+            if let Some((accepted_p, accepted_m)) = &msg.accepted
+                && accepted_p.round() == round
+                && learner.validate(accepted_p)
+            {
+                trace!("found already accepted value in this round");
+                if let Some((learned_p, learned_m)) =
+                    tracker.track(accepted_p.clone(), accepted_m.clone())
+                    && learned_p.key() != proposal_key
+                {
+                    debug!("learned different value during prepare");
+                    return ProposeResult::Accepted(learned_p.clone(), learned_m.clone());
+                }
+
+                // Reject if a higher proposal was already accepted in this round
+                if accepted_p.key() >= proposal_key {
+                    debug!("rejected: higher proposal already accepted");
+                    let min_attempt = L::Proposal::next_attempt(accepted_p.attempt());
+                    return ProposeResult::Rejected { min_attempt };
+                }
+            }
+
+            // Validate the promise
+            if !learner.validate(&msg.promised) {
+                trace!("ignoring invalid promise");
+                continue;
+            }
+
+            // Use ProposerCore to handle the promise
+            let result =
+                core.handle_promise(acc_id, msg.promised.key(), msg.accepted, Proposal::key);
+
+            match result {
+                PreparePhaseResult::Quorum { value } => break value,
+                PreparePhaseResult::Rejected { superseded_by, .. } => {
+                    debug!(?superseded_by, "rejected: higher proposal");
+                    let min_attempt = L::Proposal::next_attempt(superseded_by.attempt());
+                    return ProposeResult::Rejected { min_attempt };
+                }
+                // Need more promises
+                PreparePhaseResult::Pending => {}
+            }
+        };
+
+        debug!(quorum = core.quorum(), "prepare phase complete");
+
+        // Start accept phase with the chosen message
+        self.manager
+            .transition_to_accept(proposal.clone(), chosen_message.clone());
+        trace!("collecting accepts");
+
+        // Accept phase: collect accepts
+        loop {
+            let (acceptor_id, msg) = match self.recv_for_phase(seq).await {
+                RecvResult::Message { acceptor_id, msg } => (acceptor_id, msg),
+                RecvResult::Stale => continue,
+                RecvResult::Timeout => {
+                    debug!("accept phase timed out");
+                    let min_attempt = L::Proposal::next_attempt(proposal.attempt());
+                    return ProposeResult::Rejected { min_attempt };
+                }
+                RecvResult::Closed => {
+                    debug!("message channel closed during accept phase");
+                    return ProposeResult::Closed;
+                }
+            };
+
+            // Get the accepted key if present
+            let Some((accepted_p, _)) = &msg.accepted else {
+                continue;
+            };
+
+            if !learner.validate(accepted_p) {
+                trace!("ignoring invalid accepted");
+                continue;
+            }
+
+            let result =
+                core.handle_accepted(acceptor_id, Some(accepted_p.key()), proposal.clone());
+            match result {
+                AcceptPhaseResult::Learned { proposal, value } => {
+                    debug!(quorum = core.quorum(), "accept phase complete");
+                    return ProposeResult::Accepted(proposal, value);
+                }
+                AcceptPhaseResult::Rejected { superseded_by } => {
+                    debug!(?superseded_by, "rejected: higher proposal accepted");
+                    let min_attempt = L::Proposal::next_attempt(superseded_by.attempt());
+                    return ProposeResult::Rejected { min_attempt };
+                }
+                // Need more accepts
+                AcceptPhaseResult::Pending => {}
+            }
+        }
+    }
 }
 
 /// Result of receiving a message for a proposal phase.
@@ -702,135 +776,4 @@ enum RecvResult<L: Learner> {
     Timeout,
     /// Channel closed
     Closed,
-}
-
-/// Run a single proposal attempt through both phases using `ProposerCore`
-async fn run_proposal<L, C, S>(
-    ctx: &mut ProposalContext<'_, L, C, S>,
-    proposal: L::Proposal,
-    message: L::Message,
-    round: <L::Proposal as Proposal>::RoundId,
-) -> ProposeResult<L>
-where
-    L: Learner,
-    C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
-    S: Sleep,
-{
-    let proposal_key = proposal.key();
-    let mut core = ProposerCore::new(proposal_key, message.clone(), ctx.manager.num_actors());
-    trace!(quorum = core.quorum(), "initialized proposer core");
-
-    ctx.manager.start_prepare(proposal.clone());
-    let seq = ctx.manager.current_seq();
-    trace!(seq, quorum = core.quorum(), "collecting promises");
-
-    // Prepare phase: collect promises
-    let chosen_message = loop {
-        let (acc_id, msg) = match ctx.recv_for_phase(seq).await {
-            RecvResult::Message { acceptor_id, msg } => (acceptor_id, msg),
-            RecvResult::Stale => continue,
-            RecvResult::Timeout => {
-                debug!("prepare phase timed out");
-                let min_attempt = L::Proposal::next_attempt(proposal.attempt());
-                return ProposeResult::Rejected { min_attempt };
-            }
-            RecvResult::Closed => {
-                debug!("message channel closed during prepare phase");
-                return ProposeResult::Closed;
-            }
-        };
-
-        // Check for already accepted values in this round (learning from others)
-        if let Some((accepted_p, accepted_m)) = &msg.accepted
-            && accepted_p.round() == round
-            && ctx.learner.validate(accepted_p)
-        {
-            trace!("found already accepted value in this round");
-            if let Some((learned_p, learned_m)) =
-                ctx.tracker.track(accepted_p.clone(), accepted_m.clone())
-                && learned_p.key() != proposal_key
-            {
-                debug!("learned different value during prepare");
-                return ProposeResult::Accepted(learned_p.clone(), learned_m.clone());
-            }
-
-            // Reject if a higher proposal was already accepted in this round
-            if accepted_p.key() >= proposal_key {
-                debug!("rejected: higher proposal already accepted");
-                let min_attempt = L::Proposal::next_attempt(accepted_p.attempt());
-                return ProposeResult::Rejected { min_attempt };
-            }
-        }
-
-        // Validate the promise
-        if !ctx.learner.validate(&msg.promised) {
-            trace!("ignoring invalid promise");
-            continue;
-        }
-
-        // Use ProposerCore to handle the promise
-        let result = core.handle_promise(acc_id, msg.promised.key(), msg.accepted, Proposal::key);
-
-        match result {
-            PreparePhaseResult::Quorum { value } => break value,
-            PreparePhaseResult::Rejected { superseded_by, .. } => {
-                debug!(?superseded_by, "rejected: higher proposal");
-                let min_attempt = L::Proposal::next_attempt(superseded_by.attempt());
-                return ProposeResult::Rejected { min_attempt };
-            }
-            // Need more promises
-            PreparePhaseResult::Pending => {}
-        }
-    };
-
-    debug!(quorum = core.quorum(), "prepare phase complete");
-
-    // Start accept phase with the chosen message
-    ctx.manager
-        .transition_to_accept(proposal.clone(), chosen_message.clone());
-    trace!("collecting accepts");
-
-    // Accept phase: collect accepts
-    loop {
-        let (acceptor_id, msg) = match ctx.recv_for_phase(seq).await {
-            RecvResult::Message { acceptor_id, msg } => (acceptor_id, msg),
-            RecvResult::Stale => continue,
-            RecvResult::Timeout => {
-                debug!("accept phase timed out");
-                let min_attempt = L::Proposal::next_attempt(proposal.attempt());
-                return ProposeResult::Rejected { min_attempt };
-            }
-            RecvResult::Closed => {
-                debug!("message channel closed during accept phase");
-                return ProposeResult::Closed;
-            }
-        };
-
-        // Get the accepted key if present
-        let Some((accepted_p, _)) = &msg.accepted else {
-            continue;
-        };
-
-        if !ctx.learner.validate(accepted_p) {
-            trace!("ignoring invalid accepted");
-            continue;
-        }
-
-        let result = core.handle_accepted(acceptor_id, Some(accepted_p.key()), proposal.clone());
-        match result {
-            AcceptPhaseResult::Learned { proposal, value } => {
-                debug!(quorum = core.quorum(), "accept phase complete");
-                return ProposeResult::Accepted(proposal, value);
-            }
-            AcceptPhaseResult::Rejected { superseded_by } => {
-                debug!(?superseded_by, "rejected: higher proposal accepted");
-                let min_attempt = L::Proposal::next_attempt(superseded_by.attempt());
-                return ProposeResult::Rejected { min_attempt };
-            }
-            // Need more accepts
-            AcceptPhaseResult::Pending => {}
-        }
-    }
 }

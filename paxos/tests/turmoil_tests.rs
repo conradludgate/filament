@@ -15,10 +15,11 @@ use std::{
 
 use basic_paxos::{
     Acceptor, AcceptorHandler, AcceptorMessage, AcceptorRequest, BackoffConfig, Connector, Learner,
-    Proposal, Proposer, ProposerConfig, SharedAcceptorState, Sleep, run_acceptor, run_proposer,
+    Proposal, Proposer, ProposerConfig, SharedAcceptorState, Sleep, run_acceptor,
 };
 use bytes::{Buf, BufMut, BytesMut};
-use futures::{SinkExt, Stream, channel::mpsc};
+use futures::{SinkExt, Stream, StreamExt, channel::mpsc};
+use rand::Rng;
 use rand::rngs::StdRng;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use turmoil::Builder;
@@ -375,6 +376,57 @@ fn proposer_node_id(name: &str) -> SocketAddr {
 /// Get a node ID for an acceptor host
 fn acceptor_node_id(name: &str) -> SocketAddr {
     SocketAddr::new(turmoil::lookup(name), ACCEPTOR_PORT)
+}
+
+/// Run a proposer loop that proposes messages from a stream.
+/// Local helper to replace the removed run_proposer function.
+async fn run_proposer<L, C, M, S, R>(
+    mut learner: L,
+    connector: C,
+    mut messages: M,
+    config: ProposerConfig<S, R>,
+) -> Result<(), L::Error>
+where
+    L: Learner + Send + Sync + 'static,
+    L::Message: Send + Sync + 'static,
+    C: Connector<L> + Send + 'static,
+    C::ConnectFuture: Unpin + Send,
+    C::Connection: Unpin + Send,
+    M: Stream<Item = L::Message> + Unpin,
+    S: Sleep,
+    R: Rng,
+{
+    let mut proposer = Proposer::new(learner.node_id(), connector, config);
+
+    loop {
+        proposer.sync_actors(learner.acceptors());
+
+        // Wait for a message to propose, or learn from background
+        let msg = loop {
+            tokio::select! {
+                biased;
+                learn_result = proposer.learn_one(&learner) => {
+                    let Some((p, m)) = learn_result else {
+                        return Ok(());
+                    };
+                    learner.apply(p, m).await?;
+                    proposer.sync_actors(learner.acceptors());
+                }
+                msg = messages.next() => {
+                    let Some(msg) = msg else {
+                        return Ok(());
+                    };
+                    break msg;
+                }
+            }
+        };
+
+        // Propose and apply
+        let Some((p, m)) = proposer.propose(&learner, msg).await else {
+            return Ok(());
+        };
+        learner.apply(p, m).await?;
+    }
 }
 
 // --- Turmoil Tests ---
@@ -893,7 +945,7 @@ fn turmoil_learner_sync() {
         state.learned = learner_learned_clone;
 
         // Run learner using Proposer::learn_one()
-        let mut proposer = Proposer::new(state.node_id(), TcpConnector::new());
+        let mut proposer = Proposer::new(state.node_id(), TcpConnector::new(), turmoil_config());
         proposer.sync_actors(state.acceptors());
         proposer.start_sync(&state);
         loop {
@@ -964,7 +1016,7 @@ fn turmoil_learner_live_broadcast() {
         state.learned = learner_learned_clone;
 
         // Run learner using Proposer::learn_one() - requires quorum
-        let mut proposer = Proposer::new(state.node_id(), TcpConnector::new());
+        let mut proposer = Proposer::new(state.node_id(), TcpConnector::new(), turmoil_config());
         proposer.sync_actors(state.acceptors());
         proposer.start_sync(&state);
         let _ = tokio::time::timeout(Duration::from_secs(10), async {

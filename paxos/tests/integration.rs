@@ -8,7 +8,7 @@ use std::{
 
 use basic_paxos::{
     Acceptor, AcceptorHandler, AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal,
-    ProposerConfig, SharedAcceptorState, run_acceptor, run_proposer,
+    Proposer, ProposerConfig, SharedAcceptorState, run_acceptor,
 };
 use futures::{Sink, SinkExt, Stream, channel::mpsc};
 
@@ -305,17 +305,12 @@ async fn test_basic_consensus_channels() {
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 
-    // Create message channel
-    let (mut tx, rx) = mpsc::channel::<String>(16);
-
-    // Send a proposal
-    tx.send("hello world".to_string()).await.unwrap();
-    drop(tx); // Close channel to signal no more messages
-
     // Run proposer
-    run_proposer(state, connector, rx, ProposerConfig::default())
-        .await
-        .unwrap();
+    let mut proposer = Proposer::new(proposer_id, connector, ProposerConfig::default());
+    proposer.sync_actors(state.acceptors());
+    if let Some((proposal, message)) = proposer.propose(&state, "hello world".to_string()).await {
+        state.apply(proposal, message).await.unwrap();
+    }
 
     // Abort acceptor tasks
     for handle in acceptor_handles {
@@ -362,17 +357,15 @@ async fn test_multiple_proposals() {
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 
-    let (mut tx, rx) = mpsc::channel::<String>(16);
+    // Run proposer for multiple messages
+    let mut proposer = Proposer::new(proposer_id, connector, ProposerConfig::default());
 
-    // Send multiple proposals
-    tx.send("first".to_string()).await.unwrap();
-    tx.send("second".to_string()).await.unwrap();
-    tx.send("third".to_string()).await.unwrap();
-    drop(tx);
-
-    run_proposer(state, connector, rx, ProposerConfig::default())
-        .await
-        .unwrap();
+    for msg in ["first", "second", "third"] {
+        proposer.sync_actors(state.acceptors());
+        if let Some((proposal, message)) = proposer.propose(&state, msg.to_string()).await {
+            state.apply(proposal, message).await.unwrap();
+        }
+    }
 
     for handle in acceptor_handles {
         handle.abort();
@@ -434,14 +427,17 @@ async fn test_minority_slow() {
     let mut state = TestState::new(proposer_id, acceptor_addrs);
     state.learned = learned.clone();
 
-    let (mut tx, rx) = mpsc::channel::<String>(16);
-    tx.send("survives slow".to_string()).await.unwrap();
-    drop(tx);
+    // Run proposer with timeout
+    let mut proposer = Proposer::new(proposer_id, connector, ProposerConfig::default());
+    proposer.sync_actors(state.acceptors());
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        run_proposer(state, connector, rx, ProposerConfig::default()),
-    )
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        if let Some((proposal, message)) =
+            proposer.propose(&state, "survives slow".to_string()).await
+        {
+            state.apply(proposal, message).await.unwrap();
+        }
+    })
     .await;
 
     for handle in acceptor_handles {
@@ -449,12 +445,11 @@ async fn test_minority_slow() {
     }
 
     match result {
-        Ok(Ok(())) => {
+        Ok(()) => {
             let learned = learned.lock().unwrap();
             assert_eq!(learned.len(), 1);
             assert_eq!(learned[0], "survives slow");
         }
-        Ok(Err(e)) => panic!("proposer error: {e:?}"),
         Err(_) => panic!("timeout - consensus should work with 2/3 acceptors responding"),
     }
 }
