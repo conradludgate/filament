@@ -49,6 +49,12 @@ impl From<mls_rs::error::MlsError> for AcceptorError {
     }
 }
 
+impl From<crate::connector::ConnectorError> for AcceptorError {
+    fn from(e: crate::connector::ConnectorError) -> Self {
+        AcceptorError::Crypto(e.to_string())
+    }
+}
+
 /// A federated server that validates and orders group operations
 ///
 /// Wraps an MLS `ExternalGroup` to verify signatures without being
@@ -83,15 +89,16 @@ where
     /// # Arguments
     /// * `external_group` - The MLS external group
     /// * `cipher_suite` - Cipher suite for signature verification
-    /// * `acceptors` - Initial set of acceptor IDs
-    pub fn new(
-        external_group: ExternalGroup<C>,
-        cipher_suite: CS,
-    ) -> Self {
+    pub fn new(external_group: ExternalGroup<C>, cipher_suite: CS) -> Self {
         Self {
             external_group,
             cipher_suite,
         }
+    }
+
+    /// Get a reference to the external group
+    pub fn external_group(&self) -> &ExternalGroup<C> {
+        &self.external_group
     }
 
     /// Check if a member ID is in the current roster

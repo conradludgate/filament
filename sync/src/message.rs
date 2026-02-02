@@ -28,7 +28,9 @@ mod mls_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<T: MlsEncode, S: Serializer>(value: &T, ser: S) -> Result<S::Ok, S::Error> {
-        let bytes = value.mls_encode_to_vec().map_err(serde::ser::Error::custom)?;
+        let bytes = value
+            .mls_encode_to_vec()
+            .map_err(serde::ser::Error::custom)?;
         bytes.serialize(ser)
     }
 

@@ -40,7 +40,7 @@ impl MlsSize for AcceptorAdd {
 
 impl MlsEncode for AcceptorAdd {
     fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
-        writer.extend_from_slice(&self.0 .0);
+        writer.extend_from_slice(&self.0.0);
         Ok(())
     }
 }
@@ -90,7 +90,7 @@ impl MlsSize for AcceptorRemove {
 
 impl MlsEncode for AcceptorRemove {
     fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
-        writer.extend_from_slice(&self.0 .0);
+        writer.extend_from_slice(&self.0.0);
         Ok(())
     }
 }

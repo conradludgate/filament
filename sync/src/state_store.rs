@@ -2,19 +2,22 @@
 //!
 //! This module provides a durable implementation of [`AcceptorStateStore`]
 //! backed by the fjall embedded key-value store.
+//!
+//! The store supports multiple groups, with keys prefixed by group ID.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use futures::{Stream, StreamExt, stream};
 use tokio::sync::broadcast;
-
 use universal_sync_paxos::acceptor::RoundState;
 use universal_sync_paxos::{AcceptorStateStore, Learner, Proposal};
 
+use crate::handshake::GroupId;
 use crate::message::GroupMessage;
 use crate::proposal::{Epoch, GroupProposal};
 
@@ -23,18 +26,23 @@ use crate::proposal::{Epoch, GroupProposal};
 /// This implementation persists all state changes to disk before returning,
 /// ensuring crash recovery is possible.
 ///
-/// Uses two separate keyspaces:
-/// - `promised`: epoch -> proposal (small values)
-/// - `accepted`: epoch -> (proposal, message) (larger values)
+/// Supports multiple groups - keys are prefixed with group ID.
+///
+/// Uses three separate keyspaces:
+/// - `promised`: (group_id, epoch) -> proposal
+/// - `accepted`: (group_id, epoch) -> (proposal, message)
+/// - `groups`: group_id -> GroupInfo bytes (for registry persistence)
 pub struct FjallStateStore {
     /// The fjall database
     db: Database,
-    /// Keyspace for promised proposals (epoch -> proposal)
+    /// Keyspace for promised proposals
     promised: Keyspace,
-    /// Keyspace for accepted values (epoch -> (proposal, message))
+    /// Keyspace for accepted values
     accepted: Keyspace,
-    /// Broadcast channel for live subscriptions
-    broadcast: broadcast::Sender<(GroupProposal, GroupMessage)>,
+    /// Keyspace for registered groups (GroupInfo bytes)
+    groups: Keyspace,
+    /// Per-group broadcast channels for live subscriptions
+    broadcasts: RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>,
 }
 
 impl FjallStateStore {
@@ -57,26 +65,39 @@ impl FjallStateStore {
 
         let promised = db.keyspace("promised", KeyspaceCreateOptions::default)?;
         let accepted = db.keyspace("accepted", KeyspaceCreateOptions::default)?;
-
-        let (broadcast, _) = broadcast::channel(64);
+        let groups = db.keyspace("groups", KeyspaceCreateOptions::default)?;
 
         Ok(Self {
             db,
             promised,
             accepted,
-            broadcast,
+            groups,
+            broadcasts: RwLock::new(HashMap::new()),
         })
     }
 
-    /// Build an epoch key (8 bytes, big-endian for proper ordering)
-    fn epoch_key(epoch: Epoch) -> [u8; 8] {
-        epoch.0.to_be_bytes()
+    /// Build a key from (group_id, epoch)
+    ///
+    /// Format: [group_id: 32 bytes][epoch: 8 bytes BE] = 40 bytes total
+    fn build_key(group_id: &GroupId, epoch: Epoch) -> [u8; 40] {
+        let mut key = [0u8; 40];
+        key[..32].copy_from_slice(group_id.as_bytes());
+        key[32..].copy_from_slice(&epoch.0.to_be_bytes());
+        key
     }
 
-    /// Parse an epoch from a key
-    fn parse_epoch_key(key: &[u8]) -> Option<Epoch> {
-        let bytes: [u8; 8] = key.try_into().ok()?;
-        Some(Epoch(u64::from_be_bytes(bytes)))
+    /// Build a prefix for range queries on a group (just the group_id)
+    fn build_group_prefix(group_id: &GroupId) -> [u8; 32] {
+        *group_id.as_bytes()
+    }
+
+    /// Parse epoch from a key (assumes key was created by build_key)
+    fn parse_epoch_from_key(key: &[u8]) -> Option<Epoch> {
+        if key.len() < 40 {
+            return None;
+        }
+        let epoch_bytes: [u8; 8] = key[32..40].try_into().ok()?;
+        Some(Epoch(u64::from_be_bytes(epoch_bytes)))
     }
 
     /// Serialize a proposal for storage
@@ -99,9 +120,9 @@ impl FjallStateStore {
         postcard::from_bytes(bytes).ok()
     }
 
-    /// Get promised proposal for a round (synchronous)
-    fn get_promised_sync(&self, epoch: Epoch) -> Option<GroupProposal> {
-        let key = Self::epoch_key(epoch);
+    /// Get promised proposal for a (group, round) (synchronous)
+    fn get_promised_sync(&self, group_id: &GroupId, epoch: Epoch) -> Option<GroupProposal> {
+        let key = Self::build_key(group_id, epoch);
         self.promised
             .get(key)
             .ok()
@@ -109,9 +130,13 @@ impl FjallStateStore {
             .and_then(|bytes| Self::deserialize_proposal(&bytes))
     }
 
-    /// Get accepted (proposal, message) for a round (synchronous)
-    fn get_accepted_sync(&self, epoch: Epoch) -> Option<(GroupProposal, GroupMessage)> {
-        let key = Self::epoch_key(epoch);
+    /// Get accepted (proposal, message) for a (group, round) (synchronous)
+    fn get_accepted_sync(
+        &self,
+        group_id: &GroupId,
+        epoch: Epoch,
+    ) -> Option<(GroupProposal, GroupMessage)> {
+        let key = Self::build_key(group_id, epoch);
         self.accepted.get(key).ok().flatten().and_then(|bytes| {
             // Accepted value is serialized as (proposal_len, proposal, message)
             if bytes.len() < 4 {
@@ -127,22 +152,27 @@ impl FjallStateStore {
         })
     }
 
-    /// Set promised proposal for a round (synchronous)
-    fn set_promised_sync(&self, proposal: &GroupProposal) -> Result<(), fjall::Error> {
-        let key = Self::epoch_key(proposal.epoch);
+    /// Set promised proposal for a (group, round) (synchronous)
+    fn set_promised_sync(
+        &self,
+        group_id: &GroupId,
+        proposal: &GroupProposal,
+    ) -> Result<(), fjall::Error> {
+        let key = Self::build_key(group_id, proposal.epoch);
         let value = Self::serialize_proposal(proposal);
         self.promised.insert(key, &value)?;
         self.db.persist(PersistMode::SyncAll)?;
         Ok(())
     }
 
-    /// Set accepted (proposal, message) for a round (synchronous)
+    /// Set accepted (proposal, message) for a (group, round) (synchronous)
     fn set_accepted_sync(
         &self,
+        group_id: &GroupId,
         proposal: &GroupProposal,
         message: &GroupMessage,
     ) -> Result<(), fjall::Error> {
-        let key = Self::epoch_key(proposal.epoch);
+        let key = Self::build_key(group_id, proposal.epoch);
 
         // Serialize as (proposal_len: u32, proposal, message)
         let proposal_bytes = Self::serialize_proposal(proposal);
@@ -158,15 +188,24 @@ impl FjallStateStore {
         Ok(())
     }
 
-    /// Get all accepted values from a given round onwards (synchronous)
-    fn get_accepted_from_sync(&self, from_epoch: Epoch) -> Vec<(GroupProposal, GroupMessage)> {
-        let start_key = Self::epoch_key(from_epoch);
+    /// Get all accepted values for a group from a given round onwards (synchronous)
+    fn get_accepted_from_sync(
+        &self,
+        group_id: &GroupId,
+        from_epoch: Epoch,
+    ) -> Vec<(GroupProposal, GroupMessage)> {
+        let start_key = Self::build_key(group_id, from_epoch);
+        let prefix = Self::build_group_prefix(group_id);
 
         self.accepted
             .range(start_key..)
             .filter_map(|guard| {
                 let (key, value) = guard.into_inner().ok()?;
-                let epoch = Self::parse_epoch_key(&key)?;
+                // Stop if we've left this group's prefix
+                if !key.starts_with(&prefix) {
+                    return None;
+                }
+                let epoch = Self::parse_epoch_from_key(&key)?;
                 if epoch < from_epoch {
                     return None;
                 }
@@ -185,20 +224,96 @@ impl FjallStateStore {
             .collect()
     }
 
-    /// Get the highest accepted round (synchronous)
-    fn highest_accepted_round_sync(&self) -> Option<Epoch> {
-        // Use reverse iterator to get the last (highest) key
-        self.accepted
-            .range::<Vec<u8>, _>(..)
-            .next_back()
-            .and_then(|guard| {
+    /// Get the highest accepted round for a group (synchronous)
+    fn highest_accepted_round_sync(&self, group_id: &GroupId) -> Option<Epoch> {
+        let prefix = Self::build_group_prefix(group_id);
+
+        // Build end key: group_id with last byte incremented
+        let mut end_key = prefix;
+        // Find the first non-0xFF byte from the end and increment it
+        for byte in end_key.iter_mut().rev() {
+            if *byte < 0xFF {
+                *byte += 1;
+                break;
+            }
+            *byte = 0;
+        }
+
+        // Iterate through all entries for this group, tracking the highest epoch
+        let mut highest: Option<Epoch> = None;
+        for guard in self.accepted.range(prefix..end_key) {
+            if let Ok((key, _)) = guard.into_inner()
+                && let Some(epoch) = Self::parse_epoch_from_key(&key)
+            {
+                highest = Some(epoch);
+            }
+        }
+        highest
+    }
+
+    /// Get or create the broadcast channel for a group
+    fn get_broadcast(
+        &self,
+        group_id: &GroupId,
+    ) -> broadcast::Sender<(GroupProposal, GroupMessage)> {
+        // Try read lock first
+        if let Some(sender) = self.broadcasts.read().unwrap().get(&group_id.0) {
+            return sender.clone();
+        }
+
+        // Need to create - use write lock
+        let mut broadcasts = self.broadcasts.write().unwrap();
+        broadcasts
+            .entry(group_id.0)
+            .or_insert_with(|| broadcast::channel(64).0)
+            .clone()
+    }
+
+    // ========== Group Registry Methods ==========
+
+    /// Store a group's GroupInfo bytes (synchronous)
+    fn store_group_sync(&self, group_id: &GroupId, group_info: &[u8]) -> Result<(), fjall::Error> {
+        self.groups.insert(group_id.as_bytes(), group_info)?;
+        self.db.persist(PersistMode::SyncAll)?;
+        Ok(())
+    }
+
+    /// Get a group's GroupInfo bytes (synchronous)
+    fn get_group_sync(&self, group_id: &GroupId) -> Option<Vec<u8>> {
+        self.groups
+            .get(group_id.as_bytes())
+            .ok()
+            .flatten()
+            .map(|slice| slice.to_vec())
+    }
+
+    /// List all registered group IDs (synchronous)
+    fn list_groups_sync(&self) -> Vec<GroupId> {
+        self.groups
+            .iter()
+            .filter_map(|guard| {
                 let (key, _) = guard.into_inner().ok()?;
-                Self::parse_epoch_key(&key)
+                if key.len() == 32 {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(&key);
+                    Some(GroupId::new(bytes))
+                } else {
+                    None
+                }
             })
+            .collect()
+    }
+
+    /// Remove a group (synchronous)
+    fn remove_group_sync(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
+        self.groups.remove(group_id.as_bytes())?;
+        self.db.persist(PersistMode::SyncAll)?;
+        Ok(())
     }
 }
 
-/// Wrapper to make FjallStateStore shareable
+/// Wrapper to make FjallStateStore shareable across groups
+#[derive(Clone)]
 pub struct SharedFjallStateStore {
     inner: Arc<FjallStateStore>,
 }
@@ -211,13 +326,56 @@ impl SharedFjallStateStore {
             inner: Arc::new(store),
         })
     }
+
+    /// Get a per-group state store view
+    pub fn for_group(&self, group_id: GroupId) -> GroupStateStore {
+        GroupStateStore {
+            inner: self.inner.clone(),
+            group_id,
+        }
+    }
+
+    // ========== Group Registry Methods ==========
+
+    /// Store a group's GroupInfo bytes
+    ///
+    /// This persists the GroupInfo so the group can be restored after restart.
+    pub fn store_group(&self, group_id: &GroupId, group_info: &[u8]) -> Result<(), fjall::Error> {
+        self.inner.store_group_sync(group_id, group_info)
+    }
+
+    /// Get a group's GroupInfo bytes
+    ///
+    /// Returns `None` if the group is not registered.
+    pub fn get_group_info(&self, group_id: &GroupId) -> Option<Vec<u8>> {
+        self.inner.get_group_sync(group_id)
+    }
+
+    /// List all registered group IDs
+    pub fn list_groups(&self) -> Vec<GroupId> {
+        self.inner.list_groups_sync()
+    }
+
+    /// Remove a group registration
+    pub fn remove_group(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
+        self.inner.remove_group_sync(group_id)
+    }
 }
 
-impl Clone for SharedFjallStateStore {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
+/// Per-group view of the state store
+///
+/// This wraps a [`SharedFjallStateStore`] with a specific group ID,
+/// implementing [`AcceptorStateStore`] for that group.
+#[derive(Clone)]
+pub struct GroupStateStore {
+    inner: Arc<FjallStateStore>,
+    group_id: GroupId,
+}
+
+impl GroupStateStore {
+    /// Get the group ID
+    pub fn group_id(&self) -> &GroupId {
+        &self.group_id
     }
 }
 
@@ -254,12 +412,12 @@ impl Learner for FjallLearner {
     }
 }
 
-/// Broadcast receiver wrapper
-pub struct FjallReceiver {
+/// Broadcast receiver wrapper that filters by group
+pub struct GroupReceiver {
     inner: tokio_stream::wrappers::BroadcastStream<(GroupProposal, GroupMessage)>,
 }
 
-impl Stream for FjallReceiver {
+impl Stream for GroupReceiver {
     type Item = (GroupProposal, GroupMessage);
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -270,29 +428,32 @@ impl Stream for FjallReceiver {
     }
 }
 
-/// Historical stream type for fjall
-pub type FjallHistoricalStream = stream::Iter<std::vec::IntoIter<(GroupProposal, GroupMessage)>>;
+/// Historical stream type
+pub type HistoricalStream = stream::Iter<std::vec::IntoIter<(GroupProposal, GroupMessage)>>;
 
 /// Combined subscription stream
-pub type FjallSubscription = stream::Chain<FjallHistoricalStream, FjallReceiver>;
+pub type GroupSubscription = stream::Chain<HistoricalStream, GroupReceiver>;
 
-impl AcceptorStateStore<FjallLearner> for SharedFjallStateStore {
-    type Subscription = FjallSubscription;
+impl<L> AcceptorStateStore<L> for GroupStateStore
+where
+    L: Learner<Proposal = GroupProposal, Message = GroupMessage>,
+{
+    type Subscription = GroupSubscription;
 
-    fn get(&self, round: Epoch) -> RoundState<FjallLearner> {
-        let promised = self.inner.get_promised_sync(round);
-        let accepted = self.inner.get_accepted_sync(round);
+    fn get(&self, round: Epoch) -> RoundState<L> {
+        let promised = self.inner.get_promised_sync(&self.group_id, round);
+        let accepted = self.inner.get_accepted_sync(&self.group_id, round);
 
         RoundState { promised, accepted }
     }
 
-    fn promise(&self, proposal: &GroupProposal) -> Result<(), RoundState<FjallLearner>> {
+    fn promise(&self, proposal: &GroupProposal) -> Result<(), RoundState<L>> {
         let epoch = proposal.epoch;
         let key = proposal.key();
 
         // Check current state
-        let current_promised = self.inner.get_promised_sync(epoch);
-        let current_accepted = self.inner.get_accepted_sync(epoch);
+        let current_promised = self.inner.get_promised_sync(&self.group_id, epoch);
+        let current_accepted = self.inner.get_accepted_sync(&self.group_id, epoch);
 
         // Reject if a higher proposal was already promised
         if let Some(ref promised) = current_promised
@@ -316,7 +477,7 @@ impl AcceptorStateStore<FjallLearner> for SharedFjallStateStore {
 
         // Persist the promise
         self.inner
-            .set_promised_sync(proposal)
+            .set_promised_sync(&self.group_id, proposal)
             .map_err(|_| RoundState {
                 promised: current_promised,
                 accepted: current_accepted,
@@ -329,13 +490,13 @@ impl AcceptorStateStore<FjallLearner> for SharedFjallStateStore {
         &self,
         proposal: &GroupProposal,
         message: &GroupMessage,
-    ) -> Result<(), RoundState<FjallLearner>> {
+    ) -> Result<(), RoundState<L>> {
         let epoch = proposal.epoch;
         let key = proposal.key();
 
         // Check current state
-        let current_promised = self.inner.get_promised_sync(epoch);
-        let current_accepted = self.inner.get_accepted_sync(epoch);
+        let current_promised = self.inner.get_promised_sync(&self.group_id, epoch);
+        let current_accepted = self.inner.get_accepted_sync(&self.group_id, epoch);
 
         // Reject if a higher proposal was already promised
         if let Some(ref promised) = current_promised
@@ -359,19 +520,19 @@ impl AcceptorStateStore<FjallLearner> for SharedFjallStateStore {
 
         // Persist the accept
         self.inner
-            .set_accepted_sync(proposal, message)
+            .set_accepted_sync(&self.group_id, proposal, message)
             .map_err(|_| RoundState {
                 promised: current_promised,
                 accepted: current_accepted,
             })?;
 
         // Also update promised to match
-        let _ = self.inner.set_promised_sync(proposal);
+        let _ = self.inner.set_promised_sync(&self.group_id, proposal);
 
-        // Broadcast to learners
+        // Broadcast to learners for this group
         let _ = self
             .inner
-            .broadcast
+            .get_broadcast(&self.group_id)
             .send((proposal.clone(), message.clone()));
 
         Ok(())
@@ -379,18 +540,22 @@ impl AcceptorStateStore<FjallLearner> for SharedFjallStateStore {
 
     fn subscribe_from(&self, from_round: Epoch) -> Self::Subscription {
         // Get historical values
-        let historical = self.inner.get_accepted_from_sync(from_round);
+        let historical = self
+            .inner
+            .get_accepted_from_sync(&self.group_id, from_round);
 
         // Create live receiver
-        let live = FjallReceiver {
-            inner: tokio_stream::wrappers::BroadcastStream::new(self.inner.broadcast.subscribe()),
+        let live = GroupReceiver {
+            inner: tokio_stream::wrappers::BroadcastStream::new(
+                self.inner.get_broadcast(&self.group_id).subscribe(),
+            ),
         };
 
         stream::iter(historical).chain(live)
     }
 
     fn highest_accepted_round(&self) -> Option<Epoch> {
-        self.inner.highest_accepted_round_sync()
+        self.inner.highest_accepted_round_sync(&self.group_id)
     }
 }
 
@@ -404,6 +569,12 @@ mod tests {
             .with_signature(vec![1, 2, 3])
     }
 
+    fn test_group_id(id: u8) -> GroupId {
+        let mut bytes = [0u8; 32];
+        bytes[0] = id;
+        GroupId::new(bytes)
+    }
+
     #[tokio::test]
     async fn test_open_and_close() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -414,12 +585,13 @@ mod tests {
     #[tokio::test]
     async fn test_promise_and_get() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let shared = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let store = shared.for_group(test_group_id(1));
 
         let proposal = test_proposal(1, 1);
-        assert!(store.promise(&proposal).is_ok());
+        assert!(AcceptorStateStore::<FjallLearner>::promise(&store, &proposal).is_ok());
 
-        let state = store.get(Epoch(1));
+        let state = AcceptorStateStore::<FjallLearner>::get(&store, Epoch(1));
         assert!(state.promised.is_some());
         assert_eq!(state.promised.unwrap().epoch, Epoch(1));
     }
@@ -427,31 +599,59 @@ mod tests {
     #[tokio::test]
     async fn test_promise_rejects_lower() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let shared = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let store = shared.for_group(test_group_id(1));
 
         let proposal1 = test_proposal(1, 2);
-        assert!(store.promise(&proposal1).is_ok());
+        assert!(AcceptorStateStore::<FjallLearner>::promise(&store, &proposal1).is_ok());
 
         let proposal2 = test_proposal(1, 1);
-        let result = store.promise(&proposal2);
+        let result = AcceptorStateStore::<FjallLearner>::promise(&store, &proposal2);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_groups_are_isolated() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let shared = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+
+        let store1 = shared.for_group(test_group_id(1));
+        let store2 = shared.for_group(test_group_id(2));
+
+        // Promise in group 1
+        let proposal = test_proposal(1, 1);
+        assert!(AcceptorStateStore::<FjallLearner>::promise(&store1, &proposal).is_ok());
+
+        // Group 2 should not see it
+        let state = AcceptorStateStore::<FjallLearner>::get(&store2, Epoch(1));
+        assert!(state.promised.is_none());
+
+        // Group 1 should see it
+        let state = AcceptorStateStore::<FjallLearner>::get(&store1, Epoch(1));
+        assert!(state.promised.is_some());
     }
 
     #[tokio::test]
     async fn test_highest_accepted_round() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let shared = SharedFjallStateStore::open(temp_dir.path()).await.unwrap();
+        let store = shared.for_group(test_group_id(1));
 
         // Initially no accepted rounds
-        assert_eq!(store.highest_accepted_round(), None);
+        assert_eq!(
+            AcceptorStateStore::<FjallLearner>::highest_accepted_round(&store),
+            None
+        );
 
-        // Accept at epoch 5
+        // Accept at epoch 5 (need a proper message)
+        // For now just test with promise
         let proposal = test_proposal(5, 1);
-        assert!(store.promise(&proposal).is_ok());
-        // We need a message to accept - for now just use promise
-        // In a real scenario we'd have a GroupMessage
+        assert!(AcceptorStateStore::<FjallLearner>::promise(&store, &proposal).is_ok());
 
         // After promise, still no accepted
-        assert_eq!(store.highest_accepted_round(), None);
+        assert_eq!(
+            AcceptorStateStore::<FjallLearner>::highest_accepted_round(&store),
+            None
+        );
     }
 }

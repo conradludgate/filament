@@ -48,6 +48,12 @@ impl From<mls_rs::error::MlsError> for LearnerError {
     }
 }
 
+impl From<crate::connector::ConnectorError> for LearnerError {
+    fn from(e: crate::connector::ConnectorError) -> Self {
+        LearnerError::Crypto(e.to_string())
+    }
+}
+
 /// A device that participates in the MLS group as a full member
 ///
 /// Wraps an MLS `Group` and implements the paxos `Learner` trait.

@@ -10,17 +10,31 @@
 //! - **Acceptors** are federated servers with `ExternalGroup` state (can verify, can't decrypt)
 
 pub mod acceptor;
+pub mod connector;
 pub mod extension;
+pub mod flows;
+pub mod handshake;
 pub mod learner;
 pub mod message;
 pub mod proposal;
+pub mod registry;
+pub mod server;
 pub mod state_store;
+pub mod testing;
 
 pub use acceptor::GroupAcceptor;
-pub use extension::{
-    AcceptorAdd, AcceptorRemove, ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE,
+pub use connector::{
+    ConnectorError, IrohConnection, IrohConnector, PAXOS_ALPN, register_group,
+    register_group_with_addr,
 };
+pub use extension::{
+    ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, AcceptorAdd, AcceptorRemove,
+};
+pub use flows::{CreatedGroup, FlowError, JoinedGroup, create_group, join_group};
+pub use handshake::{GroupId, Handshake, HandshakeResponse};
 pub use learner::GroupLearner;
 pub use message::GroupMessage;
 pub use proposal::{AcceptorId, GroupProposal, MemberId};
-pub use state_store::SharedFjallStateStore;
+pub use registry::AcceptorRegistry;
+pub use server::{GroupRegistry, IrohAcceptorConnection, accept_connection};
+pub use state_store::{GroupStateStore, SharedFjallStateStore};
