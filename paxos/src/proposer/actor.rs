@@ -58,7 +58,7 @@ impl<L: Learner> Default for Command<L> {
 /// Messages from actors back to coordinator
 pub(super) struct ActorMessage<L: Learner> {
     /// Which acceptor sent this message
-    pub acceptor_id: <L::Proposal as Proposal>::NodeId,
+    pub acceptor_id: L::AcceptorId,
     /// Sequence number for this proposal attempt
     pub seq: u64,
     /// The actual message
@@ -92,7 +92,7 @@ impl<L: Learner> Clone for CoordinatorState<L> {
 async fn recv_and_forward<L: Learner, C: Connector<L>>(
     mut conn: Pin<&mut LazyConnection<L, C>>,
     msg_tx: &mpsc::UnboundedSender<ActorMessage<L>>,
-    acceptor_id: <L::Proposal as Proposal>::NodeId,
+    acceptor_id: L::AcceptorId,
     seq: u64,
 ) -> Option<AcceptorMessage<L>> {
     let msg = conn.next().await?.ok()?;
@@ -111,7 +111,7 @@ async fn recv_and_forward<L: Learner, C: Connector<L>>(
 #[instrument(skip_all, name = "actor", fields(node_id = ?proposer_id, acceptor = ?acceptor_id))]
 async fn run_actor<L, C>(
     proposer_id: <L::Proposal as Proposal>::NodeId,
-    acceptor_id: <L::Proposal as Proposal>::NodeId,
+    acceptor_id: L::AcceptorId,
     connector: C,
     mut state_rx: watch::Receiver<CoordinatorState<L>>,
     msg_tx: mpsc::UnboundedSender<ActorMessage<L>>,
@@ -243,7 +243,7 @@ async fn run_actor<L, C>(
 /// Manages the set of actor tasks
 pub(super) struct ActorManager<L: Learner, C: Connector<L>> {
     proposer_id: <L::Proposal as Proposal>::NodeId,
-    actors: JoinMap<<L::Proposal as Proposal>::NodeId, ()>,
+    actors: JoinMap<L::AcceptorId, ()>,
     connector: C,
     state_tx: watch::Sender<CoordinatorState<L>>,
     state_rx: watch::Receiver<CoordinatorState<L>>,
@@ -284,28 +284,27 @@ where
     }
 
     /// Update the actor set to match the current acceptors
-    pub fn sync_actors(
-        &mut self,
-        acceptors: impl IntoIterator<Item = <L::Proposal as Proposal>::NodeId>,
-    ) {
+    pub fn sync_actors(&mut self, acceptors: impl IntoIterator<Item = L::AcceptorId>) {
         let desired: HashSet<_> = acceptors.into_iter().collect();
 
         // Remove actors no longer in the set
         let before = self.actors.len();
         self.actors
-            .abort_matching(|node_id| !desired.contains(node_id));
+            .abort_matching(|acceptor_id| !desired.contains(acceptor_id));
         let removed = before - self.actors.len();
 
         // Spawn new actors
         let mut spawned = 0;
-        for id in desired {
-            if !self.actors.contains_key(&id) {
+        for acceptor_id in desired {
+            if !self.actors.contains_key(&acceptor_id) {
                 let proposer_id = self.proposer_id;
                 let connector = self.connector.clone();
                 let state_rx = self.state_rx.clone();
                 let msg_tx = self.msg_tx.clone();
-                self.actors
-                    .spawn(id, run_actor(proposer_id, id, connector, state_rx, msg_tx));
+                self.actors.spawn(
+                    acceptor_id,
+                    run_actor(proposer_id, acceptor_id, connector, state_rx, msg_tx),
+                );
                 spawned += 1;
             }
         }

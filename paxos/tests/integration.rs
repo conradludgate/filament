@@ -96,6 +96,7 @@ impl Learner for TestState {
     type Proposal = TestProposal;
     type Message = String;
     type Error = io::Error;
+    type AcceptorId = IpAddr;
 
     fn node_id(&self) -> IpAddr {
         self.node_id

@@ -127,7 +127,10 @@ pub trait Learner: Send + Sync + 'static {
     type Message: Clone + fmt::Debug + Send + Sync + 'static;
     type Error: core::error::Error + Send;
 
-    /// This node's unique identifier
+    /// Type used to identify acceptors
+    type AcceptorId: Copy + Ord + fmt::Debug + Hash + Send + Sync;
+
+    /// This node's unique identifier (as a proposer)
     fn node_id(&self) -> <Self::Proposal as Proposal>::NodeId;
 
     /// Current round (next to be learned)
@@ -137,7 +140,7 @@ pub trait Learner: Send + Sync + 'static {
     fn validate(&self, proposal: &Self::Proposal) -> bool;
 
     /// Current acceptor set based on learned state
-    fn acceptors(&self) -> impl IntoIterator<Item = <Self::Proposal as Proposal>::NodeId>;
+    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId>;
 
     /// Apply a learned proposal + message to the state machine
     async fn apply(
@@ -236,7 +239,7 @@ pub trait AcceptorStateStore<L: Learner> {
     fn highest_accepted_round(&self) -> Option<<L::Proposal as Proposal>::RoundId>;
 }
 
-/// Connects to acceptors by node ID.
+/// Connects to acceptors by their ID.
 ///
 /// Implementations should handle backoff/retry logic internally when connections fail.
 /// The connector is cloned per-address, so `&mut self` can be used to track retry state.
@@ -245,7 +248,7 @@ pub trait Connector<L: Learner>: Clone + Send + 'static {
     type Error: core::error::Error;
     type ConnectFuture: Future<Output = Result<Self::Connection, Self::Error>> + Send;
 
-    fn connect(&mut self, node_id: &<L::Proposal as Proposal>::NodeId) -> Self::ConnectFuture;
+    fn connect(&mut self, acceptor_id: &L::AcceptorId) -> Self::ConnectFuture;
 }
 
 /// Connection to an acceptor

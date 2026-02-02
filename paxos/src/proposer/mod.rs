@@ -121,10 +121,7 @@ where
     ///
     /// Spawns new actors for acceptors not in the current set, and aborts
     /// actors for acceptors no longer in the set.
-    pub fn sync_actors(
-        &mut self,
-        acceptors: impl IntoIterator<Item = <P::Proposal as Proposal>::NodeId>,
-    ) {
+    pub fn sync_actors(&mut self, acceptors: impl IntoIterator<Item = P::AcceptorId>) {
         self.manager.sync_actors(acceptors);
     }
 
@@ -457,7 +454,7 @@ where
 enum RecvResult<P: Learner> {
     /// Received a valid message for current seq
     Message {
-        acceptor_id: <P::Proposal as Proposal>::NodeId,
+        acceptor_id: P::AcceptorId,
         msg: AcceptorMessage<P>,
     },
     /// Message was stale (wrong seq), caller should continue

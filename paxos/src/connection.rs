@@ -13,7 +13,7 @@ use tokio::task::coop;
 use tracing::{trace, warn};
 
 use crate::messages::{AcceptorMessage, AcceptorRequest};
-use crate::traits::{Connector, Learner, Proposal};
+use crate::traits::{Connector, Learner};
 
 pin_project! {
     /// A lazy connection that establishes the actual connection on first use.
@@ -24,7 +24,7 @@ pin_project! {
     /// The connector is responsible for implementing retry logic with backoff.
     /// Tracks consecutive failures so callers can check connection health.
     pub struct LazyConnection<L: Learner, C: Connector<L>> {
-        node_id: <L::Proposal as Proposal>::NodeId,
+        acceptor_id: L::AcceptorId,
         connector: C,
         #[pin]
         connecting: Fuse<C::ConnectFuture>,
@@ -36,10 +36,10 @@ pin_project! {
 }
 
 impl<L: Learner, C: Connector<L>> LazyConnection<L, C> {
-    /// Create a new lazy connection to the given node.
-    pub fn new(node_id: <L::Proposal as Proposal>::NodeId, connector: C) -> Self {
+    /// Create a new lazy connection to the given acceptor.
+    pub fn new(acceptor_id: L::AcceptorId, connector: C) -> Self {
         Self {
-            node_id,
+            acceptor_id,
             connector,
             connecting: Fuse::terminated(),
             connection: None,
@@ -80,7 +80,7 @@ macro_rules! poll_connect {
             // Start a new connection attempt
             // The connector is responsible for backoff and returning an error when giving up
             trace!("starting connection attempt");
-            let fut = this.connector.connect(this.node_id);
+            let fut = this.connector.connect(&*this.acceptor_id);
             this.connecting.set(fut.fuse());
         }
     }};
