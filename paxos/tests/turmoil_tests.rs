@@ -177,10 +177,6 @@ impl Learner for TestState {
         true
     }
 
-    fn acceptors(&self) -> impl IntoIterator<Item = SocketAddr> {
-        self.acceptors.clone()
-    }
-
     async fn apply(&mut self, proposal: TestProposal, message: String) -> Result<(), io::Error> {
         // Only insert if not already learned (prevents duplicates with shared state)
         let round = proposal.round;
@@ -194,6 +190,10 @@ impl Learner for TestState {
 }
 
 impl ProposerTrait for TestState {
+    fn acceptors(&self) -> impl IntoIterator<Item = SocketAddr> {
+        self.acceptors.clone()
+    }
+
     fn propose(&self, attempt: u64) -> TestProposal {
         TestProposal {
             node_id: self.node_id,

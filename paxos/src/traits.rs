@@ -139,9 +139,6 @@ pub trait Learner: Send + Sync + 'static {
     /// Validate a proposal (signatures, authorization, etc.)
     fn validate(&self, proposal: &Self::Proposal) -> bool;
 
-    /// Current acceptor set based on learned state
-    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId>;
-
     /// Apply a learned proposal + message to the state machine
     async fn apply(
         &mut self,
@@ -156,6 +153,9 @@ pub trait Learner: Send + Sync + 'static {
 /// Implementations are typically devices/clients that can propose values,
 /// not acceptors (which only validate and store proposals from others).
 pub trait Proposer: Learner {
+    /// Current acceptor set based on learned state
+    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId>;
+
     /// Create a signed proposal for the current round and attempt.
     /// The message is sent separately during Accept phase.
     fn propose(&self, attempt: <Self::Proposal as Proposal>::AttemptId) -> Self::Proposal;

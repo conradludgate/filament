@@ -110,10 +110,6 @@ impl Learner for TestState {
         true
     }
 
-    fn acceptors(&self) -> impl IntoIterator<Item = IpAddr> {
-        self.acceptors.clone()
-    }
-
     async fn apply(&mut self, _proposal: TestProposal, message: String) -> Result<(), io::Error> {
         self.learned.lock().unwrap().push(message);
         self.round += 1;
@@ -122,6 +118,10 @@ impl Learner for TestState {
 }
 
 impl ProposerTrait for TestState {
+    fn acceptors(&self) -> impl IntoIterator<Item = IpAddr> {
+        self.acceptors.clone()
+    }
+
     fn propose(&self, attempt: u64) -> TestProposal {
         TestProposal {
             node_id: self.node_id,
