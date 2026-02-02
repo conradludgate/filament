@@ -5,26 +5,31 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use futures::{Sink, Stream};
+use futures::{FutureExt, Sink, Stream, future::Fuse, future::FusedFuture};
+use pin_project_lite::pin_project;
 use tokio::task::coop;
 use tracing::{trace, warn};
 
 use crate::{AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal};
 
-/// A lazy connection that establishes the actual connection on first use.
-///
-/// This implements `Stream + Sink` and will connect during the first
-/// `poll_ready()` or `poll_next()` call.
-///
-/// The connector is responsible for implementing retry logic with backoff.
-/// Tracks consecutive failures so callers can check connection health.
-pub struct LazyConnection<L: Learner, C: Connector<L>> {
-    node_id: <L::Proposal as Proposal>::NodeId,
-    connector: C,
-    connecting: Option<C::ConnectFuture>,
-    connection: Option<C::Connection>,
-    /// Count of consecutive connection failures
-    consecutive_failures: u32,
+pin_project! {
+    /// A lazy connection that establishes the actual connection on first use.
+    ///
+    /// This implements `Stream + Sink` and will connect during the first
+    /// `poll_ready()` or `poll_next()` call.
+    ///
+    /// The connector is responsible for implementing retry logic with backoff.
+    /// Tracks consecutive failures so callers can check connection health.
+    pub struct LazyConnection<L: Learner, C: Connector<L>> {
+        node_id: <L::Proposal as Proposal>::NodeId,
+        connector: C,
+        #[pin]
+        connecting: Fuse<C::ConnectFuture>,
+        #[pin]
+        connection: Option<C::Connection>,
+        // Count of consecutive connection failures
+        consecutive_failures: u32,
+    }
 }
 
 impl<L: Learner, C: Connector<L>> LazyConnection<L, C> {
@@ -33,7 +38,7 @@ impl<L: Learner, C: Connector<L>> LazyConnection<L, C> {
         Self {
             node_id,
             connector,
-            connecting: None,
+            connecting: Fuse::terminated(),
             connection: None,
             consecutive_failures: 0,
         }
@@ -53,41 +58,30 @@ impl<L: Learner, C: Connector<L>> LazyConnection<L, C> {
     }
 }
 
-impl<L, C> LazyConnection<L, C>
-where
-    L: Learner,
-    C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
-{
-    fn poll_inner<R>(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        poll_fn: impl FnOnce(Pin<&mut C::Connection>, &mut Context<'_>) -> Poll<R>,
-    ) -> Poll<R> {
-        let this = self.get_mut();
-
+/// Macro to poll the connection, establishing it if necessary.
+/// The closure receives `Pin<&mut C::Connection>` when ready.
+macro_rules! poll_connect {
+    ($self:expr, $cx:expr, |$conn:ident| $body:expr) => {{
+        let mut this = $self.project();
         loop {
-            if let Some(conn) = &mut this.connection {
-                return poll_fn(Pin::new(conn), cx);
+            if let Some($conn) = this.connection.as_mut().as_pin_mut() {
+                break $body;
             }
 
-            if let Some(fut) = &mut this.connecting {
-                let coop = ready!(coop::poll_proceed(cx));
-                let res = ready!(Pin::new(fut).poll(cx));
+            if !this.connecting.is_terminated() {
+                let coop = ready!(coop::poll_proceed($cx));
+                let res = ready!(this.connecting.as_mut().poll($cx));
                 coop.made_progress();
 
                 if let Ok(conn) = res {
                     trace!("connection established");
-                    this.connecting = None;
-                    this.connection = Some(conn);
-                    this.consecutive_failures = 0;
+                    this.connection.set(Some(conn));
+                    *this.consecutive_failures = 0;
                     continue;
                 }
-                this.connecting = None;
-                this.consecutive_failures += 1;
+                *this.consecutive_failures += 1;
                 warn!(
-                    failures = this.consecutive_failures,
+                    failures = *this.consecutive_failures,
                     "connection attempt failed"
                 );
                 // Try again - connector handles backoff
@@ -96,22 +90,21 @@ where
             // Start a new connection attempt
             // The connector is responsible for backoff and returning an error when giving up
             trace!("starting connection attempt");
-            this.connecting = Some(this.connector.connect(&this.node_id));
+            let fut = this.connector.connect(this.node_id);
+            this.connecting.set(fut.fuse());
         }
-    }
+    }};
 }
 
 impl<L, C> Stream for LazyConnection<L, C>
 where
     L: Learner,
     C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
 {
     type Item = Result<AcceptorMessage<L>, L::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.poll_inner(cx, futures::Stream::poll_next)
+        poll_connect!(self, cx, |conn| conn.poll_next(cx))
     }
 }
 
@@ -119,42 +112,32 @@ impl<L, C> Sink<AcceptorRequest<L>> for LazyConnection<L, C>
 where
     L: Learner,
     C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
 {
     type Error = L::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.poll_inner(cx, futures::Sink::poll_ready)
+        poll_connect!(self, cx, |conn| conn.poll_ready(cx))
     }
 
     fn start_send(self: Pin<&mut Self>, item: AcceptorRequest<L>) -> Result<(), Self::Error> {
-        let conn = self
-            .get_mut()
+        self.project()
             .connection
-            .as_mut()
-            .expect("start_send called before poll_ready returned Ready");
-        Pin::new(conn).start_send(item)
+            .as_pin_mut()
+            .expect("start_send called before poll_ready returned Ready")
+            .start_send(item)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let Some(conn) = &mut self.get_mut().connection else {
-            return Poll::Ready(Ok(()));
-        };
-        Pin::new(conn).poll_flush(cx)
+        match self.project().connection.as_pin_mut() {
+            Some(conn) => conn.poll_flush(cx),
+            None => Poll::Ready(Ok(())),
+        }
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let Some(conn) = &mut self.get_mut().connection else {
-            return Poll::Ready(Ok(()));
-        };
-        Pin::new(conn).poll_close(cx)
+        match self.project().connection.as_pin_mut() {
+            Some(conn) => conn.poll_close(cx),
+            None => Poll::Ready(Ok(())),
+        }
     }
-}
-
-impl<L: Learner, C: Connector<L>> Unpin for LazyConnection<L, C>
-where
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
-{
 }

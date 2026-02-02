@@ -1,6 +1,7 @@
 //! Acceptor implementation
 
 use std::fmt;
+use std::pin::pin;
 
 use futures::stream::FusedStream;
 use futures::{Sink, SinkExt, Stream, StreamExt};
@@ -187,20 +188,20 @@ where
 #[instrument(skip_all, name = "acceptor", fields(node_id = ?handler.node_id(), proposer = ?proposer_id))]
 pub async fn run_acceptor<A, S, C>(
     mut handler: AcceptorHandler<A, S>,
-    mut conn: C,
+    conn: C,
     proposer_id: <A::Proposal as Proposal>::NodeId,
 ) -> Result<(), A::Error>
 where
     A: Acceptor,
     S: AcceptorStateStore<A>,
     C: Stream<Item = Result<AcceptorRequest<A>, A::Error>>
-        + Sink<AcceptorMessage<A>, Error = A::Error>
-        + Unpin,
+        + Sink<AcceptorMessage<A>, Error = A::Error>,
 {
     debug!("acceptor started");
 
     // sync is terminated until we receive the initial Prepare
-    let mut sync: Fuse<S::Subscription> = Fuse::terminated();
+    let mut sync = pin!(Fuse::<S::Subscription>::terminated());
+    let mut conn = pin!(conn);
 
     loop {
         // Poll both conn and sync
@@ -231,7 +232,7 @@ where
                         debug!(round = ?proposal.round(), "promised");
                         // Subscribe on first successful promise
                         if sync.is_terminated() {
-                            sync = Fuse::new(handler.state().subscribe_from(proposal.round()));
+                            sync.set(Fuse::new(handler.state().subscribe_from(proposal.round())));
                             debug!("subscribed to state");
                         }
                         msg
@@ -240,7 +241,7 @@ where
                         trace!("promise rejected - outdated");
                         // Also subscribe on first outdated (learner still needs sync)
                         if sync.is_terminated() {
-                            sync = Fuse::new(handler.state().subscribe_from(proposal.round()));
+                            sync.set(Fuse::new(handler.state().subscribe_from(proposal.round())));
                             debug!("subscribed to state");
                         }
                         if msg.promised.round() != proposal.round() {

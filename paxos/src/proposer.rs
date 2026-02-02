@@ -3,7 +3,11 @@
 //! Uses a persistent actor model where each acceptor connection runs as an
 //! independent spawned task, managed via `JoinMap`. Actors persist across rounds.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    pin::{Pin, pin},
+    time::Duration,
+};
 
 use futures::{SinkExt, StreamExt};
 use rand::{Rng, rngs::StdRng};
@@ -93,15 +97,11 @@ impl<L: Learner> Clone for CoordinatorState<L> {
 ///
 /// Returns `Some(msg)` if received, `None` if connection closed.
 async fn recv_and_forward<L: Learner, C: Connector<L>>(
-    conn: &mut LazyConnection<L, C>,
+    mut conn: Pin<&mut LazyConnection<L, C>>,
     msg_tx: &mpsc::UnboundedSender<ActorMessage<L>>,
     acceptor_id: <L::Proposal as Proposal>::NodeId,
     seq: u64,
-) -> Option<AcceptorMessage<L>>
-where
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
-{
+) -> Option<AcceptorMessage<L>> {
     let msg = conn.next().await?.ok()?;
     let _ = msg_tx.send(ActorMessage {
         acceptor_id,
@@ -125,10 +125,8 @@ async fn run_actor<L, C>(
 ) where
     L: Learner,
     C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
 {
-    let mut conn: LazyConnection<L, C> = LazyConnection::new(acceptor_id, connector);
+    let mut conn = pin!(LazyConnection::new(acceptor_id, connector));
     let mut last_seq = 0u64;
 
     trace!("actor started");
@@ -159,7 +157,7 @@ async fn run_actor<L, C>(
                 // Forward ALL messages to coordinator (for learning historical values).
                 loop {
                     let Some(msg) =
-                        recv_and_forward(&mut conn, &msg_tx, acceptor_id, last_seq).await
+                        recv_and_forward(conn.as_mut(), &msg_tx, acceptor_id, last_seq).await
                     else {
                         warn!("actor connection closed while waiting for promise");
                         break;
@@ -214,7 +212,7 @@ async fn run_actor<L, C>(
 
                                 // Wait for accepted response (also forward any other messages)
                                 loop {
-                                    let Some(msg) = recv_and_forward(&mut conn, &msg_tx, acceptor_id, last_seq).await else {
+                                    let Some(msg) = recv_and_forward(conn.as_mut(), &msg_tx, acceptor_id, last_seq).await else {
                                         warn!("actor connection closed while waiting for accepted");
                                         break 'accept_wait;
                                     };
@@ -227,7 +225,7 @@ async fn run_actor<L, C>(
                             }
                         }
                         // Also read from connection and forward any messages (for learners)
-                        msg = recv_and_forward(&mut conn, &msg_tx, acceptor_id, last_seq) => {
+                        msg = recv_and_forward(conn.as_mut(), &msg_tx, acceptor_id, last_seq) => {
                             if msg.is_some() {
                                 trace!("actor forwarded broadcast message");
                             } else {
@@ -282,8 +280,6 @@ impl<L, C> ActorManager<L, C>
 where
     L: Learner,
     C: Connector<L>,
-    C::ConnectFuture: Unpin,
-    C::Connection: Unpin,
 {
     fn new(
         proposer_id: <L::Proposal as Proposal>::NodeId,
@@ -378,8 +374,8 @@ where
 pub struct Proposer<L: Learner, C: Connector<L>, S: Sleep, R: Rng = StdRng>
 where
     L::Message: Send + Sync + 'static,
-    C::ConnectFuture: Unpin + Send,
-    C::Connection: Unpin + Send,
+    C::ConnectFuture: Send,
+    C::Connection: Send,
 {
     manager: ActorManager<L, C>,
     msg_rx: mpsc::UnboundedReceiver<ActorMessage<L>>,
@@ -401,8 +397,8 @@ where
     L: Learner + Send + Sync + 'static,
     L::Message: Send + Sync + 'static,
     C: Connector<L> + Send + 'static,
-    C::ConnectFuture: Unpin + Send,
-    C::Connection: Unpin + Send,
+    C::ConnectFuture: Send,
+    C::Connection: Send,
     S: Sleep,
     R: Rng,
 {

@@ -168,7 +168,7 @@ pub trait Acceptor: Learner {
 /// round's state. Use appropriate locking to prevent race conditions.
 pub trait AcceptorStateStore<L: Learner> {
     /// Combined subscription stream (historical + live broadcasts).
-    type Subscription: futures::Stream<Item = (L::Proposal, L::Message)> + Unpin;
+    type Subscription: futures::Stream<Item = (L::Proposal, L::Message)>;
 
     /// Get the state for a specific round.
     fn get(&self, round: <L::Proposal as Proposal>::RoundId) -> crate::RoundState<L>;
@@ -234,9 +234,7 @@ pub trait Connector<L: Learner>: Clone + Send + 'static {
 
 /// Connection to an acceptor
 pub trait AcceptorConn<L: Learner>:
-    Sink<AcceptorRequest<L>, Error = L::Error>
-    + Stream<Item = Result<AcceptorMessage<L>, L::Error>>
-    + Unpin
+    Sink<AcceptorRequest<L>, Error = L::Error> + Stream<Item = Result<AcceptorMessage<L>, L::Error>>
 {
 }
 
@@ -244,7 +242,6 @@ impl<L, T> AcceptorConn<L> for T
 where
     L: Learner,
     T: Sink<AcceptorRequest<L>, Error = L::Error>
-        + Stream<Item = Result<AcceptorMessage<L>, L::Error>>
-        + Unpin,
+        + Stream<Item = Result<AcceptorMessage<L>, L::Error>>,
 {
 }
