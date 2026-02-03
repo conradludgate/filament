@@ -13,6 +13,7 @@ pub struct GroupId(pub [u8; 32]);
 
 impl GroupId {
     /// Create a new group ID from a 32-byte array
+    #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -21,6 +22,7 @@ impl GroupId {
     ///
     /// - If shorter than 32 bytes, pads with zeros
     /// - If longer than 32 bytes, truncates
+    #[must_use]
     pub fn from_slice(bytes: &[u8]) -> Self {
         let mut id = [0u8; 32];
         let len = bytes.len().min(32);
@@ -29,6 +31,7 @@ impl GroupId {
     }
 
     /// Get the bytes of this group ID
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -57,13 +60,13 @@ pub enum Handshake {
     /// The acceptor must already have this group's state.
     Join(GroupId),
 
-    /// Create/join a new group with the provided GroupInfo
+    /// Create/join a new group with the provided `GroupInfo`
     ///
-    /// The GroupInfo is an MLS message that allows external parties
+    /// The `GroupInfo` is an MLS message that allows external parties
     /// to join the group. This is used when first registering a group
     /// with an acceptor.
     ///
-    /// The bytes are a serialized `MlsMessage` containing GroupInfo.
+    /// The bytes are a serialized `MlsMessage` containing `GroupInfo`.
     Create(Vec<u8>),
 }
 
@@ -76,7 +79,7 @@ pub enum HandshakeResponse {
     /// Group not found (for Join)
     GroupNotFound,
 
-    /// Invalid GroupInfo (for Create)
+    /// Invalid `GroupInfo` (for Create)
     InvalidGroupInfo(String),
 
     /// Other error

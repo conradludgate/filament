@@ -25,12 +25,13 @@ pub const ACCEPTOR_REMOVE_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF
 pub struct AcceptorsExt(pub Vec<AcceptorId>);
 
 impl AcceptorsExt {
-    /// Create a new AcceptorsExt from a list of acceptor IDs
+    /// Create a new `AcceptorsExt` from a list of acceptor IDs
     pub fn new(acceptors: impl IntoIterator<Item = AcceptorId>) -> Self {
         Self(acceptors.into_iter().collect())
     }
 
     /// Get the list of acceptor IDs
+    #[must_use]
     pub fn acceptors(&self) -> &[AcceptorId] {
         &self.0
     }
@@ -44,8 +45,9 @@ impl MlsSize for AcceptorsExt {
 }
 
 impl MlsEncode for AcceptorsExt {
+    #[expect(clippy::cast_possible_truncation)]
     fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
-        // Write length as u32
+        // Write length as u32 (acceptor count will never exceed u32::MAX in practice)
         let len = self.0.len() as u32;
         writer.extend_from_slice(&len.to_be_bytes());
         // Write each acceptor ID
@@ -94,12 +96,14 @@ impl MlsCodecExtension for AcceptorsExt {
 pub struct AcceptorAdd(pub AcceptorId);
 
 impl AcceptorAdd {
-    /// Create a new AcceptorAdd extension
+    /// Create a new `AcceptorAdd` extension
+    #[must_use]
     pub fn new(acceptor_id: AcceptorId) -> Self {
         Self(acceptor_id)
     }
 
     /// Get the acceptor ID being added
+    #[must_use]
     pub fn acceptor_id(&self) -> AcceptorId {
         self.0
     }
@@ -144,12 +148,14 @@ impl MlsCodecExtension for AcceptorAdd {
 pub struct AcceptorRemove(pub AcceptorId);
 
 impl AcceptorRemove {
-    /// Create a new AcceptorRemove extension
+    /// Create a new `AcceptorRemove` extension
+    #[must_use]
     pub fn new(acceptor_id: AcceptorId) -> Self {
         Self(acceptor_id)
     }
 
     /// Get the acceptor ID being removed
+    #[must_use]
     pub fn acceptor_id(&self) -> AcceptorId {
         self.0
     }

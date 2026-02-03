@@ -1,15 +1,48 @@
-//! GroupAcceptor - implements paxos Acceptor for federated servers
+//! `GroupAcceptor` - implements paxos Acceptor for federated servers
+//!
+//! # Consensus vs Acceptance
+//!
+//! An important distinction in Paxos is between *acceptance* and *consensus*:
+//!
+//! - **Acceptance**: A single acceptor has received and persisted a value
+//! - **Consensus**: A quorum of acceptors have accepted the same value
+//!
+//! Only when consensus is reached should the value be considered committed.
+//! The MLS state should only be updated with committed values.
+//!
+//! # Single Acceptor Deployment
+//!
+//! With a single acceptor, acceptance equals consensus (quorum of 1).
+//! The current implementation supports this case: when a value is accepted,
+//! it's stored in the state store and later "learned" when the acceptor
+//! is recreated for a new connection.
+//!
+//! # Multi-Acceptor Deployment (TODO)
+//!
+//! For multiple acceptors, each acceptor server should:
+//!
+//! 1. Run the acceptor protocol (handle incoming Accept requests)
+//! 2. Run a **learner process** that connects to all acceptors
+//! 3. The learner tracks which values have reached quorum
+//! 4. Only when quorum is confirmed should `apply()` be called
+//!
+//! The learner for an acceptor only needs `(quorum - 1)` confirmations from
+//! other acceptors since it counts itself. For 3 acceptors with quorum 2,
+//! an acceptor that has accepted a value only needs 1 confirmation from
+//! another acceptor before applying.
 
+use std::collections::BTreeSet;
+
+use iroh::{PublicKey, SecretKey, Signature};
 use mls_rs::CipherSuiteProvider;
 use mls_rs::crypto::SignaturePublicKey;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalGroup, ExternalReceivedMessage};
-use universal_sync_paxos::Learner;
 
 use crate::message::GroupMessage;
-use crate::proposal::{AcceptorId, Epoch, GroupProposal, MemberId};
+use crate::proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 
-/// Errors that can occur in GroupAcceptor operations
+/// Errors that can occur in `GroupAcceptor` operations
 #[derive(Debug)]
 pub enum AcceptorError {
     /// MLS processing error
@@ -75,8 +108,14 @@ where
     /// The MLS external group state (can verify signatures, track membership)
     external_group: ExternalGroup<C>,
 
-    /// Cipher suite provider for signature verification
+    /// Cipher suite provider for MLS signature verification
     cipher_suite: CS,
+
+    /// This acceptor's iroh secret key (for signing sync proposals)
+    secret_key: SecretKey,
+
+    /// Set of all known acceptors (for validating sync proposals)
+    acceptors: BTreeSet<AcceptorId>,
 }
 
 impl<C, CS> GroupAcceptor<C, CS>
@@ -88,25 +127,36 @@ where
     ///
     /// # Arguments
     /// * `external_group` - The MLS external group
-    /// * `cipher_suite` - Cipher suite for signature verification
-    pub fn new(external_group: ExternalGroup<C>, cipher_suite: CS) -> Self {
+    /// * `cipher_suite` - Cipher suite for MLS signature verification
+    /// * `secret_key` - This acceptor's iroh secret key (for signing sync proposals)
+    /// * `acceptors` - Initial set of known acceptors (from `GroupInfo` extensions)
+    pub fn new(
+        external_group: ExternalGroup<C>,
+        cipher_suite: CS,
+        secret_key: SecretKey,
+        acceptors: impl IntoIterator<Item = AcceptorId>,
+    ) -> Self {
         Self {
             external_group,
             cipher_suite,
+            secret_key,
+            acceptors: acceptors.into_iter().collect(),
         }
+    }
+
+    /// Get this acceptor's own ID (derived from secret key)
+    pub fn own_id(&self) -> AcceptorId {
+        AcceptorId::from_bytes(*self.secret_key.public().as_bytes())
+    }
+
+    /// Update the set of known acceptors
+    pub fn set_acceptors(&mut self, acceptors: impl IntoIterator<Item = AcceptorId>) {
+        self.acceptors = acceptors.into_iter().collect();
     }
 
     /// Get a reference to the external group
     pub fn external_group(&self) -> &ExternalGroup<C> {
         &self.external_group
-    }
-
-    /// Check if a member ID is in the current roster
-    fn is_member(&self, member_id: MemberId) -> bool {
-        self.external_group
-            .roster()
-            .member_with_index(member_id.0)
-            .is_ok()
     }
 
     /// Get a member's public signing key from the roster
@@ -118,32 +168,9 @@ where
             .ok()
     }
 
-    /// Verify a proposal's signature against the group roster
-    fn verify_proposal(&self, proposal: &GroupProposal) -> Result<bool, AcceptorError> {
-        let Some(public_key) = self.get_member_public_key(proposal.member_id) else {
-            return Ok(false);
-        };
-
-        let data = proposal.unsigned().to_bytes();
-
-        self.cipher_suite
-            .verify(&public_key, &proposal.signature, &data)
-            .map_err(|e| AcceptorError::Crypto(format!("{e:?}")))?;
-
-        Ok(true)
-    }
-
-    /// Validate and process an incoming MLS message
-    ///
-    /// This verifies the signature and updates internal state if valid.
-    /// Returns the processed message type.
-    fn process_message(
-        &mut self,
-        msg: mls_rs::MlsMessage,
-    ) -> Result<ExternalReceivedMessage, mls_rs::error::MlsError> {
-        let result = self.external_group.process_incoming_message(msg)?;
-
-        Ok(result)
+    /// Check if an acceptor ID is in the known set
+    fn is_known_acceptor(&self, id: &AcceptorId) -> bool {
+        self.acceptors.contains(id)
     }
 }
 
@@ -159,13 +186,38 @@ where
     type AcceptorId = AcceptorId;
 
     fn node_id(&self) -> MemberId {
-        // Acceptors don't have an MLS member ID - return a dummy value
-        // This is only used for proposing, which acceptors don't do
+        // Acceptors don't have an MLS member ID - use a sentinel value
+        // Sync proposals from acceptors use this ID
         MemberId(u32::MAX)
     }
 
     fn current_round(&self) -> Epoch {
         Epoch(self.external_group.group_context().epoch)
+    }
+
+    fn acceptors(&self) -> impl IntoIterator<Item = AcceptorId> {
+        self.acceptors.iter().copied()
+    }
+
+    fn propose(&self, attempt: Attempt) -> GroupProposal {
+        // Create a signed sync proposal for the learning process
+        //
+        // For sync proposals (node_id == MemberId(u32::MAX)):
+        // - message_hash = iroh public key (32 bytes)
+        // - signature = iroh ed25519 signature over unsigned proposal bytes
+        //
+        // Other acceptors validate by checking:
+        // 1. The public key is in the known acceptor set
+        // 2. The signature is valid for that public key
+        let unsigned = UnsignedProposal::new(
+            MemberId(u32::MAX),
+            Epoch(self.external_group.group_context().epoch),
+            attempt,
+            *self.secret_key.public().as_bytes(), // Store our public key in message_hash
+        );
+        let data = unsigned.to_bytes();
+        let signature = self.secret_key.sign(&data);
+        unsigned.with_signature(signature.to_bytes().to_vec())
     }
 
     fn validate(&self, proposal: &GroupProposal) -> bool {
@@ -174,12 +226,45 @@ where
             "validating proposal"
         );
 
-        // Check epoch matches current
-        // if proposal.epoch.0 > self.external_group.group_context().epoch {
-        //     tracing::debug!("proposal epoch is greater than current epoch");
-        //     return false;
-        // }
+        // Sync proposals from acceptors have sentinel MemberId
+        // The message_hash contains the acceptor's iroh public key
+        // We validate by checking the public key is known and signature is valid
+        if proposal.member_id == MemberId(u32::MAX) {
+            // Extract acceptor's public key from message_hash
+            let acceptor_id = AcceptorId::from_bytes(proposal.message_hash);
 
+            // Check this is a known acceptor
+            if !self.is_known_acceptor(&acceptor_id) {
+                tracing::debug!(?acceptor_id, "sync proposal from unknown acceptor");
+                return false;
+            }
+
+            // Verify the iroh ed25519 signature
+            let Ok(public_key) = PublicKey::from_bytes(&proposal.message_hash) else {
+                tracing::debug!("invalid public key in message_hash");
+                return false;
+            };
+
+            // Signature must be exactly 64 bytes (ed25519)
+            let Ok(sig_bytes): Result<[u8; Signature::LENGTH], _> =
+                proposal.signature.as_slice().try_into()
+            else {
+                tracing::debug!("invalid signature length");
+                return false;
+            };
+            let signature = Signature::from_bytes(&sig_bytes);
+
+            let data = proposal.unsigned().to_bytes();
+            if public_key.verify(&data, &signature).is_err() {
+                tracing::debug!("sync proposal signature verification failed");
+                return false;
+            }
+
+            tracing::debug!(?acceptor_id, "accepting sync proposal from known acceptor");
+            return true;
+        }
+
+        // Regular proposals from MLS group members
         let Some(public_key) = self.get_member_public_key(proposal.member_id) else {
             tracing::debug!("proposal member not found in roster");
             return false;
@@ -203,6 +288,18 @@ where
         _proposal: GroupProposal,
         message: GroupMessage,
     ) -> Result<(), AcceptorError> {
+        // Apply a LEARNED value to the MLS state.
+        //
+        // This should only be called when the value has reached consensus
+        // (quorum of acceptors have accepted). The caller is responsible
+        // for confirming quorum before calling this.
+        //
+        // For a single-acceptor deployment, acceptance = consensus, so
+        // this is called immediately after accept.
+        //
+        // For multi-acceptor deployments, a background learner process
+        // should track quorum and call this when consensus is reached.
+
         // Process the MLS message from GroupMessage
         let result = self
             .external_group
@@ -213,14 +310,14 @@ where
             ExternalReceivedMessage::Commit(_) => {
                 tracing::debug!(
                     epoch = self.external_group.group_context().epoch,
-                    "applied commit"
+                    "learned commit"
                 );
             }
             ExternalReceivedMessage::Proposal(_) => {
-                tracing::debug!("applied proposal");
+                tracing::debug!("learned proposal");
             }
             _ => {
-                tracing::debug!("applied other message type");
+                tracing::debug!("learned other message type");
             }
         }
 
@@ -233,29 +330,20 @@ where
     }
 }
 
-// Implement Acceptor trait for GroupAcceptor
+// Implement Acceptor trait for GroupAcceptor (marker trait)
 impl<C, CS> universal_sync_paxos::Acceptor for GroupAcceptor<C, CS>
 where
     C: ExternalMlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
 {
-    async fn accept(
-        &mut self,
-        proposal: GroupProposal,
-        message: GroupMessage,
-    ) -> Result<(), AcceptorError> {
-        // The proposal signature has already been validated before reaching here.
-        // The (proposal, message) pair is stored by the AcceptorStateStore.
-        //
-        // TODO: Persist the accepted proposal + message durably before returning.
-        // This is critical for crash recovery - we must not lose accepted values.
-        //
-        // For now, we just apply it (which updates the ExternalGroup state).
-        // A real implementation would:
-        // 1. Write (proposal, message) to durable storage
-        // 2. fsync
-        // 3. Then apply
-
-        self.apply(proposal, message).await
-    }
+    // No methods required - Acceptor is now a marker trait.
+    //
+    // The key insight is that:
+    // - Validation is handled by Learner::validate()
+    // - Persistence is handled by AcceptorStateStore::accept()
+    // - Application is handled by Learner::apply() when quorum is confirmed
+    //
+    // This acceptor validates proposals from MLS group members and
+    // stores accepted values, but only applies them when learning
+    // confirms that consensus was reached.
 }

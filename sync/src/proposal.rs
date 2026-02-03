@@ -1,4 +1,4 @@
-//! GroupProposal - implements paxos Proposal trait for MLS group operations
+//! `GroupProposal` - implements paxos Proposal trait for MLS group operations
 
 use serde::{Deserialize, Serialize};
 use universal_sync_paxos::Proposal;
@@ -19,12 +19,14 @@ pub struct MemberId(pub u32);
 pub struct AcceptorId(pub [u8; 32]);
 
 impl AcceptorId {
-    /// Create an AcceptorId from raw bytes
+    /// Create an `AcceptorId` from raw bytes
+    #[must_use]
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
     /// Get the raw bytes
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -53,12 +55,13 @@ pub struct UnsignedProposal {
     pub epoch: Epoch,
     /// Attempt number within this epoch
     pub attempt: Attempt,
-    /// SHA-256 hash of the MlsMessage bytes, or zeros for sync/dummy proposals
+    /// SHA-256 hash of the `MlsMessage` bytes, or zeros for sync/dummy proposals
     pub message_hash: [u8; 32],
 }
 
 impl UnsignedProposal {
     /// Create a new unsigned proposal
+    #[must_use]
     pub fn new(
         member_id: MemberId,
         epoch: Epoch,
@@ -74,17 +77,23 @@ impl UnsignedProposal {
     }
 
     /// Create an unsigned proposal for sync (zero message hash)
+    #[must_use]
     pub fn for_sync(member_id: MemberId, epoch: Epoch, attempt: Attempt) -> Self {
         Self::new(member_id, epoch, attempt, [0u8; 32])
     }
 
     /// Serialize for signing
+    ///
+    /// # Panics
+    /// Panics if serialization fails (should not happen).
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         // Use postcard for deterministic serialization
         postcard::to_allocvec(self).expect("serialization should not fail")
     }
 
     /// Sign this proposal to produce a [`GroupProposal`]
+    #[must_use]
     pub fn with_signature(self, signature: Vec<u8>) -> GroupProposal {
         GroupProposal {
             member_id: self.member_id,
@@ -99,11 +108,11 @@ impl UnsignedProposal {
 /// A signed proposal for group state changes
 ///
 /// This is the Paxos ordering key - it identifies WHO is proposing
-/// and provides ordering via (epoch, attempt, member_id).
+/// and provides ordering via (epoch, attempt, `member_id`).
 ///
 /// The proposal is signed by the proposing member's MLS signing key,
 /// binding the proposal to their identity. The `message_hash` commits
-/// to the actual MLS message content (in [`GroupMessage`](crate::message::GroupMessage)).
+/// to the actual MLS message content (in [`GroupMessage`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupProposal {
     /// The proposing member's ID (MLS leaf index)
@@ -112,14 +121,15 @@ pub struct GroupProposal {
     pub epoch: Epoch,
     /// Attempt number within this epoch
     pub attempt: Attempt,
-    /// SHA-256 hash of the MlsMessage bytes, or zeros for sync/dummy proposals
+    /// SHA-256 hash of the `MlsMessage` bytes, or zeros for sync/dummy proposals
     pub message_hash: [u8; 32],
-    /// Signature over (member_id, epoch, attempt, message_hash) using MLS signing key
+    /// Signature over (`member_id`, epoch, attempt, `message_hash`) using MLS signing key
     pub signature: Vec<u8>,
 }
 
 impl GroupProposal {
     /// Get the unsigned portion for verification
+    #[must_use]
     pub fn unsigned(&self) -> UnsignedProposal {
         UnsignedProposal {
             member_id: self.member_id,
@@ -130,6 +140,7 @@ impl GroupProposal {
     }
 
     /// Check if this is a sync proposal (zero message hash)
+    #[must_use]
     pub fn is_sync(&self) -> bool {
         self.message_hash == [0u8; 32]
     }

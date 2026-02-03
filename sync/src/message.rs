@@ -1,4 +1,4 @@
-//! GroupMessage - the Paxos message payload for group operations
+//! `GroupMessage` - the Paxos message payload for group operations
 
 use mls_rs::MlsMessage;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ pub struct GroupMessage {
 
 impl GroupMessage {
     /// Create a new group message wrapping an MLS message
+    #[must_use]
     pub fn new(mls_message: MlsMessage) -> Self {
         Self { mls_message }
     }

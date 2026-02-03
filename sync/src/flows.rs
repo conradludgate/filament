@@ -23,7 +23,7 @@ pub enum FlowError {
     Connector(ConnectorError),
     /// No acceptors provided
     NoAcceptors,
-    /// Failed to generate GroupInfo
+    /// Failed to generate `GroupInfo`
     GroupInfo(String),
 }
 
@@ -70,7 +70,7 @@ where
     pub learner: GroupLearner<C, CS>,
     /// The group ID
     pub group_id: GroupId,
-    /// The GroupInfo message bytes (for sharing with others)
+    /// The `GroupInfo` message bytes (for sharing with others)
     pub group_info: Vec<u8>,
 }
 
@@ -79,7 +79,7 @@ where
 /// This is the main entry point for creating a new synchronized group.
 /// It performs the following steps:
 /// 1. Creates a new MLS group
-/// 2. Generates a GroupInfo message
+/// 2. Generates a `GroupInfo` message
 /// 3. Registers the group with all provided acceptors
 ///
 /// When adding members using [`GroupLearner`], use [`acceptors_extension`] to
@@ -94,7 +94,10 @@ where
 /// * `acceptors` - The set of acceptors to register with
 ///
 /// # Returns
-/// A [`CreatedGroup`] containing the learner, group ID, and GroupInfo.
+/// A [`CreatedGroup`] containing the learner, group ID, and `GroupInfo`.
+///
+/// # Errors
+/// Returns an error if group creation, `GroupInfo` generation, or acceptor registration fails.
 ///
 /// # Example
 ///
@@ -126,7 +129,7 @@ where
     }
 
     // Create a new MLS group (no special context extensions needed)
-    let group = client.create_group(Default::default(), Default::default())?;
+    let group = client.create_group(ExtensionList::default(), ExtensionList::default())?;
 
     // Generate GroupInfo for external observers (acceptors)
     let group_info_msg = group.group_info_message(true)?;
@@ -162,6 +165,9 @@ where
 /// * `cipher_suite` - The cipher suite provider
 /// * `endpoint` - The iroh endpoint for connecting to acceptors
 /// * `acceptors` - List of `(AcceptorId, EndpointAddr)` pairs
+///
+/// # Errors
+/// Returns an error if group creation, `GroupInfo` generation, or acceptor registration fails.
 pub async fn create_group_with_addrs<C, CS>(
     client: &Client<C>,
     signer: SignatureSecretKey,
@@ -178,7 +184,7 @@ where
     }
 
     // Create a new MLS group
-    let group = client.create_group(Default::default(), Default::default())?;
+    let group = client.create_group(ExtensionList::default(), ExtensionList::default())?;
 
     // Generate GroupInfo for external observers (acceptors)
     let group_info_msg = group.group_info_message(true)?;
@@ -207,7 +213,10 @@ where
 /// Create an extension list containing the acceptor IDs
 ///
 /// Use this when adding members to a group to include the acceptor list
-/// in the Welcome message's GroupInfo extensions.
+/// in the Welcome message's `GroupInfo` extensions.
+///
+/// # Panics
+/// Panics if encoding the `AcceptorsExt` fails (should never happen).
 ///
 /// # Example
 ///
@@ -221,6 +230,7 @@ where
 ///     .build()
 ///     .unwrap();
 /// ```
+#[must_use]
 pub fn acceptors_extension(acceptors: impl IntoIterator<Item = AcceptorId>) -> ExtensionList {
     let acceptors_ext = AcceptorsExt::new(acceptors);
     let mut extensions = ExtensionList::default();
@@ -249,7 +259,7 @@ where
 /// this device to the group.
 ///
 /// The acceptor list is read from the [`AcceptorsExt`] extension in the
-/// GroupInfo extensions of the Welcome message. The sender must have used
+/// `GroupInfo` extensions of the Welcome message. The sender must have used
 /// [`acceptors_extension`] with `set_group_info_ext` when building the commit.
 ///
 /// # Arguments
@@ -260,6 +270,10 @@ where
 ///
 /// # Returns
 /// A [`JoinedGroup`] containing the learner and group ID.
+///
+/// # Errors
+/// Returns an error if the Welcome message is invalid, joining fails, or the acceptors
+/// extension cannot be read.
 ///
 /// # Example
 ///

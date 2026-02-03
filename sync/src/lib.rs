@@ -9,6 +9,8 @@
 //! - **Devices** are group members with full MLS `Group` state
 //! - **Acceptors** are federated servers with `ExternalGroup` state (can verify, can't decrypt)
 
+#![warn(clippy::pedantic)]
+
 pub mod acceptor;
 pub mod connector;
 pub mod extension;

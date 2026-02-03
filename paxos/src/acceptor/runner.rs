@@ -7,9 +7,7 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::select;
 use tracing::{debug, instrument, trace, warn};
 
-use super::handler::{
-    AcceptError, AcceptOutcome, AcceptorHandler, InvalidProposal, PromiseOutcome,
-};
+use super::handler::{AcceptOutcome, AcceptorHandler, InvalidProposal, PromiseOutcome};
 use crate::fuse::Fuse;
 use crate::messages::{AcceptorMessage, AcceptorRequest};
 use crate::traits::{Acceptor, AcceptorStateStore, Proposal};
@@ -111,7 +109,7 @@ where
 
                 trace!(round = ?proposal.round(), "received accept");
 
-                let response = match handler.handle_accept(&proposal, message).await {
+                let response = match handler.handle_accept(&proposal, &message) {
                     Ok(AcceptOutcome::Accepted(msg)) => {
                         debug!(round = ?proposal.round(), "accepted");
                         msg
@@ -123,12 +121,9 @@ where
                         }
                         msg
                     }
-                    Err(AcceptError::InvalidProposal) => {
+                    Err(InvalidProposal) => {
                         warn!("rejecting invalid accept");
                         continue;
-                    }
-                    Err(AcceptError::PersistFailed(e)) => {
-                        return Err(e);
                     }
                 };
 

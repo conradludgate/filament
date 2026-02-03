@@ -4,9 +4,8 @@
 //!
 //! - [`Proposal`]: A proposal that can be ordered and compared
 //! - [`ProposalKey`]: Ordering key for proposals
-//! - [`Learner`]: State machine that learns from consensus
-//! - [`Proposer`]: Extension of Learner that can create proposals
-//! - [`Acceptor`]: Acceptor that can persist accepted proposals
+//! - [`Learner`]: State machine that learns from consensus and can create proposals
+//! - [`Acceptor`]: Marker for a Learner that can act as an acceptor
 //! - [`AcceptorStateStore`]: Shared state for acceptors
 //! - [`Connector`]: Connects to acceptors by node ID
 //! - [`AcceptorConn`]: Connection to an acceptor
@@ -120,7 +119,15 @@ impl<P: Proposal> ProposalKey<P> {
     }
 }
 
-/// State machine that learns from consensus
+/// State machine that learns from consensus and can create proposals
+///
+/// All learners need to be able to:
+/// 1. Create proposals (for sync and actual proposing)
+/// 2. Know the current acceptor set (for connecting)
+/// 3. Validate and apply proposals
+///
+/// For devices/clients, `propose()` creates a signed proposal with real content.
+/// For acceptors, `propose()` creates a sync-only proposal for the learning process.
 #[expect(async_fn_in_trait)]
 pub trait Learner: Send + Sync + 'static {
     type Proposal: Proposal + fmt::Debug + Send + Sync + 'static;
@@ -136,6 +143,15 @@ pub trait Learner: Send + Sync + 'static {
     /// Current round (next to be learned)
     fn current_round(&self) -> <Self::Proposal as Proposal>::RoundId;
 
+    /// Current acceptor set based on learned state
+    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId>;
+
+    /// Create a proposal for the current round and attempt.
+    ///
+    /// For devices/clients: creates a signed proposal with real content.
+    /// For acceptors: creates a sync-only proposal for the learning process.
+    fn propose(&self, attempt: <Self::Proposal as Proposal>::AttemptId) -> Self::Proposal;
+
     /// Validate a proposal (signatures, authorization, etc.)
     fn validate(&self, proposal: &Self::Proposal) -> bool;
 
@@ -147,30 +163,24 @@ pub trait Learner: Send + Sync + 'static {
     ) -> Result<(), Self::Error>;
 }
 
-/// A learner that can also create proposals
+/// Marker trait for a Learner that can act as an acceptor.
 ///
-/// This trait extends [`Learner`] with the ability to create signed proposals.
-/// Implementations are typically devices/clients that can propose values,
-/// not acceptors (which only validate and store proposals from others).
-pub trait Proposer: Learner {
-    /// Current acceptor set based on learned state
-    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId>;
-
-    /// Create a signed proposal for the current round and attempt.
-    /// The message is sent separately during Accept phase.
-    fn propose(&self, attempt: <Self::Proposal as Proposal>::AttemptId) -> Self::Proposal;
-}
-
-/// Acceptor that can persist accepted proposals
-#[expect(async_fn_in_trait)]
-pub trait Acceptor: Learner {
-    /// Durably persist accepted proposal + message (must complete before responding)
-    async fn accept(
-        &mut self,
-        proposal: Self::Proposal,
-        message: Self::Message,
-    ) -> Result<(), Self::Error>;
-}
+/// Acceptors validate proposals from proposers and store accepted values
+/// in an [`AcceptorStateStore`]. The key difference from a regular Learner
+/// is that acceptors don't create proposals themselves - they only validate
+/// and store proposals from others.
+///
+/// # Separation of Concerns
+///
+/// - **Validation**: Handled by [`Learner::validate()`]
+/// - **Persistence**: Handled by [`AcceptorStateStore::accept()`]
+/// - **Learning**: Handled by [`Learner::apply()`] when quorum is confirmed
+///
+/// The previous `Acceptor::accept()` method was removed because:
+/// 1. Persistence is already handled by `AcceptorStateStore::accept()`
+/// 2. Applying to state should only happen when quorum is confirmed (learning),
+///    not when a single acceptor accepts a value
+pub trait Acceptor: Learner {}
 
 /// Shared state for an acceptor, allowing multiple connections to coordinate.
 ///

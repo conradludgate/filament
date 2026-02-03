@@ -101,6 +101,7 @@ impl<L> IrohConnector<L> {
     /// # Arguments
     /// * `endpoint` - The iroh endpoint to use for connections
     /// * `group_id` - The group to join
+    #[must_use]
     pub fn new(endpoint: Endpoint, group_id: GroupId) -> Self {
         Self {
             endpoint,
@@ -133,11 +134,13 @@ impl<L> IrohConnector<L> {
     }
 
     /// Get the underlying iroh endpoint
+    #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
     /// Get the group ID
+    #[must_use]
     pub fn group_id(&self) -> &GroupId {
         &self.group_id
     }
@@ -243,10 +246,16 @@ where
 /// # Arguments
 /// * `endpoint` - The iroh endpoint to use
 /// * `acceptor_id` - The acceptor to register with
-/// * `group_info` - The MLS GroupInfo message bytes
+/// * `group_info` - The MLS `GroupInfo` message bytes
 ///
 /// # Returns
 /// The [`GroupId`] assigned to the group on success.
+///
+/// # Errors
+/// Returns an error if the connection fails or the handshake is rejected.
+///
+/// # Panics
+/// Panics if the `AcceptorId` is not a valid public key.
 pub async fn register_group(
     endpoint: &Endpoint,
     acceptor_id: &AcceptorId,
@@ -266,10 +275,13 @@ pub async fn register_group(
 /// # Arguments
 /// * `endpoint` - The iroh endpoint to use
 /// * `addr` - The endpoint address (includes direct addresses for local connections)
-/// * `group_info` - The MLS GroupInfo message bytes
+/// * `group_info` - The MLS `GroupInfo` message bytes
 ///
 /// # Returns
 /// The [`GroupId`] assigned to the group on success.
+///
+/// # Errors
+/// Returns an error if the connection fails or the handshake is rejected.
 pub async fn register_group_with_addr(
     endpoint: &Endpoint,
     addr: impl Into<iroh::EndpointAddr>,

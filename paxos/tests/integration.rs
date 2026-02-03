@@ -11,7 +11,6 @@ use universal_sync_paxos::config::ProposerConfig;
 use universal_sync_paxos::proposer::Proposer;
 use universal_sync_paxos::{
     Acceptor, AcceptorMessage, AcceptorRequest, Connector, Learner, Proposal,
-    Proposer as ProposerTrait,
 };
 
 /// Initialize tracing for tests. Call at the start of each test.
@@ -77,7 +76,6 @@ struct TestState {
     round: u64,
     acceptors: Vec<IpAddr>,
     learned: Arc<Mutex<Vec<String>>>,
-    accepted: Arc<Mutex<Vec<String>>>,
 }
 
 impl TestState {
@@ -87,7 +85,6 @@ impl TestState {
             round: 0,
             acceptors,
             learned: Arc::new(Mutex::new(Vec::new())),
-            accepted: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -106,18 +103,6 @@ impl Learner for TestState {
         self.round
     }
 
-    fn validate(&self, _proposal: &TestProposal) -> bool {
-        true
-    }
-
-    async fn apply(&mut self, _proposal: TestProposal, message: String) -> Result<(), io::Error> {
-        self.learned.lock().unwrap().push(message);
-        self.round += 1;
-        Ok(())
-    }
-}
-
-impl ProposerTrait for TestState {
     fn acceptors(&self) -> impl IntoIterator<Item = IpAddr> {
         self.acceptors.clone()
     }
@@ -129,13 +114,21 @@ impl ProposerTrait for TestState {
             attempt,
         }
     }
+
+    fn validate(&self, _proposal: &TestProposal) -> bool {
+        true
+    }
+
+    async fn apply(&mut self, _proposal: TestProposal, message: String) -> Result<(), io::Error> {
+        self.learned.lock().unwrap().push(message);
+        self.round += 1;
+        Ok(())
+    }
 }
 
 impl Acceptor for TestState {
-    async fn accept(&mut self, _proposal: TestProposal, message: String) -> Result<(), io::Error> {
-        self.accepted.lock().unwrap().push(message);
-        Ok(())
-    }
+    // Acceptor is now a marker trait - no methods required.
+    // Persistence is handled by AcceptorStateStore, learning by Learner::apply.
 }
 
 // --- In-Memory Channel-Based Connection ---

@@ -35,34 +35,6 @@ pub enum AcceptOutcome<A: Acceptor> {
     Outdated(AcceptorMessage<A>),
 }
 
-/// Error returned when an Accept request fails.
-pub enum AcceptError<E> {
-    /// The proposal failed validation.
-    InvalidProposal,
-    /// Failed to persist the accepted value.
-    PersistFailed(E),
-}
-
-impl<E: fmt::Debug> fmt::Debug for AcceptError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidProposal => write!(f, "InvalidProposal"),
-            Self::PersistFailed(e) => f.debug_tuple("PersistFailed").field(e).finish(),
-        }
-    }
-}
-
-impl<E: fmt::Display> fmt::Display for AcceptError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidProposal => write!(f, "invalid proposal"),
-            Self::PersistFailed(e) => write!(f, "persist failed: {e}"),
-        }
-    }
-}
-
-impl<E: std::error::Error> std::error::Error for AcceptError<E> {}
-
 /// Handler for acceptor requests.
 ///
 /// Wraps an [`Acceptor`] and [`AcceptorStateStore`] to provide a clean API
@@ -130,26 +102,28 @@ where
     /// Returns `Ok(Accepted(...))` if the accept succeeded.
     /// Returns `Ok(Outdated(...))` if already promised/accepted a higher proposal.
     ///
+    /// Note: This only persists the value to the state store. The value is NOT
+    /// applied to the learner here - that should only happen when quorum is
+    /// confirmed (via the learning process).
+    ///
     /// # Errors
     ///
     /// - `Err(InvalidProposal)` if validation fails.
-    /// - `Err(PersistFailed(...))` if the acceptor fails to persist.
-    pub async fn handle_accept(
+    pub fn handle_accept(
         &mut self,
         proposal: &A::Proposal,
-        message: A::Message,
-    ) -> Result<AcceptOutcome<A>, AcceptError<A::Error>> {
+        message: &A::Message,
+    ) -> Result<AcceptOutcome<A>, InvalidProposal> {
         if !self.acceptor.validate(proposal) {
-            return Err(AcceptError::InvalidProposal);
+            return Err(InvalidProposal);
         }
 
-        match self.state.accept(proposal, &message) {
+        match self.state.accept(proposal, message) {
             Ok(()) => {
                 trace!(round = ?proposal.round(), "accepted");
-                self.acceptor
-                    .accept(proposal.clone(), message)
-                    .await
-                    .map_err(AcceptError::PersistFailed)?;
+                // Note: We do NOT call acceptor.apply() here!
+                // The value is persisted by the state store and broadcast.
+                // Application should only happen when quorum is confirmed.
                 let state = self.state.get(proposal.round());
                 Ok(AcceptOutcome::Accepted(AcceptorMessage::from_round_state(
                     state,

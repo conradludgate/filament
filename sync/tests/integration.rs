@@ -105,8 +105,12 @@ async fn test_mls_group_registration() {
         .await
         .expect("open state store");
 
-    let registry =
-        AcceptorRegistry::new(external_client, cipher_suite.clone(), state_store.clone());
+    let registry = AcceptorRegistry::new(
+        external_client,
+        cipher_suite.clone(),
+        state_store.clone(),
+        acceptor_endpoint.secret_key().clone(),
+    );
 
     // Spawn acceptor server
     let acceptor_task = tokio::spawn({
@@ -185,8 +189,12 @@ async fn test_alice_adds_bob_with_paxos() {
     let acceptor_task = tokio::spawn({
         let acceptor_endpoint = acceptor_endpoint.clone();
 
-        let registry =
-            AcceptorRegistry::new(external_client, cipher_suite.clone(), state_store.clone());
+        let registry = AcceptorRegistry::new(
+            external_client,
+            cipher_suite.clone(),
+            state_store.clone(),
+            acceptor_endpoint.secret_key().clone(),
+        );
 
         async move {
             loop {

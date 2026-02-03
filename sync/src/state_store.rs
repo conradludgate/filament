@@ -21,6 +21,9 @@ use crate::handshake::GroupId;
 use crate::message::GroupMessage;
 use crate::proposal::{Epoch, GroupProposal};
 
+/// Type alias for the broadcast sender map
+type GroupBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>;
+
 /// Persistent acceptor state store backed by fjall
 ///
 /// This implementation persists all state changes to disk before returning,
@@ -29,9 +32,9 @@ use crate::proposal::{Epoch, GroupProposal};
 /// Supports multiple groups - keys are prefixed with group ID.
 ///
 /// Uses three separate keyspaces:
-/// - `promised`: (group_id, epoch) -> proposal
-/// - `accepted`: (group_id, epoch) -> (proposal, message)
-/// - `groups`: group_id -> GroupInfo bytes (for registry persistence)
+/// - `promised`: (`group_id`, epoch) -> proposal
+/// - `accepted`: (`group_id`, epoch) -> (proposal, message)
+/// - `groups`: `group_id` -> `GroupInfo` bytes (for registry persistence)
 pub struct FjallStateStore {
     /// The fjall database
     db: Database,
@@ -39,10 +42,10 @@ pub struct FjallStateStore {
     promised: Keyspace,
     /// Keyspace for accepted values
     accepted: Keyspace,
-    /// Keyspace for registered groups (GroupInfo bytes)
+    /// Keyspace for registered groups (`GroupInfo` bytes)
     groups: Keyspace,
     /// Per-group broadcast channels for live subscriptions
-    broadcasts: RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>,
+    broadcasts: GroupBroadcasts,
 }
 
 impl FjallStateStore {
@@ -50,6 +53,9 @@ impl FjallStateStore {
     ///
     /// # Errors
     /// Returns an error if the database cannot be opened.
+    ///
+    /// # Panics
+    /// Panics if the spawned blocking task panics.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, fjall::Error> {
         let path = path.as_ref().to_owned();
 
@@ -59,7 +65,7 @@ impl FjallStateStore {
             .expect("spawn_blocking panicked")
     }
 
-    /// Synchronous open for use in spawn_blocking
+    /// Synchronous open for use in `spawn_blocking`
     fn open_sync(path: &Path) -> Result<Self, fjall::Error> {
         let db = Database::builder(path).open()?;
 
@@ -76,9 +82,9 @@ impl FjallStateStore {
         })
     }
 
-    /// Build a key from (group_id, epoch)
+    /// Build a key from (`group_id`, epoch)
     ///
-    /// Format: [group_id: 32 bytes][epoch: 8 bytes BE] = 40 bytes total
+    /// Format: `[group_id: 32 bytes][epoch: 8 bytes BE]` = 40 bytes total
     fn build_key(group_id: &GroupId, epoch: Epoch) -> [u8; 40] {
         let mut key = [0u8; 40];
         key[..32].copy_from_slice(group_id.as_bytes());
@@ -86,12 +92,12 @@ impl FjallStateStore {
         key
     }
 
-    /// Build a prefix for range queries on a group (just the group_id)
+    /// Build a prefix for range queries on a group (just the `group_id`)
     fn build_group_prefix(group_id: &GroupId) -> [u8; 32] {
         *group_id.as_bytes()
     }
 
-    /// Parse epoch from a key (assumes key was created by build_key)
+    /// Parse epoch from a key (assumes key was created by `build_key`)
     fn parse_epoch_from_key(key: &[u8]) -> Option<Epoch> {
         if key.len() < 40 {
             return None;
@@ -166,6 +172,7 @@ impl FjallStateStore {
     }
 
     /// Set accepted (proposal, message) for a (group, round) (synchronous)
+    #[expect(clippy::cast_possible_truncation)]
     fn set_accepted_sync(
         &self,
         group_id: &GroupId,
@@ -271,14 +278,14 @@ impl FjallStateStore {
 
     // ========== Group Registry Methods ==========
 
-    /// Store a group's GroupInfo bytes (synchronous)
+    /// Store a group's `GroupInfo` bytes (synchronous)
     fn store_group_sync(&self, group_id: &GroupId, group_info: &[u8]) -> Result<(), fjall::Error> {
         self.groups.insert(group_id.as_bytes(), group_info)?;
         self.db.persist(PersistMode::SyncAll)?;
         Ok(())
     }
 
-    /// Get a group's GroupInfo bytes (synchronous)
+    /// Get a group's `GroupInfo` bytes (synchronous)
     fn get_group_sync(&self, group_id: &GroupId) -> Option<Vec<u8>> {
         self.groups
             .get(group_id.as_bytes())
@@ -312,7 +319,7 @@ impl FjallStateStore {
     }
 }
 
-/// Wrapper to make FjallStateStore shareable across groups
+/// Wrapper to make `FjallStateStore` shareable across groups
 #[derive(Clone)]
 pub struct SharedFjallStateStore {
     inner: Arc<FjallStateStore>,
@@ -320,6 +327,9 @@ pub struct SharedFjallStateStore {
 
 impl SharedFjallStateStore {
     /// Open or create a new state store at the given path
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be opened.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, fjall::Error> {
         let store = FjallStateStore::open(path).await?;
         Ok(Self {
@@ -328,6 +338,7 @@ impl SharedFjallStateStore {
     }
 
     /// Get a per-group state store view
+    #[must_use]
     pub fn for_group(&self, group_id: GroupId) -> GroupStateStore {
         GroupStateStore {
             inner: self.inner.clone(),
@@ -337,26 +348,34 @@ impl SharedFjallStateStore {
 
     // ========== Group Registry Methods ==========
 
-    /// Store a group's GroupInfo bytes
+    /// Store a group's `GroupInfo` bytes
     ///
-    /// This persists the GroupInfo so the group can be restored after restart.
+    /// This persists the `GroupInfo` so the group can be restored after restart.
+    ///
+    /// # Errors
+    /// Returns an error if persisting to the database fails.
     pub fn store_group(&self, group_id: &GroupId, group_info: &[u8]) -> Result<(), fjall::Error> {
         self.inner.store_group_sync(group_id, group_info)
     }
 
-    /// Get a group's GroupInfo bytes
+    /// Get a group's `GroupInfo` bytes
     ///
     /// Returns `None` if the group is not registered.
+    #[must_use]
     pub fn get_group_info(&self, group_id: &GroupId) -> Option<Vec<u8>> {
         self.inner.get_group_sync(group_id)
     }
 
     /// List all registered group IDs
+    #[must_use]
     pub fn list_groups(&self) -> Vec<GroupId> {
         self.inner.list_groups_sync()
     }
 
     /// Remove a group registration
+    ///
+    /// # Errors
+    /// Returns an error if removing from the database fails.
     pub fn remove_group(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
         self.inner.remove_group_sync(group_id)
     }
@@ -374,6 +393,7 @@ pub struct GroupStateStore {
 
 impl GroupStateStore {
     /// Get the group ID
+    #[must_use]
     pub fn group_id(&self) -> &GroupId {
         &self.group_id
     }
@@ -381,6 +401,7 @@ impl GroupStateStore {
     /// Get all accepted messages from the given epoch onwards
     ///
     /// This is useful for replaying messages to catch up a newly created acceptor.
+    #[must_use]
     pub fn get_accepted_from(&self, from_epoch: Epoch) -> Vec<(GroupProposal, GroupMessage)> {
         self.inner
             .get_accepted_from_sync(&self.group_id, from_epoch)
@@ -390,7 +411,7 @@ impl GroupStateStore {
 /// Learner implementation for the state store
 ///
 /// This is a minimal implementation to satisfy the trait bounds.
-/// The actual MLS processing happens in GroupAcceptor.
+/// The actual MLS processing happens in `GroupAcceptor`.
 pub struct FjallLearner;
 
 impl Learner for FjallLearner {
@@ -405,6 +426,22 @@ impl Learner for FjallLearner {
 
     fn current_round(&self) -> Epoch {
         Epoch(0)
+    }
+
+    fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId> {
+        std::iter::empty()
+    }
+
+    fn propose(&self, attempt: crate::proposal::Attempt) -> GroupProposal {
+        // FjallLearner is just a marker type for the state store
+        // It doesn't actually propose anything
+        crate::proposal::UnsignedProposal::new(
+            crate::proposal::MemberId(u32::MAX),
+            Epoch(0),
+            attempt,
+            [0u8; 32],
+        )
+        .with_signature(vec![])
     }
 
     fn validate(&self, _proposal: &GroupProposal) -> bool {

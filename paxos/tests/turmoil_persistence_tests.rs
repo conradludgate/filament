@@ -25,7 +25,6 @@ use universal_sync_paxos::config::{BackoffConfig, ProposerConfig, Sleep};
 use universal_sync_paxos::proposer::Proposer;
 use universal_sync_paxos::{
     Acceptor, AcceptorMessage, AcceptorRequest, AcceptorStateStore, Connector, Learner, Proposal,
-    Proposer as ProposerTrait,
 };
 
 fn init_tracing() -> impl Sized {
@@ -156,6 +155,18 @@ impl Learner for TestState {
         self.learned.lock().unwrap().len() as u64
     }
 
+    fn acceptors(&self) -> impl IntoIterator<Item = SocketAddr> {
+        self.acceptors.clone()
+    }
+
+    fn propose(&self, attempt: u64) -> TestProposal {
+        TestProposal {
+            node_id: self.node_id,
+            round: self.current_round(),
+            attempt,
+        }
+    }
+
     fn validate(&self, _proposal: &TestProposal) -> bool {
         true
     }
@@ -175,24 +186,8 @@ impl Learner for TestState {
     }
 }
 
-impl ProposerTrait for TestState {
-    fn acceptors(&self) -> impl IntoIterator<Item = SocketAddr> {
-        self.acceptors.clone()
-    }
-
-    fn propose(&self, attempt: u64) -> TestProposal {
-        TestProposal {
-            node_id: self.node_id,
-            round: self.current_round(),
-            attempt,
-        }
-    }
-}
-
 impl Acceptor for TestState {
-    async fn accept(&mut self, _proposal: TestProposal, _message: String) -> Result<(), io::Error> {
-        Ok(())
-    }
+    // Acceptor is now a marker trait - no methods required.
 }
 
 // --- Retry Stream ---
@@ -680,7 +675,7 @@ async fn run_proposer<L, C, M, S, R>(
     config: ProposerConfig<S, R>,
 ) -> Result<(), L::Error>
 where
-    L: ProposerTrait + Send + Sync + 'static,
+    L: Learner + Send + Sync + 'static,
     L::Message: Send + Sync + 'static,
     C: Connector<L> + Send + 'static,
     C::ConnectFuture: Send,

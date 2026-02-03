@@ -1,4 +1,4 @@
-//! GroupLearner - implements paxos Learner for MLS group members (devices)
+//! `GroupLearner` - implements paxos Learner for MLS group members (devices)
 
 use std::collections::BTreeSet;
 
@@ -12,7 +12,7 @@ use crate::extension::{AcceptorAdd, AcceptorRemove};
 use crate::message::GroupMessage;
 use crate::proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 
-/// Errors that can occur in GroupLearner operations
+/// Errors that can occur in `GroupLearner` operations
 #[derive(Debug)]
 pub enum LearnerError {
     /// MLS processing error
@@ -137,8 +137,9 @@ where
     /// `GroupContextExtensions` proposals that were applied.
     fn process_commit_effect(&mut self, effect: &CommitEffect) {
         let applied_proposals = match effect {
-            CommitEffect::NewEpoch(new_epoch) => &new_epoch.applied_proposals,
-            CommitEffect::Removed { new_epoch, .. } => &new_epoch.applied_proposals,
+            CommitEffect::NewEpoch(new_epoch) | CommitEffect::Removed { new_epoch, .. } => {
+                &new_epoch.applied_proposals
+            }
             CommitEffect::ReInit(_) => return, // No proposals to process
         };
 
@@ -243,6 +244,16 @@ where
         Epoch(self.group.context().epoch)
     }
 
+    fn acceptors(&self) -> impl IntoIterator<Item = AcceptorId> {
+        self.acceptors.iter().copied()
+    }
+
+    fn propose(&self, attempt: Attempt) -> GroupProposal {
+        // Create a signed sync proposal
+        self.create_sync_proposal(attempt)
+            .expect("signing should not fail")
+    }
+
     fn validate(&self, proposal: &GroupProposal) -> bool {
         // Check epoch matches current
         if proposal.epoch.0 != self.group.context().epoch {
@@ -291,22 +302,5 @@ where
         }
 
         Ok(())
-    }
-}
-
-// Implement Proposer trait for GroupLearner - devices can create proposals
-impl<C, CS> universal_sync_paxos::Proposer for GroupLearner<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    fn acceptors(&self) -> impl IntoIterator<Item = AcceptorId> {
-        self.acceptors.iter().copied()
-    }
-
-    fn propose(&self, attempt: Attempt) -> GroupProposal {
-        // Create a signed sync proposal
-        self.create_sync_proposal(attempt)
-            .expect("signing should not fail")
     }
 }

@@ -60,6 +60,7 @@ pin_project! {
 
 impl<A> IrohAcceptorConnection<A> {
     /// Create a new acceptor connection from iroh streams
+    #[must_use]
     pub fn new(send: SendStream, recv: RecvStream) -> Self {
         let codec = LengthDelimitedCodec::builder()
             .max_frame_length(16 * 1024 * 1024) // 16 MB max message size
@@ -138,7 +139,7 @@ where
 ///
 /// Implementations should handle:
 /// - Looking up existing groups by ID
-/// - Creating new groups from GroupInfo
+/// - Creating new groups from `GroupInfo`
 /// - Managing per-group state stores
 pub trait GroupRegistry {
     /// The acceptor type for groups
@@ -152,10 +153,13 @@ pub trait GroupRegistry {
     /// Returns the acceptor and state store if the group exists.
     fn get_group(&self, group_id: &GroupId) -> Option<(Self::Acceptor, Self::StateStore)>;
 
-    /// Create a new group from GroupInfo bytes
+    /// Create a new group from `GroupInfo` bytes
     ///
-    /// The bytes are a serialized MLS `MlsMessage` containing GroupInfo.
+    /// The bytes are a serialized MLS `MlsMessage` containing `GroupInfo`.
     /// Returns the group ID, acceptor, and state store if successful.
+    ///
+    /// # Errors
+    /// Returns an error if parsing or joining the group fails.
     fn create_group(
         &self,
         group_info: &[u8],
@@ -176,7 +180,10 @@ pub trait GroupRegistry {
 /// * `registry` - The group registry for looking up/creating groups
 ///
 /// # Returns
-/// Returns `Ok(())` when the connection closes normally, or an error if something fails.
+/// Returns `Ok(())` when the connection closes normally.
+///
+/// # Errors
+/// Returns an error if the connection fails, handshake is invalid, or the group cannot be found/created.
 pub async fn accept_connection<R>(incoming: Incoming, registry: R) -> Result<(), ConnectorError>
 where
     R: GroupRegistry,
@@ -226,19 +233,18 @@ where
     // Process handshake and get group
     let (group_id, acceptor, state) = match handshake {
         Handshake::Join(group_id) => {
-            match registry.get_group(&group_id) {
-                Some((acceptor, state)) => (group_id, acceptor, state),
-                None => {
-                    // Send error response
-                    let response = HandshakeResponse::GroupNotFound;
-                    let response_bytes = postcard::to_allocvec(&response)
-                        .map_err(|e| ConnectorError::Codec(e.to_string()))?;
-                    writer
-                        .send(response_bytes.into())
-                        .await
-                        .map_err(ConnectorError::Io)?;
-                    return Err(ConnectorError::Connect("group not found".to_string()));
-                }
+            if let Some((acceptor, state)) = registry.get_group(&group_id) {
+                (group_id, acceptor, state)
+            } else {
+                // Send error response
+                let response = HandshakeResponse::GroupNotFound;
+                let response_bytes = postcard::to_allocvec(&response)
+                    .map_err(|e| ConnectorError::Codec(e.to_string()))?;
+                writer
+                    .send(response_bytes.into())
+                    .await
+                    .map_err(ConnectorError::Io)?;
+                return Err(ConnectorError::Connect("group not found".to_string()));
             }
         }
         Handshake::Create(group_info) => {

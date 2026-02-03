@@ -34,7 +34,7 @@ use tracing::{debug, trace};
 use crate::config::{BackoffConfig, ProposerConfig, Sleep};
 use crate::core::{AcceptPhaseResult, PreparePhaseResult, ProposerCore};
 use crate::messages::AcceptorMessage;
-use crate::traits::{Connector, Learner, Proposal, Proposer as ProposerTrait};
+use crate::traits::{Connector, Learner, Proposal};
 
 // ============================================================================
 // Proposer Implementation
@@ -60,7 +60,7 @@ enum ProposeResult<L: Learner> {
 /// - **Learn values**: Call [`learn_one`](Self::learn_one) to wait for a quorum-confirmed value
 ///
 /// Learners are just proposers that never call `propose()`.
-pub struct Proposer<P: ProposerTrait, C: Connector<P>, S: Sleep, R: Rng = StdRng>
+pub struct Proposer<P: Learner, C: Connector<P>, S: Sleep, R: Rng = StdRng>
 where
     P::Message: Send + Sync + 'static,
     C::ConnectFuture: Send,
@@ -83,7 +83,7 @@ where
 
 impl<P, C, S, R> Proposer<P, C, S, R>
 where
-    P: ProposerTrait + Send + Sync + 'static,
+    P: Learner + Send + Sync + 'static,
     P::Message: Send + Sync + 'static,
     C: Connector<P> + Send + 'static,
     C::ConnectFuture: Send,
@@ -136,10 +136,10 @@ where
     /// This triggers acceptors to send historical values and then stream live updates.
     /// Call this once before calling `learn_one` in a loop.
     ///
-    /// Note: Requires a [`ProposerTrait`] implementation to create the sync proposal.
+    /// Note: Requires a [`Learner`] implementation to create the sync proposal.
     pub fn start_sync(
         &mut self,
-        proposer: &impl ProposerTrait<Proposal = P::Proposal, Message = P::Message, Error = P::Error>,
+        learner: &impl Learner<Proposal = P::Proposal, Message = P::Message, Error = P::Error>,
     ) {
         // Reset the quorum tracker for learning
         let num_acceptors = self.manager.num_actors();
@@ -147,7 +147,7 @@ where
 
         // Start a "dummy" prepare to trigger sync from acceptors.
         // Using default attempt (0) - this is just for sync, not actual proposing.
-        let sync_proposal = proposer.propose(<P::Proposal as Proposal>::AttemptId::default());
+        let sync_proposal = learner.propose(<P::Proposal as Proposal>::AttemptId::default());
         self.manager.start_prepare(sync_proposal);
         debug!(num_acceptors, "started sync");
     }

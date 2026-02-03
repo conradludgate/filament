@@ -16,11 +16,16 @@ use crate::extension::ACCEPTORS_EXTENSION_TYPE;
 pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
 /// Create a test crypto provider
+#[must_use]
 pub fn test_crypto_provider() -> RustCryptoProvider {
     RustCryptoProvider::default()
 }
 
 /// Create a test cipher suite provider
+///
+/// # Panics
+/// Panics if the cipher suite is not available.
+#[must_use]
 pub fn test_cipher_suite(
     crypto: &RustCryptoProvider,
 ) -> <RustCryptoProvider as CryptoProvider>::CipherSuiteProvider {
@@ -30,6 +35,7 @@ pub fn test_cipher_suite(
 }
 
 /// Create a basic identity provider for testing
+#[must_use]
 pub fn test_identity_provider() -> BasicIdentityProvider {
     BasicIdentityProvider::new()
 }
@@ -53,6 +59,10 @@ pub struct TestClientResult<C> {
 ///
 /// # Arguments
 /// * `name` - A human-readable name for this client (e.g., "alice", "bob")
+///
+/// # Panics
+/// Panics if key generation or client building fails.
+#[must_use]
 pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::MlsConfig> {
     let crypto = test_crypto_provider();
     let cipher_suite = test_cipher_suite(&crypto);
