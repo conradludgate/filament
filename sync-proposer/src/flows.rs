@@ -7,12 +7,10 @@ use iroh::{Endpoint, EndpointAddr};
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
+use universal_sync_core::{AcceptorId, AcceptorsExt, GroupId};
 
 use crate::connector::{ConnectorError, register_group, register_group_with_addr};
-use crate::extension::AcceptorsExt;
-use crate::handshake::GroupId;
 use crate::learner::GroupLearner;
-use crate::proposal::AcceptorId;
 
 /// Error type for flow operations
 #[derive(Debug)]

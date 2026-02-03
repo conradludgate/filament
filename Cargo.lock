@@ -4356,7 +4356,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "universal-sync"
+name = "universal-sync-acceptor"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -4373,7 +4373,17 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
+ "universal-sync-core",
+ "universal-sync-paxos",
+]
+
+[[package]]
+name = "universal-sync-core"
+version = "0.1.0"
+dependencies = [
+ "mls-rs",
+ "postcard",
+ "serde",
  "universal-sync-paxos",
 ]
 
@@ -4398,6 +4408,42 @@ dependencies = [
  "tracing-subscriber",
  "turmoil",
  "zerocopy",
+]
+
+[[package]]
+name = "universal-sync-proposer"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "iroh",
+ "mls-rs",
+ "mls-rs-crypto-rustcrypto",
+ "pin-project-lite",
+ "postcard",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "universal-sync-core",
+ "universal-sync-paxos",
+]
+
+[[package]]
+name = "universal-sync-testing"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "mls-rs",
+ "mls-rs-crypto-rustcrypto",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "universal-sync-acceptor",
+ "universal-sync-core",
+ "universal-sync-paxos",
+ "universal-sync-proposer",
 ]
 
 [[package]]

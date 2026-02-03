@@ -1,0 +1,17 @@
+[package]
+name = "universal-sync-testing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+universal-sync-core = { path = "../sync-core" }
+universal-sync-proposer = { path = "../sync-proposer" }
+universal-sync-acceptor = { path = "../sync-acceptor" }
+universal-sync-paxos = { path = "../paxos" }
+mls-rs = { version = "0.43", default-features = false }
+mls-rs-crypto-rustcrypto = { version = "0.13", default-features = false }
+iroh.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true

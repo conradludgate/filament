@@ -1,16 +1,14 @@
-//! Test utilities for universal-sync
+//! Universal Sync Testing - test utilities and integration tests
 //!
-//! This module provides helpers for setting up MLS clients and groups
-//! for testing purposes. These utilities use `BasicIdentityProvider`
-//! and `RustCryptoProvider` for simplicity.
+//! This crate provides test utilities for Universal Sync, importing both
+//! proposer and acceptor functionality for integration testing.
 
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
-
-use crate::extension::ACCEPTORS_EXTENSION_TYPE;
+use universal_sync_core::ACCEPTORS_EXTENSION_TYPE;
 
 /// Default cipher suite for testing
 pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
@@ -90,3 +88,17 @@ pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::
         cipher_suite,
     }
 }
+
+// Re-export for convenience
+pub use universal_sync_acceptor::{
+    AcceptorError, AcceptorRegistry, GroupAcceptor, GroupRegistry, GroupStateStore,
+    IrohAcceptorConnection, SharedFjallStateStore, accept_connection,
+};
+pub use universal_sync_core::{
+    AcceptorId, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId,
+};
+pub use universal_sync_proposer::{
+    ConnectorError, CreatedGroup, FlowError, GroupLearner, IrohConnection, IrohConnector,
+    JoinedGroup, LearnerError, PAXOS_ALPN, acceptors_extension, create_group,
+    create_group_with_addrs, join_group, register_group, register_group_with_addr,
+};

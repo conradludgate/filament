@@ -10,12 +10,10 @@ use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalClient, ExternalGroup};
 use mls_rs::mls_rs_codec::MlsDecode;
 use mls_rs::{CipherSuiteProvider, ExtensionList, MlsMessage};
+use universal_sync_core::{ACCEPTORS_EXTENSION_TYPE, AcceptorId, AcceptorsExt, GroupId};
 use universal_sync_paxos::Learner;
 
 use crate::acceptor::GroupAcceptor;
-use crate::extension::{ACCEPTORS_EXTENSION_TYPE, AcceptorsExt};
-use crate::handshake::GroupId;
-use crate::proposal::AcceptorId;
 use crate::server::GroupRegistry;
 use crate::state_store::{GroupStateStore, SharedFjallStateStore};
 

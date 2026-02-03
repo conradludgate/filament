@@ -14,12 +14,9 @@ use std::task::{Context, Poll};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use futures::{Stream, StreamExt, stream};
 use tokio::sync::broadcast;
+use universal_sync_core::{Epoch, GroupId, GroupMessage, GroupProposal};
 use universal_sync_paxos::acceptor::RoundState;
 use universal_sync_paxos::{AcceptorStateStore, Learner, Proposal};
-
-use crate::handshake::GroupId;
-use crate::message::GroupMessage;
-use crate::proposal::{Epoch, GroupProposal};
 
 /// Type alias for the broadcast sender map
 type GroupBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>;
@@ -418,10 +415,10 @@ impl Learner for FjallLearner {
     type Proposal = GroupProposal;
     type Message = GroupMessage;
     type Error = std::io::Error;
-    type AcceptorId = crate::proposal::AcceptorId;
+    type AcceptorId = universal_sync_core::AcceptorId;
 
-    fn node_id(&self) -> crate::proposal::MemberId {
-        crate::proposal::MemberId(u32::MAX)
+    fn node_id(&self) -> universal_sync_core::MemberId {
+        universal_sync_core::MemberId(u32::MAX)
     }
 
     fn current_round(&self) -> Epoch {
@@ -432,11 +429,11 @@ impl Learner for FjallLearner {
         std::iter::empty()
     }
 
-    fn propose(&self, attempt: crate::proposal::Attempt) -> GroupProposal {
+    fn propose(&self, attempt: universal_sync_core::Attempt) -> GroupProposal {
         // FjallLearner is just a marker type for the state store
         // It doesn't actually propose anything
-        crate::proposal::UnsignedProposal::new(
-            crate::proposal::MemberId(u32::MAX),
+        universal_sync_core::UnsignedProposal::new(
+            universal_sync_core::MemberId(u32::MAX),
             Epoch(0),
             attempt,
             [0u8; 32],
@@ -636,8 +633,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use universal_sync_core::{Attempt, MemberId, UnsignedProposal};
+
     use super::*;
-    use crate::proposal::{Attempt, MemberId, UnsignedProposal};
 
     fn test_proposal(epoch: u64, attempt: u64) -> GroupProposal {
         UnsignedProposal::for_sync(MemberId(1), Epoch(epoch), Attempt(attempt))

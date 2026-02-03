@@ -6,10 +6,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use universal_sync::{accept_connection, GroupRegistry};
+//! use universal_sync_acceptor::{accept_connection, GroupRegistry};
 //!
 //! let endpoint = iroh::Endpoint::builder()
-//!     .alpns(vec![universal_sync::PAXOS_ALPN.to_vec()])
+//!     .alpns(vec![universal_sync_acceptor::PAXOS_ALPN.to_vec()])
 //!     .bind()
 //!     .await?;
 //!
@@ -35,18 +35,18 @@ use iroh::endpoint::{Incoming, RecvStream, SendStream};
 use pin_project_lite::pin_project;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, warn};
+use universal_sync_core::{
+    GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId,
+};
 use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor};
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, AcceptorStateStore, Learner};
 
 use crate::connector::{ConnectorError, PAXOS_ALPN};
-use crate::handshake::{GroupId, Handshake, HandshakeResponse};
-use crate::message::GroupMessage;
-use crate::proposal::{GroupProposal, MemberId};
 
 pin_project! {
     /// Server-side acceptor connection over iroh
     ///
-    /// This is the inverse of [`IrohConnection`](crate::connector::IrohConnection):
+    /// This is the inverse of `IrohConnection`:
     /// - Stream yields `AcceptorRequest` (from clients)
     /// - Sink accepts `AcceptorMessage` (to clients)
     pub struct IrohAcceptorConnection<A> {

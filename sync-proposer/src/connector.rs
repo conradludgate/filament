@@ -14,11 +14,10 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use pin_project_lite::pin_project;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use universal_sync_core::{
+    AcceptorId, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
+};
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner};
-
-use crate::handshake::{GroupId, Handshake, HandshakeResponse};
-use crate::message::GroupMessage;
-use crate::proposal::{AcceptorId, GroupProposal};
 
 /// ALPN protocol identifier for Paxos connections
 pub const PAXOS_ALPN: &[u8] = b"universal-sync/paxos/1";

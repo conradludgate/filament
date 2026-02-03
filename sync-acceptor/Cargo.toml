@@ -1,0 +1,24 @@
+[package]
+name = "universal-sync-acceptor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+universal-sync-core = { path = "../sync-core" }
+universal-sync-paxos = { path = "../paxos" }
+mls-rs = { version = "0.43", default-features = false, features = ["external_client"] }
+mls-rs-crypto-rustcrypto = { version = "0.13", default-features = false }
+serde.workspace = true
+postcard.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+tracing.workspace = true
+fjall.workspace = true
+iroh.workspace = true
+bytes.workspace = true
+pin-project-lite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

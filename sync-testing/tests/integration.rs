@@ -8,12 +8,12 @@ use iroh::Endpoint;
 use mls_rs::external_client::ExternalClient;
 use tempfile::TempDir;
 use tracing_subscriber::{EnvFilter, fmt};
-use universal_sync::testing::{
-    test_cipher_suite, test_client, test_crypto_provider, test_identity_provider,
-};
-use universal_sync::{
-    AcceptorRegistry, GroupId, PAXOS_ALPN, SharedFjallStateStore, accept_connection,
-    register_group_with_addr,
+use universal_sync_paxos::Learner;
+use universal_sync_testing::{
+    AcceptorId, AcceptorRegistry, GroupId, GroupMessage, IrohConnector, PAXOS_ALPN,
+    SharedFjallStateStore, accept_connection, acceptors_extension, create_group_with_addrs,
+    join_group, register_group_with_addr, test_cipher_suite, test_client, test_crypto_provider,
+    test_identity_provider,
 };
 
 /// Initialize tracing for tests
@@ -83,6 +83,7 @@ async fn test_state_store_group_persistence() {
 }
 
 #[tokio::test]
+#[ignore = "requires network - run with --ignored"]
 async fn test_mls_group_registration() {
     init_tracing();
 
@@ -157,12 +158,8 @@ async fn test_mls_group_registration() {
 }
 
 #[tokio::test]
+#[ignore = "requires network - run with --ignored"]
 async fn test_alice_adds_bob_with_paxos() {
-    use universal_sync::{
-        AcceptorId, GroupMessage, IrohConnector, acceptors_extension, create_group_with_addrs,
-        join_group,
-    };
-    use universal_sync_paxos::Learner;
     use universal_sync_paxos::config::ProposerConfig;
     use universal_sync_paxos::proposer::Proposer;
 

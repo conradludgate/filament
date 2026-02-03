@@ -7,10 +7,10 @@ use mls_rs::crypto::{SignaturePublicKey, SignatureSecretKey};
 use mls_rs::group::proposal::Proposal as MlsProposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::{CipherSuiteProvider, Group};
-
-use crate::extension::{AcceptorAdd, AcceptorRemove};
-use crate::message::GroupMessage;
-use crate::proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
+use universal_sync_core::{
+    AcceptorAdd, AcceptorId, AcceptorRemove, Attempt, Epoch, GroupMessage, GroupProposal, MemberId,
+    UnsignedProposal,
+};
 
 /// Errors that can occur in `GroupLearner` operations
 #[derive(Debug)]
@@ -60,8 +60,7 @@ impl From<crate::connector::ConnectorError> for LearnerError {
 /// Can propose changes and learn from consensus.
 ///
 /// The list of acceptors is tracked separately and updated when
-/// commits containing [`AcceptorAdd`](crate::extension::AcceptorAdd) or
-/// [`AcceptorRemove`](crate::extension::AcceptorRemove) extensions are applied.
+/// commits containing [`AcceptorAdd`] or [`AcceptorRemove`] extensions are applied.
 pub struct GroupLearner<C, CS>
 where
     C: MlsConfig + Clone,

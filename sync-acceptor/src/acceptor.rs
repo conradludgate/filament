@@ -38,9 +38,11 @@ use mls_rs::CipherSuiteProvider;
 use mls_rs::crypto::SignaturePublicKey;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalGroup, ExternalReceivedMessage};
+use universal_sync_core::{
+    AcceptorId, Attempt, Epoch, GroupMessage, GroupProposal, MemberId, UnsignedProposal,
+};
 
-use crate::message::GroupMessage;
-use crate::proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
+use crate::connector::ConnectorError;
 
 /// Errors that can occur in `GroupAcceptor` operations
 #[derive(Debug)]
@@ -82,8 +84,8 @@ impl From<mls_rs::error::MlsError> for AcceptorError {
     }
 }
 
-impl From<crate::connector::ConnectorError> for AcceptorError {
-    fn from(e: crate::connector::ConnectorError) -> Self {
+impl From<ConnectorError> for AcceptorError {
+    fn from(e: ConnectorError) -> Self {
         AcceptorError::Crypto(e.to_string())
     }
 }
@@ -98,8 +100,8 @@ impl From<crate::connector::ConnectorError> for AcceptorError {
 /// Acceptors do NOT create or sign their own proposals.
 ///
 /// The list of acceptors is tracked separately and updated when
-/// commits containing [`AcceptorAdd`](crate::extension::AcceptorAdd) or
-/// [`AcceptorRemove`](crate::extension::AcceptorRemove) extensions are applied.
+/// commits containing [`AcceptorAdd`](universal_sync_core::AcceptorAdd) or
+/// [`AcceptorRemove`](universal_sync_core::AcceptorRemove) extensions are applied.
 pub struct GroupAcceptor<C, CS>
 where
     C: ExternalMlsConfig + Clone,
