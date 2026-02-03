@@ -8,9 +8,11 @@ use std::sync::Arc;
 use mls_rs::external_client::ExternalClient;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::{CipherSuiteProvider, MlsMessage};
+use universal_sync_paxos::Learner;
 
 use crate::acceptor::GroupAcceptor;
 use crate::handshake::GroupId;
+use crate::proposal::Epoch;
 use crate::server::GroupRegistry;
 use crate::state_store::{GroupStateStore, SharedFjallStateStore};
 
@@ -107,9 +109,25 @@ where
         let group_info_bytes = self.state_store.get_group_info(group_id)?;
 
         // Recreate the acceptor from stored GroupInfo
-        let acceptor = self.create_acceptor_from_bytes(&group_info_bytes).ok()?;
+        let mut acceptor = self.create_acceptor_from_bytes(&group_info_bytes).ok()?;
 
         let state = self.state_store.for_group(*group_id);
+
+        // Replay all accepted messages to bring the acceptor up to date
+        // This is necessary because the GroupInfo we stored is from epoch 0,
+        // but the acceptor may have processed commits since then.
+        let historical = state.get_accepted_from(acceptor.current_round());
+
+        for (proposal, message) in historical {
+            tracing::debug!(epoch = ?proposal.epoch, "replaying commit for acceptor");
+            // Apply the message to catch up the MLS state
+            // Note: We ignore errors here since the message was already accepted
+            if let Err(e) =
+                futures::executor::block_on(Learner::apply(&mut acceptor, proposal, message))
+            {
+                tracing::warn!(?e, "failed to replay message");
+            }
+        }
 
         Some((acceptor, state))
     }

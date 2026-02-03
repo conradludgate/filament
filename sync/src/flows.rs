@@ -3,12 +3,13 @@
 //! This module provides helper functions for common operations like
 //! creating new groups and joining existing ones.
 
-use iroh::Endpoint;
+use iroh::{Endpoint, EndpointAddr};
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
-use mls_rs::{CipherSuiteProvider, Client, MlsMessage};
+use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 
-use crate::connector::{ConnectorError, register_group};
+use crate::connector::{ConnectorError, register_group, register_group_with_addr};
+use crate::extension::AcceptorsExt;
 use crate::handshake::GroupId;
 use crate::learner::GroupLearner;
 use crate::proposal::AcceptorId;
@@ -77,9 +78,13 @@ where
 ///
 /// This is the main entry point for creating a new synchronized group.
 /// It performs the following steps:
-/// 1. Creates a new MLS group using the provided client
+/// 1. Creates a new MLS group
 /// 2. Generates a GroupInfo message
 /// 3. Registers the group with all provided acceptors
+///
+/// When adding members using [`GroupLearner`], use [`acceptors_extension`] to
+/// create the extension that should be set via `commit_builder().set_group_info_ext()`.
+/// New members will receive the acceptor list in the Welcome message.
 ///
 /// # Arguments
 /// * `client` - The MLS client to use for creating the group
@@ -120,7 +125,7 @@ where
         return Err(FlowError::NoAcceptors);
     }
 
-    // Create a new MLS group
+    // Create a new MLS group (no special context extensions needed)
     let group = client.create_group(Default::default(), Default::default())?;
 
     // Generate GroupInfo for external observers (acceptors)
@@ -146,6 +151,85 @@ where
     })
 }
 
+/// Create a new MLS group and register it with acceptors using full addresses
+///
+/// Like [`create_group`] but accepts `(AcceptorId, EndpointAddr)` pairs for
+/// testing environments where discovery may not be available.
+///
+/// # Arguments
+/// * `client` - The MLS client to use for creating the group
+/// * `signer` - The signing key for this device
+/// * `cipher_suite` - The cipher suite provider
+/// * `endpoint` - The iroh endpoint for connecting to acceptors
+/// * `acceptors` - List of `(AcceptorId, EndpointAddr)` pairs
+pub async fn create_group_with_addrs<C, CS>(
+    client: &Client<C>,
+    signer: SignatureSecretKey,
+    cipher_suite: CS,
+    endpoint: &Endpoint,
+    acceptors: &[(AcceptorId, EndpointAddr)],
+) -> Result<CreatedGroup<C, CS>, FlowError>
+where
+    C: MlsConfig + Clone,
+    CS: CipherSuiteProvider + Clone,
+{
+    if acceptors.is_empty() {
+        return Err(FlowError::NoAcceptors);
+    }
+
+    // Create a new MLS group
+    let group = client.create_group(Default::default(), Default::default())?;
+
+    // Generate GroupInfo for external observers (acceptors)
+    let group_info_msg = group.group_info_message(true)?;
+    let group_info = group_info_msg.to_bytes()?;
+
+    // Extract the group ID
+    let mls_group_id = group.context().group_id.clone();
+    let group_id = GroupId::from_slice(&mls_group_id);
+
+    // Register with all acceptors using their full addresses
+    for (_, addr) in acceptors {
+        register_group_with_addr(endpoint, addr.clone(), &group_info).await?;
+    }
+
+    // Create the learner with just the acceptor IDs
+    let acceptor_ids = acceptors.iter().map(|(id, _)| *id);
+    let learner = GroupLearner::new(group, signer, cipher_suite, acceptor_ids);
+
+    Ok(CreatedGroup {
+        learner,
+        group_id,
+        group_info,
+    })
+}
+
+/// Create an extension list containing the acceptor IDs
+///
+/// Use this when adding members to a group to include the acceptor list
+/// in the Welcome message's GroupInfo extensions.
+///
+/// # Example
+///
+/// ```ignore
+/// let ext = acceptors_extension(learner.acceptor_ids());
+/// let commit = group
+///     .commit_builder()
+///     .add_member(key_package)
+///     .unwrap()
+///     .set_group_info_ext(ext)
+///     .build()
+///     .unwrap();
+/// ```
+pub fn acceptors_extension(acceptors: impl IntoIterator<Item = AcceptorId>) -> ExtensionList {
+    let acceptors_ext = AcceptorsExt::new(acceptors);
+    let mut extensions = ExtensionList::default();
+    extensions
+        .set_from(acceptors_ext)
+        .expect("AcceptorsExt encoding should not fail");
+    extensions
+}
+
 /// Result of joining an existing group
 pub struct JoinedGroup<C, CS>
 where
@@ -164,12 +248,15 @@ where
 /// A Welcome message is received from another group member who has added
 /// this device to the group.
 ///
+/// The acceptor list is read from the [`AcceptorsExt`] extension in the
+/// GroupInfo extensions of the Welcome message. The sender must have used
+/// [`acceptors_extension`] with `set_group_info_ext` when building the commit.
+///
 /// # Arguments
 /// * `client` - The MLS client to use
 /// * `signer` - The signing key for this device
 /// * `cipher_suite` - The cipher suite provider
 /// * `welcome_bytes` - The serialized Welcome message
-/// * `acceptors` - The set of acceptors for this group
 ///
 /// # Returns
 /// A [`JoinedGroup`] containing the learner and group ID.
@@ -183,7 +270,6 @@ where
 ///     signer,
 ///     cipher_suite,
 ///     &welcome_bytes,
-///     &acceptor_ids,
 /// ).await?;
 ///
 /// let connector = IrohConnector::new(endpoint, joined.group_id);
@@ -193,7 +279,6 @@ pub async fn join_group<C, CS>(
     signer: SignatureSecretKey,
     cipher_suite: CS,
     welcome_bytes: &[u8],
-    acceptors: &[AcceptorId],
 ) -> Result<JoinedGroup<C, CS>, FlowError>
 where
     C: MlsConfig + Clone,
@@ -202,15 +287,23 @@ where
     // Parse the Welcome message
     let welcome = MlsMessage::from_bytes(welcome_bytes)?;
 
-    // Join the group
-    let (group, _info) = client.join_group(None, &welcome)?;
+    // Join the group - info contains the GroupInfo extensions
+    let (group, info) = client.join_group(None, &welcome)?;
 
     // Extract the group ID
     let mls_group_id = group.context().group_id.clone();
     let group_id = GroupId::from_slice(&mls_group_id);
 
+    // Read acceptors from GroupInfo extensions (set via set_group_info_ext)
+    let acceptors = info
+        .group_info_extensions
+        .get_as::<AcceptorsExt>()
+        .map_err(|e| FlowError::GroupInfo(format!("failed to read acceptors extension: {e}")))?
+        .map(|ext| ext.0)
+        .unwrap_or_default();
+
     // Create the learner
-    let learner = GroupLearner::new(group, signer, cipher_suite, acceptors.iter().copied());
+    let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
 
     Ok(JoinedGroup { learner, group_id })
 }

@@ -377,6 +377,14 @@ impl GroupStateStore {
     pub fn group_id(&self) -> &GroupId {
         &self.group_id
     }
+
+    /// Get all accepted messages from the given epoch onwards
+    ///
+    /// This is useful for replaying messages to catch up a newly created acceptor.
+    pub fn get_accepted_from(&self, from_epoch: Epoch) -> Vec<(GroupProposal, GroupMessage)> {
+        self.inner
+            .get_accepted_from_sync(&self.group_id, from_epoch)
+    }
 }
 
 /// Learner implementation for the state store

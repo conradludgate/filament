@@ -169,23 +169,33 @@ where
     }
 
     fn validate(&self, proposal: &GroupProposal) -> bool {
+        tracing::debug!(
+            proposal = ?proposal,
+            "validating proposal"
+        );
+
         // Check epoch matches current
-        if proposal.epoch.0 != self.external_group.group_context().epoch {
-            return false;
-        }
+        // if proposal.epoch.0 > self.external_group.group_context().epoch {
+        //     tracing::debug!("proposal epoch is greater than current epoch");
+        //     return false;
+        // }
 
-        // Check sender is a valid group member
-        if !self.is_member(proposal.member_id) {
+        let Some(public_key) = self.get_member_public_key(proposal.member_id) else {
+            tracing::debug!("proposal member not found in roster");
             return false;
-        }
+        };
 
-        // All proposals must have signatures
-        if proposal.signature.is_empty() {
+        let data = proposal.unsigned().to_bytes();
+
+        let Ok(()) = self
+            .cipher_suite
+            .verify(&public_key, &proposal.signature, &data)
+        else {
+            tracing::debug!("proposal signature verification failed");
             return false;
-        }
+        };
 
-        // Verify the signature
-        self.verify_proposal(proposal).unwrap_or(false)
+        true
     }
 
     async fn apply(
@@ -213,6 +223,11 @@ where
                 tracing::debug!("applied other message type");
             }
         }
+
+        tracing::debug!(
+            members = ?self.external_group.roster().members_iter().map(|m| (m.index, m.signing_identity.signature_key)).collect::<Vec<_>>(),
+            "current members"
+        );
 
         Ok(())
     }

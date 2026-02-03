@@ -10,6 +10,8 @@ use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 
+use crate::extension::ACCEPTORS_EXTENSION_TYPE;
+
 /// Default cipher suite for testing
 pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
@@ -51,7 +53,7 @@ pub struct TestClientResult<C> {
 ///
 /// # Arguments
 /// * `name` - A human-readable name for this client (e.g., "alice", "bob")
-pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::MlsConfig + Clone> {
+pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::MlsConfig> {
     let crypto = test_crypto_provider();
     let cipher_suite = test_cipher_suite(&crypto);
 
@@ -64,11 +66,12 @@ pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::
     let credential = BasicCredential::new(name.as_bytes().to_vec());
     let signing_identity = SigningIdentity::new(credential.into_credential(), public_key);
 
-    // Build the client with signing identity
+    // Build the client with signing identity and custom extension types
     let client = Client::builder()
         .crypto_provider(crypto)
         .identity_provider(test_identity_provider())
         .signing_identity(signing_identity, secret_key.clone(), TEST_CIPHER_SUITE)
+        .extension_type(ACCEPTORS_EXTENSION_TYPE)
         .build();
 
     TestClientResult {

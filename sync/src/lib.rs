@@ -28,9 +28,13 @@ pub use connector::{
     register_group_with_addr,
 };
 pub use extension::{
-    ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, AcceptorAdd, AcceptorRemove,
+    ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, ACCEPTORS_EXTENSION_TYPE,
+    AcceptorAdd, AcceptorRemove, AcceptorsExt,
 };
-pub use flows::{CreatedGroup, FlowError, JoinedGroup, create_group, join_group};
+pub use flows::{
+    CreatedGroup, FlowError, JoinedGroup, acceptors_extension, create_group,
+    create_group_with_addrs, join_group,
+};
 pub use handshake::{GroupId, Handshake, HandshakeResponse};
 pub use learner::GroupLearner;
 pub use message::GroupMessage;

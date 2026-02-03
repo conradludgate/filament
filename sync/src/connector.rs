@@ -3,13 +3,15 @@
 //! This module provides a [`Connector`] implementation using iroh for
 //! p2p QUIC connections to acceptors.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use iroh::{Endpoint, PublicKey};
+use iroh::{Endpoint, EndpointAddr, PublicKey};
 use pin_project_lite::pin_project;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner};
@@ -77,6 +79,8 @@ impl From<std::io::Error> for ConnectorError {
 pub struct IrohConnector<L> {
     endpoint: Endpoint,
     group_id: GroupId,
+    /// Optional address hints for acceptors (useful when discovery is not available)
+    address_hints: Arc<HashMap<AcceptorId, EndpointAddr>>,
     _marker: PhantomData<fn() -> L>,
 }
 
@@ -85,6 +89,7 @@ impl<L> Clone for IrohConnector<L> {
         Self {
             endpoint: self.endpoint.clone(),
             group_id: self.group_id,
+            address_hints: self.address_hints.clone(),
             _marker: PhantomData,
         }
     }
@@ -100,6 +105,29 @@ impl<L> IrohConnector<L> {
         Self {
             endpoint,
             group_id,
+            address_hints: Arc::new(HashMap::new()),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new connector with address hints
+    ///
+    /// Use this when iroh discovery is not available and you have
+    /// the full endpoint addresses for acceptors.
+    ///
+    /// # Arguments
+    /// * `endpoint` - The iroh endpoint to use for connections
+    /// * `group_id` - The group to join
+    /// * `address_hints` - Map of acceptor IDs to their endpoint addresses
+    pub fn with_address_hints(
+        endpoint: Endpoint,
+        group_id: GroupId,
+        address_hints: impl IntoIterator<Item = (AcceptorId, EndpointAddr)>,
+    ) -> Self {
+        Self {
+            endpoint,
+            group_id,
+            address_hints: Arc::new(address_hints.into_iter().collect()),
             _marker: PhantomData,
         }
     }
@@ -128,13 +156,22 @@ where
     fn connect(&mut self, acceptor_id: &AcceptorId) -> Self::ConnectFuture {
         let endpoint = self.endpoint.clone();
         let group_id = self.group_id;
-        let public_key = PublicKey::from_bytes(acceptor_id.as_bytes())
-            .expect("AcceptorId should be a valid public key");
+
+        // Use address hint if available, otherwise just the public key
+        let addr: EndpointAddr =
+            self.address_hints
+                .get(acceptor_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let public_key = PublicKey::from_bytes(acceptor_id.as_bytes())
+                        .expect("AcceptorId should be a valid public key");
+                    public_key.into()
+                });
 
         Box::pin(async move {
             // Connect to the acceptor
             let conn = endpoint
-                .connect(public_key, PAXOS_ALPN)
+                .connect(addr, PAXOS_ALPN)
                 .await
                 .map_err(|e| ConnectorError::Connect(e.to_string()))?;
 

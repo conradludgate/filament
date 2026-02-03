@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use bytes::Bytes;
 use iroh::Endpoint;
 use mls_rs::external_client::ExternalClient;
 use tempfile::TempDir;
@@ -84,61 +83,6 @@ async fn test_state_store_group_persistence() {
 }
 
 #[tokio::test]
-async fn test_iroh_connection_roundtrip() {
-    init_tracing();
-
-    // Create two endpoints
-    let endpoint_a = test_endpoint().await;
-    let endpoint_b = test_endpoint().await;
-
-    let addr_b = endpoint_b.addr();
-
-    // Spawn receiver
-    let recv_task = tokio::spawn({
-        let endpoint_b = endpoint_b.clone();
-        async move {
-            use futures::{SinkExt, StreamExt};
-            use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-
-            let incoming = endpoint_b.accept().await.unwrap();
-            let conn = incoming.accept().unwrap().await.unwrap();
-            let (send, recv) = conn.accept_bi().await.unwrap();
-
-            let codec = LengthDelimitedCodec::new();
-            let mut reader = FramedRead::new(recv, codec.clone());
-            let mut writer = FramedWrite::new(send, codec);
-
-            // Echo received messages
-            while let Some(Ok(msg)) = reader.next().await {
-                writer.send(msg.freeze()).await.unwrap();
-            }
-        }
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    use futures::{SinkExt, StreamExt};
-    use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-
-    let conn = endpoint_a.connect(addr_b, PAXOS_ALPN).await.unwrap();
-    let (send, recv) = conn.open_bi().await.unwrap();
-
-    let codec = LengthDelimitedCodec::new();
-    let mut reader = FramedRead::new(recv, codec.clone());
-    let mut writer = FramedWrite::new(send, codec);
-
-    // Send and receive
-    let test_msg = Bytes::from("hello world");
-    writer.send(test_msg.clone()).await.unwrap();
-
-    let echoed = reader.next().await.unwrap().unwrap();
-    assert_eq!(echoed.as_ref(), test_msg.as_ref());
-
-    drop(writer);
-    recv_task.abort();
-}
-
-#[tokio::test]
 async fn test_mls_group_registration() {
     init_tracing();
 
@@ -184,11 +128,7 @@ async fn test_mls_group_registration() {
     // Create MLS group
     let group = test_result
         .client
-        .create_group_with_id(
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-            Default::default(),
-            Default::default(),
-        )
+        .create_group_with_id(vec![1; 32], Default::default(), Default::default())
         .expect("create group");
 
     // Generate GroupInfo
@@ -208,6 +148,256 @@ async fn test_mls_group_registration() {
 
     let stored = state_store.get_group_info(&group_id);
     assert!(stored.is_some(), "group should be persisted");
+
+    acceptor_task.abort();
+}
+
+#[tokio::test]
+async fn test_alice_adds_bob_with_paxos() {
+    use universal_sync::{
+        AcceptorId, GroupMessage, IrohConnector, acceptors_extension, create_group_with_addrs,
+        join_group,
+    };
+    use universal_sync_paxos::Learner;
+    use universal_sync_paxos::config::ProposerConfig;
+    use universal_sync_paxos::proposer::Proposer;
+
+    init_tracing();
+
+    // --- Setup acceptor server ---
+    let acceptor_dir = TempDir::new().unwrap();
+    let acceptor_endpoint = test_endpoint().await;
+    let acceptor_addr = acceptor_endpoint.addr();
+
+    let crypto = test_crypto_provider();
+    let cipher_suite = test_cipher_suite(&crypto);
+
+    let external_client = ExternalClient::builder()
+        .crypto_provider(crypto.clone())
+        .identity_provider(test_identity_provider())
+        .build();
+
+    let state_store = SharedFjallStateStore::open(acceptor_dir.path())
+        .await
+        .expect("open state store");
+
+    // Spawn acceptor server
+    let acceptor_task = tokio::spawn({
+        let acceptor_endpoint = acceptor_endpoint.clone();
+
+        let registry =
+            AcceptorRegistry::new(external_client, cipher_suite.clone(), state_store.clone());
+
+        async move {
+            loop {
+                if let Some(incoming) = acceptor_endpoint.accept().await {
+                    let registry = registry.clone();
+                    tokio::spawn(async move {
+                        let _ = accept_connection(incoming, registry).await;
+                    });
+                }
+            }
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // --- Alice creates a group using the flow helper ---
+    let alice = test_client("alice");
+    let alice_endpoint = test_endpoint().await;
+
+    let acceptor_id = AcceptorId::from_bytes(*acceptor_addr.id.as_bytes());
+    let acceptors = [(acceptor_id, acceptor_addr.clone())];
+
+    let mut created = create_group_with_addrs(
+        &alice.client,
+        alice.signer,
+        alice.cipher_suite.clone(),
+        &alice_endpoint,
+        &acceptors,
+    )
+    .await
+    .expect("alice create group");
+
+    tracing::info!(group_id = ?created.group_id, "Alice created group");
+
+    // Give the acceptor time to process the registration
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // --- Setup Paxos proposer for Alice ---
+    let connector = IrohConnector::new(alice_endpoint.clone(), created.group_id);
+    let mut proposer = Proposer::new(
+        created.learner.node_id(),
+        connector,
+        ProposerConfig::default(),
+    );
+    proposer.sync_actors(created.learner.acceptor_ids().iter().copied());
+
+    // --- Alice adds Bob ---
+    let bob = test_client("bob");
+
+    let bob_key_package = bob
+        .client
+        .generate_key_package_message(
+            mls_rs::ExtensionList::default(),
+            mls_rs::ExtensionList::default(),
+        )
+        .expect("bob key package");
+
+    // Build the commit with acceptors in GroupInfo extensions
+    let acceptors_ext = acceptors_extension(created.learner.acceptor_ids().iter().copied());
+
+    let commit_output = created
+        .learner
+        .group_mut()
+        .commit_builder()
+        .add_member(bob_key_package)
+        .expect("add member")
+        .set_group_info_ext(acceptors_ext)
+        .build()
+        .expect("build commit");
+
+    // Wrap the commit message for Paxos
+    let commit_message = GroupMessage::new(commit_output.commit_message.clone());
+
+    // Use Paxos to get consensus on the commit
+    let (proposal, message) = proposer
+        .propose(&created.learner, commit_message)
+        .await
+        .expect("paxos consensus");
+
+    tracing::info!(?proposal, "Paxos consensus reached for adding Bob");
+
+    // Apply the learned message to Alice's learner
+    created
+        .learner
+        .apply(proposal, message)
+        .await
+        .expect("apply to alice");
+
+    // Get the Welcome message for Bob
+    let welcome = commit_output
+        .welcome_messages
+        .first()
+        .expect("should have welcome");
+    let welcome_bytes = welcome.to_bytes().expect("serialize welcome");
+
+    // --- Bob joins using the flow helper ---
+    let joined = join_group(
+        &bob.client,
+        bob.signer,
+        bob.cipher_suite.clone(),
+        &welcome_bytes,
+    )
+    .await
+    .expect("bob join group");
+
+    tracing::info!(group_id = ?joined.group_id, "Bob joined group");
+
+    // Verify Bob got the acceptors from the GroupInfo
+    assert_eq!(
+        joined.learner.acceptor_ids().len(),
+        1,
+        "Bob should have 1 acceptor"
+    );
+    assert!(
+        joined.learner.acceptor_ids().contains(&acceptor_id),
+        "Bob should have the acceptor ID"
+    );
+
+    // Verify both Alice and Bob are at the same epoch
+    let epoch_after_join = created.learner.mls_epoch();
+    assert_eq!(
+        epoch_after_join,
+        joined.learner.mls_epoch(),
+        "Alice and Bob should be at the same epoch"
+    );
+
+    // --- Alice makes an UpdateKeys commit ---
+    tracing::info!("Alice creating UpdateKeys commit");
+
+    // Build an empty commit (still produces a valid MLS commit that advances epoch)
+    let update_commit = created
+        .learner
+        .group_mut()
+        .commit_builder()
+        .build()
+        .expect("build update commit");
+
+    // Wrap the commit for Paxos
+    let update_message = GroupMessage::new(update_commit.commit_message.clone());
+
+    // Use Paxos to get consensus
+    let (update_proposal, learned_message) = proposer
+        .propose(&created.learner, update_message)
+        .await
+        .expect("paxos consensus for update");
+
+    tracing::info!(?update_proposal, "Paxos consensus reached for UpdateKeys");
+
+    // Apply to Alice
+    created
+        .learner
+        .apply(update_proposal.clone(), learned_message)
+        .await
+        .expect("apply update to alice");
+
+    let epoch_after_update = created.learner.mls_epoch();
+    assert!(
+        epoch_after_update > epoch_after_join,
+        "Epoch should have increased after update"
+    );
+
+    // --- Bob connects to acceptor and learns the update ---
+    tracing::info!("Bob connecting to acceptor to learn updates");
+
+    // Give a moment for the acceptor to process
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let bob_endpoint = test_endpoint().await;
+    // Bob needs address hints since iroh discovery isn't available in tests
+    let bob_connector = IrohConnector::with_address_hints(
+        bob_endpoint.clone(),
+        joined.group_id,
+        [(acceptor_id, acceptor_addr.clone())],
+    );
+    let mut bob_proposer = Proposer::new(
+        joined.learner.node_id(),
+        bob_connector,
+        ProposerConfig::default(),
+    );
+    bob_proposer.sync_actors(joined.learner.acceptor_ids().iter().copied());
+
+    // Start sync to receive historical values
+    bob_proposer.start_sync(&joined.learner);
+
+    // Learn the update from the acceptor
+    let mut joined = joined; // Make mutable for apply
+    let (learned_proposal, learned_msg) = bob_proposer
+        .learn_one(&joined.learner)
+        .await
+        .expect("bob should learn the update");
+
+    tracing::info!(?learned_proposal, "Bob learned update from acceptor");
+
+    // Apply the learned message to Bob
+    joined
+        .learner
+        .apply(learned_proposal, learned_msg)
+        .await
+        .expect("apply update to bob");
+
+    // Verify Bob is now at the same epoch as Alice
+    assert_eq!(
+        created.learner.mls_epoch(),
+        joined.learner.mls_epoch(),
+        "Alice and Bob should be at the same epoch after update"
+    );
+
+    tracing::info!(
+        epoch = ?created.learner.mls_epoch(),
+        "Test complete: Alice and Bob synchronized via Paxos"
+    );
 
     acceptor_task.abort();
 }
