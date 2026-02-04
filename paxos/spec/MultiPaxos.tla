@@ -136,14 +136,14 @@ Promise(a, p) ==
 \* Phase 2b: Acceptor accepts
 \* 
 \* Key Paxos constraints modeled:
-\* 1. Proposal must be >= any promised/accepted proposal at this acceptor
+\* 1. Accept requires exact promise match (no leader optimization)
 \* 2. Proposer consistency: same proposal implies same value everywhere
 \* 3. Value selection: proposer must use highest accepted value from a promising quorum
 \*    (This is the core Paxos safety mechanism)
 Accept(a, p, v) ==
     LET r == p.round IN
-    \* p must be >= any previously promised or accepted proposal at this acceptor
-    /\ ProposalGE(p, promised[a][r])
+    \* Accept requires this exact proposal was promised (no leader optimization)
+    /\ promised[a][r] = p
     /\ ProposalGE(p, AcceptedProposal(a, r))
     \* Proposer consistency: if this proposal was already accepted anywhere, value must match
     /\ \A aa \in Acceptors : 

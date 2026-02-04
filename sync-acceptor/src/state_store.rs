@@ -735,10 +735,10 @@ where
             let current_promised = inner.get_promised_sync(&group_id, epoch);
             let current_accepted = inner.get_accepted_sync(&group_id, epoch);
 
-            // Reject if a higher proposal was already promised
-            if let Some(ref promised) = current_promised
-                && promised.key() > key
-            {
+            // Require exact promise match - no leader optimization
+            // Accept only succeeds if this exact proposal was promised
+            let not_promised = current_promised.as_ref().is_none_or(|p| p.key() != key);
+            if not_promised {
                 return Err(RoundState {
                     promised: current_promised,
                     accepted: current_accepted,
@@ -762,9 +762,6 @@ where
                     promised: current_promised.clone(),
                     accepted: current_accepted.clone(),
                 })?;
-
-            // Also update promised to match
-            let _ = inner.set_promised_sync(&group_id, &proposal);
 
             // Broadcast to learners for this group
             let _ = inner.get_broadcast(&group_id).send((proposal, message));

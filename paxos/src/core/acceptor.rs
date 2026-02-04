@@ -116,27 +116,27 @@ where
 
     /// Handle an Accept request - pure state transition
     ///
-    /// An accept succeeds if the proposal is not dominated by:
-    /// - A higher already-promised proposal
-    /// - A higher already-accepted proposal
+    /// An accept succeeds only if:
+    /// - The exact proposal was previously promised (no leadership optimization)
+    /// - No higher proposal was already accepted
     ///
-    /// On success, updates both promised and accepted values.
+    /// On success, updates the accepted value.
     /// On failure, returns Rejected without modification.
     pub fn accept(&mut self, round: R, proposal: P, message: M) -> AcceptResult<P, M> {
         let current_promised = self.promised.get(&round);
         let current_accepted = self.accepted.get(&round);
 
-        // Check if dominated by a higher promise or accept
-        let dominated_by_promise = current_promised.is_some_and(|p| *p > proposal);
+        // Require exact promise match - no leadership optimization
+        // Accept only succeeds if this exact proposal was promised
+        let not_promised = current_promised.is_none_or(|p| *p != proposal);
         let dominated_by_accept = current_accepted
             .as_ref()
             .is_some_and(|(p, _)| *p > proposal);
 
-        if dominated_by_promise || dominated_by_accept {
+        if not_promised || dominated_by_accept {
             AcceptResult::Rejected
         } else {
-            // Update both promise and accepted
-            self.promised.insert(round, proposal.clone());
+            // Update accepted value
             self.accepted
                 .insert(round, (proposal.clone(), message.clone()));
             AcceptResult::Accepted { proposal, message }
@@ -286,5 +286,27 @@ mod tests {
         let result = core.accept(1, 100, "second".to_string());
         assert!(matches!(result, AcceptResult::Rejected));
         assert_eq!(core.accepted.get(&1), Some(&(200, "first".to_string())));
+    }
+
+    #[test]
+    fn test_accept_without_prepare_rejected() {
+        // Accept without prior Prepare should be rejected (no leader optimization)
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        let result = core.accept(1, 100, "hello".to_string());
+        assert!(matches!(result, AcceptResult::Rejected));
+        assert!(!core.accepted.contains_key(&1));
+    }
+
+    #[test]
+    fn test_accept_different_proposal_rejected() {
+        // Accept with different proposal than what was promised should be rejected
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        core.prepare(1, 100);
+        // Try to accept proposal 101 (different from promised 100)
+        let result = core.accept(1, 101, "hello".to_string());
+        assert!(matches!(result, AcceptResult::Rejected));
+        assert!(!core.accepted.contains_key(&1));
+        // Original promise should still be in place
+        assert_eq!(core.promised.get(&1), Some(&100));
     }
 }

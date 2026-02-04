@@ -11,10 +11,10 @@ use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 
+use crate::MemberAddrExt;
 use crate::connection::ConnectionManager;
 use crate::error::GroupError;
 use crate::group::Group;
-use crate::MemberAddrExt;
 
 /// A high-level client for creating and joining synchronized groups.
 ///

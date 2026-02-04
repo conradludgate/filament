@@ -26,6 +26,15 @@ These MUST be maintained (verified by TLA+ spec):
 2. **Quorum**: Strict majority required: `n/2 + 1` acceptors
 3. **Proposal ordering**: `(round, attempt, node_id)` lexicographic comparison
 4. **Promise integrity**: An acceptor's promise is always >= any accepted proposal
+5. **Strict Prepare-before-Accept**: No leader optimization - each Accept requires a prior Prepare for that exact proposal
+
+## No Leadership Optimization
+
+This implementation does **not** use Multi-Paxos leader optimization. Every round requires:
+1. Phase 1 (Prepare) - proposer gets promises from a quorum
+2. Phase 2 (Accept) - proposer sends Accept only for the promised proposal
+
+Accept is rejected unless the exact proposal was previously promised. This prevents a "leader" from sending Accept for new rounds without first running Prepare.
 
 ## AcceptorStateStore Requirements
 
@@ -33,12 +42,15 @@ Implementations of `AcceptorStateStore` MUST:
 
 1. **Atomicity**: `promise()` and `accept()` must be atomic per-round
 2. **Persistence before returning**: Persist state BEFORE returning success (use fsync)
-3. **Reject dominated proposals**: Reject if a higher proposal was already promised OR accepted
-4. **Crash recovery**: Reload state before accepting new requests after restart
+3. **Reject if not promised**: Accept only succeeds if `current_promised == proposal`
+4. **Reject dominated accepts**: Reject if a higher proposal was already accepted
+5. **Crash recovery**: Reload state before accepting new requests after restart
 
 ```rust
-// MUST reject if dominated by promise OR accept
-let dominated = current_promised > proposal || current_accepted.proposal > proposal;
+// Accept requires exact promise match
+let not_promised = current_promised.is_none_or(|p| *p != proposal);
+let dominated = current_accepted.proposal > proposal;
+if not_promised || dominated { reject }
 ```
 
 ## Quorum Tracking
