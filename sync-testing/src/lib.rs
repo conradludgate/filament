@@ -10,6 +10,7 @@ use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use universal_sync_core::{
     ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, ACCEPTORS_EXTENSION_TYPE,
+    MEMBER_ADDR_EXTENSION_TYPE,
 };
 
 /// Default cipher suite for testing
@@ -84,6 +85,7 @@ pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::
         .extension_type(ACCEPTORS_EXTENSION_TYPE)
         .extension_type(ACCEPTOR_ADD_EXTENSION_TYPE)
         .extension_type(ACCEPTOR_REMOVE_EXTENSION_TYPE)
+        .extension_type(MEMBER_ADDR_EXTENSION_TYPE)
         .build();
 
     TestClientResult {
@@ -91,6 +93,26 @@ pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::
         signer: secret_key,
         cipher_suite,
     }
+}
+
+/// Create a test [`GroupClient`] with the given identity name and endpoint.
+///
+/// This combines a fully configured MLS client with an iroh endpoint,
+/// providing a convenient high-level API for creating and joining groups.
+///
+/// # Arguments
+/// * `name` - A human-readable name for this client (e.g., "alice", "bob")
+/// * `endpoint` - The iroh endpoint for networking
+///
+/// # Panics
+/// Panics if key generation or client building fails.
+#[must_use]
+pub fn test_group_client(
+    name: &'static str,
+    endpoint: iroh::Endpoint,
+) -> GroupClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
+    let result = test_client(name);
+    GroupClient::new(result.client, result.signer, result.cipher_suite, endpoint)
 }
 
 // Re-export for convenience
@@ -102,7 +124,7 @@ pub use universal_sync_core::{
     AcceptorId, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId,
 };
 pub use universal_sync_proposer::{
-    ConnectorError, Group, GroupContext, GroupError, GroupEvent, GroupLearner, IrohConnection,
-    IrohConnector, LearnerError, PAXOS_ALPN, acceptors_extension, register_group,
-    register_group_with_addr,
+    ConnectionManager, ConnectorError, Group, GroupClient, GroupContext, GroupError, GroupEvent,
+    GroupLearner, IrohConnection, IrohConnector, LearnerError, MemberAddrExt, PAXOS_ALPN,
+    acceptors_extension, register_group, register_group_with_addr, wait_for_welcome,
 };

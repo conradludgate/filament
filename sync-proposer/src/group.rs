@@ -53,7 +53,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorAdd, AcceptorId, AcceptorRemove, EncryptedAppMessage, Epoch, GroupId, GroupMessage,
-    GroupProposal, MemberId, MessageId,
+    GroupProposal, Handshake, MemberId, MessageId,
 };
 use universal_sync_paxos::proposer::{ProposeResult, Proposer, QuorumTracker};
 use universal_sync_paxos::{AcceptorMessage, Learner, Proposal};
@@ -81,7 +81,8 @@ where
     /// Add a member to the group
     AddMember {
         key_package: Box<MlsMessage>,
-        reply: oneshot::Sender<Result<Vec<u8>, Report<GroupError>>>,
+        member_addr: EndpointAddr,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     },
     /// Remove a member from the group
     RemoveMember {
@@ -289,16 +290,16 @@ where
     /// * `client` - The MLS client
     /// * `signer` - The signing secret key
     /// * `cipher_suite` - The cipher suite provider
-    /// * `endpoint` - The iroh endpoint for p2p connections
+    /// * `connection_manager` - The connection manager for p2p connections
     /// * `acceptors` - Endpoint addresses of acceptors to register with (can be empty)
     ///
     /// # Errors
     /// Returns an error if group creation or acceptor registration fails.
-    pub async fn create(
+    pub(crate) async fn create(
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
-        endpoint: &Endpoint,
+        connection_manager: &ConnectionManager,
         acceptors: &[EndpointAddr],
     ) -> Result<Self, Report<GroupError>>
     where
@@ -342,7 +343,7 @@ where
             Ok::<_, Report<GroupError>>((learner, group_id, group_info_bytes))
         })?;
 
-        let connection_manager = ConnectionManager::new(endpoint.clone());
+        let endpoint = connection_manager.endpoint();
 
         // Register with acceptors (async network I/O) and add address hints
         if let Some(group_info_bytes) = group_info_bytes {
@@ -365,7 +366,7 @@ where
             learner,
             group_id,
             endpoint.clone(),
-            connection_manager,
+            connection_manager.clone(),
         ))
     }
 
@@ -375,17 +376,17 @@ where
     /// * `client` - The MLS client
     /// * `signer` - The signing secret key
     /// * `cipher_suite` - The cipher suite provider
-    /// * `endpoint` - The iroh endpoint for p2p connections
+    /// * `connection_manager` - The connection manager for p2p connections
     /// * `welcome` - The Welcome message bytes
     ///
     /// # Errors
     /// Returns an error if joining fails.
     #[allow(clippy::unused_async)] // Keep async for API consistency
-    pub async fn join(
+    pub(crate) async fn join(
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
-        endpoint: &Endpoint,
+        connection_manager: &ConnectionManager,
         welcome_bytes: &[u8],
     ) -> Result<Self, Report<GroupError>>
     where
@@ -426,8 +427,6 @@ where
             Ok::<_, Report<GroupError>>((learner, group_id))
         })?;
 
-        let connection_manager = ConnectionManager::new(endpoint.clone());
-
         // Add address hints for all acceptors to the connection manager
         for (id, addr) in learner.acceptors() {
             connection_manager.add_address_hint(*id, addr.clone()).await;
@@ -436,8 +435,8 @@ where
         Ok(Self::spawn_actors(
             learner,
             group_id,
-            endpoint.clone(),
-            connection_manager,
+            connection_manager.endpoint().clone(),
+            connection_manager.clone(),
         ))
     }
 
@@ -486,18 +485,39 @@ where
     /// * `key_package` - The new member's key package
     ///
     /// # Returns
-    /// The Welcome message to send to the new member.
+    /// The Welcome message is sent directly to the member's endpoint address,
+    /// which is extracted from the key package's `MemberAddrExt` extension.
     ///
     /// # Errors
-    /// Returns an error if the operation fails after retries.
-    pub async fn add_member(
-        &mut self,
-        key_package: MlsMessage,
-    ) -> Result<Vec<u8>, Report<GroupError>> {
+    /// Returns an error if the key package is missing the address extension,
+    /// or if the operation fails after retries.
+    pub async fn add_member(&mut self, key_package: MlsMessage) -> Result<(), Report<GroupError>> {
+        use universal_sync_core::MemberAddrExt;
+
+        // Extract the member address from the key package extensions
+        let member_addr = key_package
+            .as_key_package()
+            .ok_or_else(|| {
+                Report::new(GroupError).attach_printable("message is not a key package")
+            })?
+            .extensions
+            .get_as::<MemberAddrExt>()
+            .map_err(|e| {
+                Report::new(GroupError)
+                    .attach_printable(format!("failed to read member address extension: {e:?}"))
+            })?
+            .ok_or_else(|| {
+                Report::new(GroupError).attach_printable(
+                    "key package missing MemberAddrExt extension with member's endpoint address",
+                )
+            })?
+            .0;
+
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(GroupRequest::AddMember {
                 key_package: Box::new(key_package),
+                member_addr,
                 reply: reply_tx,
             })
             .await
@@ -778,11 +798,19 @@ struct ActiveProposal {
 enum ProposalReplyKind {
     /// Simple success/failure reply
     Simple(oneshot::Sender<Result<(), Report<GroupError>>>),
-    /// Reply with data (e.g., Welcome message)
-    WithData {
-        data: Vec<u8>,
-        reply: oneshot::Sender<Result<Vec<u8>, Report<GroupError>>>,
+    /// Reply with welcome message sent to new member
+    WithWelcome {
+        member_addr: EndpointAddr,
+        welcome: Vec<u8>,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     },
+}
+
+/// Welcome message to send to a new member
+struct WelcomeToSend {
+    member_addr: EndpointAddr,
+    welcome: Vec<u8>,
+    reply: oneshot::Sender<Result<(), Report<GroupError>>>,
 }
 
 /// Maximum number of proposal retry attempts
@@ -996,8 +1024,13 @@ where
                 let context = self.get_context();
                 let _ = reply.send(context);
             }
-            GroupRequest::AddMember { key_package, reply } => {
-                self.handle_add_member(*key_package, reply).await;
+            GroupRequest::AddMember {
+                key_package,
+                member_addr,
+                reply,
+            } => {
+                self.handle_add_member(*key_package, member_addr, reply)
+                    .await;
             }
             GroupRequest::RemoveMember {
                 member_index,
@@ -1041,7 +1074,8 @@ where
     async fn handle_add_member(
         &mut self,
         key_package: MlsMessage,
-        reply: oneshot::Sender<Result<Vec<u8>, Report<GroupError>>>,
+        member_addr: EndpointAddr,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
         // Build the commit
         let result = blocking(|| {
@@ -1080,7 +1114,8 @@ where
         match result {
             Ok((commit_output, welcome)) => {
                 let message = GroupMessage::new(commit_output.commit_message);
-                self.start_proposal_with_data(message, welcome, reply).await;
+                self.start_proposal_with_welcome(message, member_addr, welcome, reply)
+                    .await;
             }
             Err(e) => {
                 let _ = reply.send(Err(e));
@@ -1346,12 +1381,13 @@ where
         }
     }
 
-    /// Start a proposal that returns data (e.g., Welcome message)
-    async fn start_proposal_with_data(
+    /// Start a proposal that sends a welcome message to a new member
+    async fn start_proposal_with_welcome(
         &mut self,
         message: GroupMessage,
-        data: Vec<u8>,
-        reply: oneshot::Sender<Result<Vec<u8>, Report<GroupError>>>,
+        member_addr: EndpointAddr,
+        welcome: Vec<u8>,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
         let result = self
             .proposer
@@ -1361,14 +1397,19 @@ where
             ProposeResult::Learned { proposal, message } => {
                 // Immediately learned (no acceptors)
                 self.apply_proposal(&proposal, message).await;
-                let _ = reply.send(Ok(data));
+                self.send_welcome_to_member(member_addr, welcome, reply)
+                    .await;
             }
             ProposeResult::Continue(messages) => {
                 let proposal = self.learner.propose(self.attempt);
                 self.active_proposal = Some(ActiveProposal {
                     proposal: proposal.clone(),
                     message,
-                    reply_kind: ProposalReplyKind::WithData { data, reply },
+                    reply_kind: ProposalReplyKind::WithWelcome {
+                        member_addr,
+                        welcome,
+                        reply,
+                    },
                     started_at: std::time::Instant::now(),
                     retries: 0,
                 });
@@ -1382,7 +1423,9 @@ where
                 self.attempt = GroupProposal::next_attempt(superseded_by.attempt());
                 self.learner.clear_pending_commit();
                 tracing::debug!(?self.attempt, "proposal rejected immediately, will retry");
-                let () = self.retry_proposal_with_data(message, data, reply, 0).await;
+                let () = self
+                    .retry_proposal_with_welcome(message, member_addr, welcome, reply, 0)
+                    .await;
             }
         }
     }
@@ -1437,12 +1480,13 @@ where
         }
     }
 
-    /// Retry a proposal with data
-    async fn retry_proposal_with_data(
+    /// Retry a proposal with welcome message
+    async fn retry_proposal_with_welcome(
         &mut self,
         message: GroupMessage,
-        data: Vec<u8>,
-        reply: oneshot::Sender<Result<Vec<u8>, Report<GroupError>>>,
+        member_addr: EndpointAddr,
+        welcome: Vec<u8>,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
         retries: u32,
     ) {
         if retries >= MAX_PROPOSAL_RETRIES {
@@ -1459,14 +1503,19 @@ where
         match result {
             ProposeResult::Learned { proposal, message } => {
                 self.apply_proposal(&proposal, message).await;
-                let _ = reply.send(Ok(data));
+                self.send_welcome_to_member(member_addr, welcome, reply)
+                    .await;
             }
             ProposeResult::Continue(messages) => {
                 let proposal = self.learner.propose(self.attempt);
                 self.active_proposal = Some(ActiveProposal {
                     proposal: proposal.clone(),
                     message,
-                    reply_kind: ProposalReplyKind::WithData { data, reply },
+                    reply_kind: ProposalReplyKind::WithWelcome {
+                        member_addr,
+                        welcome,
+                        reply,
+                    },
                     started_at: std::time::Instant::now(),
                     retries,
                 });
@@ -1482,33 +1531,127 @@ where
                     10 * (u64::from(retries) + 1),
                 ))
                 .await;
-                Box::pin(self.retry_proposal_with_data(message, data, reply, retries + 1)).await;
+                Box::pin(self.retry_proposal_with_welcome(
+                    message,
+                    member_addr,
+                    welcome,
+                    reply,
+                    retries + 1,
+                ))
+                .await;
             }
         }
     }
 
-    /// Complete a proposal with success
-    fn complete_proposal_success(active: ActiveProposal) {
+    /// Complete a proposal with success (returns Some if welcome needs to be sent)
+    fn complete_proposal_success_sync(active: ActiveProposal) -> Option<WelcomeToSend> {
         match active.reply_kind {
             ProposalReplyKind::Simple(reply) => {
                 let _ = reply.send(Ok(()));
+                None
             }
-            ProposalReplyKind::WithData { data, reply } => {
-                let _ = reply.send(Ok(data));
-            }
+            ProposalReplyKind::WithWelcome {
+                member_addr,
+                welcome,
+                reply,
+            } => Some(WelcomeToSend {
+                member_addr,
+                welcome,
+                reply,
+            }),
         }
     }
 
     /// Complete a proposal with error
     fn complete_proposal_error(active: ActiveProposal, message: &'static str) {
-        match active.reply_kind {
-            ProposalReplyKind::Simple(reply) => {
-                let _ = reply.send(Err(Report::new(GroupError).attach_printable(message)));
+        let reply = match active.reply_kind {
+            ProposalReplyKind::Simple(reply) | ProposalReplyKind::WithWelcome { reply, .. } => {
+                reply
             }
-            ProposalReplyKind::WithData { reply, .. } => {
-                let _ = reply.send(Err(Report::new(GroupError).attach_printable(message)));
-            }
+        };
+        let _ = reply.send(Err(Report::new(GroupError).attach_printable(message)));
+    }
+
+    /// Complete a proposal with success, sending welcome if needed
+    async fn complete_proposal_success(&mut self, active: ActiveProposal) {
+        if let Some(welcome_to_send) = Self::complete_proposal_success_sync(active) {
+            self.send_welcome_to_member(
+                welcome_to_send.member_addr,
+                welcome_to_send.welcome,
+                welcome_to_send.reply,
+            )
+            .await;
         }
+    }
+
+    /// Send a welcome message to a new member
+    async fn send_welcome_to_member(
+        &self,
+        member_addr: EndpointAddr,
+        welcome: Vec<u8>,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
+    ) {
+        let result = self.send_welcome_inner(&member_addr, &welcome).await;
+        let _ = reply.send(result);
+    }
+
+    /// Inner function to send welcome message
+    async fn send_welcome_inner(
+        &self,
+        member_addr: &EndpointAddr,
+        welcome: &[u8],
+    ) -> Result<(), Report<GroupError>> {
+        use futures::SinkExt;
+        use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
+
+        tracing::debug!(?member_addr, "connecting to new member to send welcome");
+
+        // Connect to the new member's endpoint
+        let conn = self
+            .endpoint
+            .connect(member_addr.clone(), crate::connector::PAXOS_ALPN)
+            .await
+            .map_err(|e| {
+                Report::new(GroupError)
+                    .attach_printable(format!("failed to connect to new member: {e}"))
+            })?;
+
+        tracing::debug!("connected to new member, opening stream");
+
+        // Open a stream and send the welcome handshake
+        let (send, _recv) = conn.open_bi().await.map_err(|e| {
+            Report::new(GroupError)
+                .attach_printable(format!("failed to open stream to new member: {e}"))
+        })?;
+
+        let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
+
+        // Send the welcome handshake
+        let handshake = Handshake::SendWelcome(welcome.to_vec());
+        let handshake_bytes = postcard::to_stdvec(&handshake).map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("failed to serialize handshake: {e}"))
+        })?;
+
+        framed.send(handshake_bytes.into()).await.map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("failed to send welcome: {e}"))
+        })?;
+
+        tracing::debug!("sent welcome handshake, finishing stream");
+
+        // Finish the stream and wait for it to be acknowledged
+        let mut send = framed.into_inner();
+        send.finish().map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("failed to finish stream: {e}"))
+        })?;
+
+        // Wait for the stream to be fully closed (data acknowledged)
+        send.stopped().await.map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("stream close error: {e}"))
+        })?;
+
+        tracing::debug!("welcome sent successfully");
+
+        Ok(())
     }
 
     /// Send a proposal request to an acceptor
@@ -1586,7 +1729,7 @@ where
                 // Complete the active proposal if it was ours
                 if is_ours {
                     if let Some(active) = self.active_proposal.take() {
-                        Self::complete_proposal_success(active);
+                        self.complete_proposal_success(active).await;
                     }
                 } else {
                     // Someone else won - fail our active proposal
@@ -1616,7 +1759,7 @@ where
                     self.apply_proposal(&proposal, message).await;
 
                     if let Some(active) = self.active_proposal.take() {
-                        Self::complete_proposal_success(active);
+                        self.complete_proposal_success(active).await;
                     }
                 }
                 ProposeResult::Rejected { superseded_by } => {
@@ -1653,7 +1796,7 @@ where
         match result {
             ProposeResult::Learned { proposal, message } => {
                 self.apply_proposal(&proposal, message).await;
-                Self::complete_proposal_success(active);
+                self.complete_proposal_success(active).await;
             }
             ProposeResult::Continue(messages) => {
                 let proposal = self.learner.propose(self.attempt);
@@ -2078,6 +2221,60 @@ enum ConnectionResult {
     Cancelled,
     /// Connection disconnected (should reconnect)
     Disconnected,
+}
+
+/// Wait for an incoming welcome message on the endpoint.
+///
+/// This should be called before the group leader calls `add_member`.
+/// Returns the welcome bytes that can be passed to [`Group::join`].
+///
+/// # Errors
+/// Returns an error if no welcome is received or the connection fails.
+pub async fn wait_for_welcome(endpoint: &Endpoint) -> Result<Vec<u8>, Report<GroupError>> {
+    use futures::StreamExt;
+    use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
+
+    // Wait for an incoming connection
+    let incoming = endpoint
+        .accept()
+        .await
+        .ok_or_else(|| Report::new(GroupError).attach_printable("endpoint closed"))?;
+
+    let conn = incoming
+        .accept()
+        .map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("failed to accept connection: {e}"))
+        })?
+        .await
+        .map_err(|e| {
+            Report::new(GroupError)
+                .attach_printable(format!("connection establishment failed: {e}"))
+        })?;
+
+    // Accept a bidirectional stream
+    let (_send, recv) = conn.accept_bi().await.map_err(|e| {
+        Report::new(GroupError).attach_printable(format!("failed to accept stream: {e}"))
+    })?;
+
+    // Read the handshake
+    let mut framed = FramedRead::new(recv, LengthDelimitedCodec::new());
+
+    let handshake_bytes = framed
+        .next()
+        .await
+        .ok_or_else(|| Report::new(GroupError).attach_printable("no handshake received"))?
+        .map_err(|e| {
+            Report::new(GroupError).attach_printable(format!("failed to read handshake: {e}"))
+        })?;
+
+    let handshake: Handshake = postcard::from_bytes(&handshake_bytes)
+        .map_err(|e| Report::new(GroupError).attach_printable(format!("invalid handshake: {e}")))?;
+
+    match handshake {
+        Handshake::SendWelcome(welcome) => Ok(welcome),
+        _ => Err(Report::new(GroupError)
+            .attach_printable("expected SendWelcome handshake, got something else")),
+    }
 }
 
 #[cfg(test)]

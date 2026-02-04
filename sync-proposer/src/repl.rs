@@ -7,13 +7,14 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use iroh::{Endpoint, EndpointAddr};
+use iroh::EndpointAddr;
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tracing::info;
 use universal_sync_core::{AcceptorId, GroupId};
 
+use crate::connection::ConnectionManager;
 use crate::group::Group;
 
 /// REPL context holding all state
@@ -28,8 +29,8 @@ where
     pub signer: SignatureSecretKey,
     /// Cipher suite provider
     pub cipher_suite: CS,
-    /// Iroh endpoint for P2P connections
-    pub endpoint: Endpoint,
+    /// Connection manager for P2P connections
+    pub connection_manager: ConnectionManager,
     /// Currently loaded groups
     pub groups: HashMap<GroupId, Group<C, CS>>,
 }
@@ -65,7 +66,7 @@ where
             }
             "add_member" => {
                 if parts.len() < 3 {
-                    return Err("Usage: add_member <group_id_hex> <key_package_hex>".to_string());
+                    return Err("Usage: add_member <group_id_hex> <key_package_base58>".to_string());
                 }
                 self.cmd_add_member(parts[1], parts[2]).await
             }
@@ -155,7 +156,7 @@ where
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
-            &self.endpoint,
+            &self.connection_manager,
             &[],
         )
         .await
@@ -178,7 +179,7 @@ where
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
-            &self.endpoint,
+            &self.connection_manager,
             &welcome_bytes,
         )
         .await
@@ -224,10 +225,10 @@ where
     async fn cmd_add_member(
         &mut self,
         group_id_hex: &str,
-        key_package_hex: &str,
+        key_package_base58: &str,
     ) -> Result<String, String> {
         let group_id = parse_group_id(group_id_hex)?;
-        let kp_bytes = bs58::decode(key_package_hex)
+        let kp_bytes = bs58::decode(key_package_base58)
             .into_vec()
             .map_err(|e| format!("Invalid base58: {e}"))?;
         let key_package =
@@ -238,12 +239,12 @@ where
             .get_mut(&group_id)
             .ok_or_else(|| format!("Group not loaded: {group_id_hex}"))?;
 
-        let welcome = group
+        group
             .add_member(key_package)
             .await
             .map_err(|e| format!("Failed to add member: {e:?}"))?;
 
-        Ok(format!("Welcome: {}", bs58::encode(welcome).into_string()))
+        Ok("Member added and welcome sent".to_string())
     }
 
     async fn cmd_update_keys(&mut self, group_id_hex: &str) -> Result<String, String> {

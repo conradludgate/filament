@@ -249,6 +249,12 @@ where
         Handshake::JoinMessages(group_id) => {
             handle_message_stream(group_id, reader, writer, registry).await
         }
+        Handshake::SendWelcome(_) => {
+            // Welcome messages are sent directly between members, not via acceptors
+            Err(ConnectorError::Handshake(
+                "acceptors do not handle welcome messages".to_string(),
+            ))
+        }
     }
 }
 

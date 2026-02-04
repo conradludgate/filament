@@ -13,8 +13,8 @@ pub mod proposal;
 pub mod sink_stream;
 
 pub use extension::{
-    AcceptorAdd, AcceptorRemove, AcceptorsExt, ACCEPTORS_EXTENSION_TYPE,
-    ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE,
+    AcceptorAdd, AcceptorRemove, AcceptorsExt, MemberAddrExt, ACCEPTORS_EXTENSION_TYPE,
+    ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, MEMBER_ADDR_EXTENSION_TYPE,
 };
 pub use handshake::{GroupId, Handshake, HandshakeResponse, StreamType};
 pub use message::{EncryptedAppMessage, GroupMessage, MessageId, MessageRequest, MessageResponse};

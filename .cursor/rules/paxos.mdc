@@ -1,0 +1,54 @@
+---
+globs: paxos/**
+---
+
+# Paxos Crate Rules
+
+Multi-Paxos consensus library with signed proposals. TLA+ specification in `spec/MultiPaxos.tla`.
+
+## Architecture: Pure Core + Async Runtime
+
+State machines are pure (no I/O, no async):
+- `AcceptorCore` - pure acceptor state transitions
+- `ProposerCore` - pure proposer phase tracking
+
+Async runtime wraps the pure cores:
+- `AcceptorHandler` / `run_acceptor` - network I/O for acceptors
+- `Proposer` / `QuorumTracker` - network I/O for proposers
+
+This separation enables model checking with Stateright using the same logic.
+
+## Safety Invariants
+
+These MUST be maintained (verified by TLA+ spec):
+
+1. **Agreement**: At most one value learned per round
+2. **Quorum**: Strict majority required: `n/2 + 1` acceptors
+3. **Proposal ordering**: `(round, attempt, node_id)` lexicographic comparison
+4. **Promise integrity**: An acceptor's promise is always >= any accepted proposal
+
+## AcceptorStateStore Requirements
+
+Implementations of `AcceptorStateStore` MUST:
+
+1. **Atomicity**: `promise()` and `accept()` must be atomic per-round
+2. **Persistence before returning**: Persist state BEFORE returning success (use fsync)
+3. **Reject dominated proposals**: Reject if a higher proposal was already promised OR accepted
+4. **Crash recovery**: Reload state before accepting new requests after restart
+
+```rust
+// MUST reject if dominated by promise OR accept
+let dominated = current_promised > proposal || current_accepted.proposal > proposal;
+```
+
+## Quorum Tracking
+
+Use `QuorumTracker` to detect when quorum is reached. Quorum = `n/2 + 1`.
+
+## Proposal Keys
+
+Proposals are compared by `ProposalKey<P>` which orders by `(round, attempt, node_id)`. Never compare proposals directly - use `.key()`.
+
+## Testing
+
+Use Stateright for model checking Paxos invariants against the TLA+ spec.

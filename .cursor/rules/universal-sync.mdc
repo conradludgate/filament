@@ -1,0 +1,84 @@
+# Universal Sync Code Standards
+
+Code quality standards for the Universal Sync project - a federated sync engine using MLS, Paxos, iroh, and CRDTs.
+
+## Architecture
+
+```
+paxos/           - Core Paxos consensus library (generic traits)
+sync-core/       - Shared types (GroupProposal, Handshake, utilities)
+sync-proposer/   - Client/device library (Group, GroupLearner, actors)
+sync-acceptor/   - Server/federation library (GroupAcceptor, registry)
+sync-testing/    - Integration tests
+```
+
+## Error Handling
+
+Use `error-stack` for all errors. Define ONE marker error type per domain:
+
+```rust
+#[derive(Debug)]
+pub struct GroupError;
+
+impl std::fmt::Display for GroupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("group operation failed")
+    }
+}
+
+impl std::error::Error for GroupError {}
+```
+
+Use context methods to add information:
+- `.change_context(GroupError)` to convert between domains
+- `.attach_printable("context")` for human-readable context
+- `.attach()` for structured data
+
+**Don't**: Create enum variants for every error case, use `thiserror`, or lose inner error context.
+
+## Validation Pattern
+
+Validation functions return `Validated` marker type (defined in `paxos/traits.rs`):
+
+```rust
+fn validate(&self, proposal: &Self::Proposal) -> Result<Validated, Report<ValidationError>> {
+    // perform checks...
+    Ok(Validated::assert_valid())
+}
+```
+
+This proves validation occurred at compile time.
+
+## Code Style
+
+### Generics
+Keep MLS config generics (`C: MlsConfig`, `CS: CipherSuiteProvider`) - required for testing. Use type aliases to reduce verbosity.
+
+### Async
+Use native async-fn-in-trait (no `#[async_trait]` macro).
+
+### Documentation
+- All public types/functions MUST have doc comments
+- Include `# Errors` for fallible functions
+- Include `# Example` for complex APIs
+
+### Shared Utilities
+Put cross-crate utilities in `sync-core` (e.g., `load_secret_key` in `util.rs`).
+
+## Testing
+
+- Use turmoil for deterministic network simulation tests
+- Test naming: `proposal_with_invalid_signature_is_rejected`
+
+## Linting
+
+The codebase uses `#![warn(clippy::pedantic)]`. Maintain this.
+
+## What NOT to Do
+
+1. Don't add features beyond what's asked
+2. Don't refactor unrelated code
+3. Don't add "just in case" error handling - trust internal invariants
+4. Don't create abstractions for one-time use - wait for the third instance
+5. Don't use `unwrap()` in library code
+6. Don't expose internal types in public API

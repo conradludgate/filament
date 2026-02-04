@@ -18,6 +18,7 @@ use universal_sync_core::{
     ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, ACCEPTORS_EXTENSION_TYPE,
     load_secret_key,
 };
+use universal_sync_proposer::ConnectionManager;
 use universal_sync_proposer::connector::PAXOS_ALPN;
 use universal_sync_proposer::repl::ReplContext;
 
@@ -117,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client,
         signer: secret_key,
         cipher_suite,
-        endpoint,
+        connection_manager: ConnectionManager::new(endpoint),
         groups: HashMap::new(),
     };
 

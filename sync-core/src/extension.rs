@@ -17,6 +17,9 @@ pub const ACCEPTOR_ADD_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF796
 /// Extension type for removing an acceptor (private use range: 0xF000-0xFFFF)
 pub const ACCEPTOR_REMOVE_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF797);
 
+/// Extension type for member's endpoint address (key package extension)
+pub const MEMBER_ADDR_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF798);
+
 /// MLS group context extension containing the full list of acceptors
 ///
 /// This extension is set when the group is created and updated whenever
@@ -225,6 +228,74 @@ impl MlsDecode for AcceptorRemove {
 impl MlsCodecExtension for AcceptorRemove {
     fn extension_type() -> ExtensionType {
         ACCEPTOR_REMOVE_EXTENSION_TYPE
+    }
+}
+
+/// MLS key package extension containing the member's endpoint address
+///
+/// This extension is included in key packages to allow the group leader
+/// to send the Welcome message directly to the new member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberAddrExt(pub EndpointAddr);
+
+impl MemberAddrExt {
+    /// Create a new `MemberAddrExt` extension
+    #[must_use]
+    pub fn new(addr: EndpointAddr) -> Self {
+        Self(addr)
+    }
+
+    /// Get the endpoint address
+    #[must_use]
+    pub fn addr(&self) -> &EndpointAddr {
+        &self.0
+    }
+}
+
+impl MlsSize for MemberAddrExt {
+    fn mls_encoded_len(&self) -> usize {
+        // Serialize with postcard to get actual length
+        postcard::to_allocvec(&self.0).map_or(4, |v| 4 + v.len())
+    }
+}
+
+impl MlsEncode for MemberAddrExt {
+    #[expect(clippy::cast_possible_truncation)]
+    fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
+        // Serialize address with postcard
+        let bytes = postcard::to_allocvec(&self.0)
+            .map_err(|_| mls_rs_codec::Error::Custom(POSTCARD_ERROR))?;
+        // Write length prefix
+        let len = bytes.len() as u32;
+        writer.extend_from_slice(&len.to_be_bytes());
+        writer.extend_from_slice(&bytes);
+        Ok(())
+    }
+}
+
+impl MlsDecode for MemberAddrExt {
+    fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
+        if reader.len() < 4 {
+            return Err(mls_rs_codec::Error::UnexpectedEOF);
+        }
+        let len = u32::from_be_bytes([reader[0], reader[1], reader[2], reader[3]]) as usize;
+        *reader = &reader[4..];
+
+        if reader.len() < len {
+            return Err(mls_rs_codec::Error::UnexpectedEOF);
+        }
+
+        let addr: EndpointAddr = postcard::from_bytes(&reader[..len])
+            .map_err(|_| mls_rs_codec::Error::Custom(POSTCARD_ERROR))?;
+        *reader = &reader[len..];
+
+        Ok(Self(addr))
+    }
+}
+
+impl MlsCodecExtension for MemberAddrExt {
+    fn extension_type() -> ExtensionType {
+        MEMBER_ADDR_EXTENSION_TYPE
     }
 }
 

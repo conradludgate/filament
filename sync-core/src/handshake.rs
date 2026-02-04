@@ -106,6 +106,11 @@ pub enum Handshake {
     ///
     /// Used for receiving and sending application messages.
     JoinMessages(GroupId),
+
+    /// Send a welcome message to a joining member.
+    ///
+    /// The bytes are a serialized MLS `Welcome` message.
+    SendWelcome(Vec<u8>),
 }
 
 /// Handshake response from the acceptor
