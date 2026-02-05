@@ -18,6 +18,7 @@
 
 #[cfg(feature = "tauri")]
 fn main() {
+    use sync_editor::tauri_app;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     // Initialize tracing
@@ -28,9 +29,27 @@ fn main() {
 
     tracing::info!("Starting Sync Editor...");
 
+    // Create tokio runtime for async initialization
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    // Initialize app state
+    let app_state = runtime.block_on(tauri_app::init_app_state());
+
     // Build and run Tauri app
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(app_state)
+        .invoke_handler(tauri::generate_handler![
+            tauri_app::create_document,
+            tauri_app::recv_welcome,
+            tauri_app::join_document_bytes,
+            tauri_app::get_document_text,
+            tauri_app::apply_delta,
+            tauri_app::get_key_package,
+            tauri_app::add_member,
+            tauri_app::add_acceptor,
+            tauri_app::list_documents,
+        ])
         .setup(|_app| {
             tracing::info!("Tauri app setup complete");
             Ok(())

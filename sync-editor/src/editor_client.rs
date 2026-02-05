@@ -109,11 +109,30 @@ where
 {
     /// Create a new editor client from an existing group client.
     ///
+    /// This registers the yrs CRDT factory automatically.
+    ///
     /// # Arguments
     /// * `client` - The underlying group client
     /// * `signing_public_key` - The MLS signing public key (for yrs client ID)
     #[must_use]
-    pub fn new(client: GroupClient<C, CS>, signing_public_key: Vec<u8>) -> Self {
+    pub fn new(mut client: GroupClient<C, CS>, signing_public_key: Vec<u8>) -> Self {
+        // Register CRDT factories
+        let yrs_client_id = derive_yrs_client_id(&signing_public_key);
+        let yrs_factory = YrsCrdtFactory::with_fixed_client_id(yrs_client_id);
+        client.register_crdt_factory(NoCrdtFactory);
+        client.register_crdt_factory(yrs_factory);
+
+        Self {
+            client,
+            signing_public_key,
+        }
+    }
+
+    /// Create an editor client from parts without registering CRDT factories.
+    ///
+    /// Use this when you need more control over factory registration.
+    #[must_use]
+    pub fn from_parts(client: GroupClient<C, CS>, signing_public_key: Vec<u8>) -> Self {
         Self {
             client,
             signing_public_key,
