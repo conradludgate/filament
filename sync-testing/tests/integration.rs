@@ -129,7 +129,7 @@ async fn test_alice_adds_bob_with_group_api() {
             external_client,
             cipher_suite.clone(),
             state_store.clone(),
-            acceptor_endpoint.secret_key().clone(),
+            acceptor_endpoint.clone(),
         );
 
         async move {
@@ -273,7 +273,7 @@ async fn test_acceptor_add_remove() {
             external_client,
             cipher_suite.clone(),
             state_store1.clone(),
-            acceptor_endpoint.secret_key().clone(),
+            acceptor_endpoint.clone(),
         );
 
         async move {
@@ -304,7 +304,7 @@ async fn test_acceptor_add_remove() {
             external_client,
             cipher_suite.clone(),
             state_store2.clone(),
-            acceptor_endpoint.secret_key().clone(),
+            acceptor_endpoint.clone(),
         );
 
         async move {
@@ -391,12 +391,8 @@ async fn spawn_acceptor() -> (tokio::task::JoinHandle<()>, iroh::EndpointAddr, T
         .identity_provider(test_identity_provider())
         .build();
 
-    let registry = AcceptorRegistry::new(
-        external_client,
-        cipher_suite,
-        state_store,
-        endpoint.secret_key().clone(),
-    );
+    let registry =
+        AcceptorRegistry::new(external_client, cipher_suite, state_store, endpoint.clone());
 
     let task = tokio::spawn({
         let endpoint = endpoint.clone();

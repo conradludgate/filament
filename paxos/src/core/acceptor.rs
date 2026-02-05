@@ -64,6 +64,7 @@ where
 {
     /// Create a new empty acceptor state
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
             promised: BTreeMap::new(),
@@ -143,20 +144,20 @@ where
         }
     }
 
-    /// Get all accepted values from a given round onwards
-    #[must_use]
-    pub(crate) fn accepted_from(&self, from_round: R) -> Vec<(P, M)> {
-        self.accepted
-            .range(from_round..)
-            .map(|(_, (p, m))| (p.clone(), m.clone()))
-            .collect()
-    }
+    // /// Get all accepted values from a given round onwards
+    // #[must_use]
+    // pub(crate) fn accepted_from(&self, from_round: R) -> Vec<(P, M)> {
+    //     self.accepted
+    //         .range(from_round..)
+    //         .map(|(_, (p, m))| (p.clone(), m.clone()))
+    //         .collect()
+    // }
 
-    /// Get the highest round that has been accepted
-    #[must_use]
-    pub(crate) fn highest_accepted_round(&self) -> Option<R> {
-        self.accepted.keys().next_back().copied()
-    }
+    // /// Get the highest round that has been accepted
+    // #[must_use]
+    // pub(crate) fn highest_accepted_round(&self) -> Option<R> {
+    //     self.accepted.keys().next_back().copied()
+    // }
 
     /// Handle a request and produce a response.
     ///

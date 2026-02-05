@@ -16,14 +16,10 @@
 
 pub(crate) mod acceptor;
 pub(crate) mod proposer;
-pub(crate) mod quorum;
 pub(crate) mod types;
 
 pub use acceptor::AcceptorCore;
-pub(crate) use acceptor::{AcceptResult, PrepareResult};
-pub(crate) use proposer::ProposerPhase;
 pub use proposer::{AcceptPhaseResult, PreparePhaseResult, ProposerCore};
-pub(crate) use quorum::QuorumCore;
 pub use types::{AcceptorRequest, AcceptorResponse, ProposalKey};
 
 #[cfg(test)]

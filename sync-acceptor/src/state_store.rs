@@ -471,15 +471,15 @@ impl FjallStateStore {
         Ok(())
     }
 
-    /// Get an epoch roster snapshot
-    fn get_epoch_roster_sync(&self, group_id: &GroupId, epoch: Epoch) -> Option<EpochRoster> {
-        let key = Self::build_key(group_id, epoch);
-        self.epoch_rosters
-            .get(key)
-            .ok()
-            .flatten()
-            .and_then(|bytes| EpochRoster::from_bytes(&bytes))
-    }
+    // /// Get an epoch roster snapshot
+    // fn get_epoch_roster_sync(&self, group_id: &GroupId, epoch: Epoch) -> Option<EpochRoster> {
+    //     let key = Self::build_key(group_id, epoch);
+    //     self.epoch_rosters
+    //         .get(key)
+    //         .ok()
+    //         .flatten()
+    //         .and_then(|bytes| EpochRoster::from_bytes(&bytes))
+    // }
 
     /// Get the closest epoch roster at or before the given epoch
     ///
@@ -566,7 +566,7 @@ impl SharedFjallStateStore {
     ///
     /// # Errors
     /// Returns an error if removing from the database fails.
-    pub(crate) fn remove_group(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
+    pub fn remove_group(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
         self.inner.remove_group_sync(group_id)
     }
 
@@ -605,34 +605,34 @@ impl SharedFjallStateStore {
 
     // ========== Epoch Roster Methods ==========
 
-    /// Store an epoch roster snapshot
-    ///
-    /// # Errors
-    /// Returns an error if persisting to the database fails.
-    pub(crate) fn store_epoch_roster(
-        &self,
-        group_id: &GroupId,
-        roster: &EpochRoster,
-    ) -> Result<(), fjall::Error> {
-        self.inner.store_epoch_roster_sync(group_id, roster)
-    }
+    // /// Store an epoch roster snapshot
+    // ///
+    // /// # Errors
+    // /// Returns an error if persisting to the database fails.
+    // pub(crate) fn store_epoch_roster(
+    //     &self,
+    //     group_id: &GroupId,
+    //     roster: &EpochRoster,
+    // ) -> Result<(), fjall::Error> {
+    //     self.inner.store_epoch_roster_sync(group_id, roster)
+    // }
 
-    /// Get an epoch roster snapshot for a specific epoch
-    #[must_use]
-    pub(crate) fn get_epoch_roster(&self, group_id: &GroupId, epoch: Epoch) -> Option<EpochRoster> {
-        self.inner.get_epoch_roster_sync(group_id, epoch)
-    }
+    // /// Get an epoch roster snapshot for a specific epoch
+    // #[must_use]
+    // pub(crate) fn get_epoch_roster(&self, group_id: &GroupId, epoch: Epoch) -> Option<EpochRoster> {
+    //     self.inner.get_epoch_roster_sync(group_id, epoch)
+    // }
 
-    /// Get the closest epoch roster at or before the given epoch
-    #[must_use]
-    pub(crate) fn get_epoch_roster_at_or_before(
-        &self,
-        group_id: &GroupId,
-        epoch: Epoch,
-    ) -> Option<EpochRoster> {
-        self.inner
-            .get_epoch_roster_at_or_before_sync(group_id, epoch)
-    }
+    // /// Get the closest epoch roster at or before the given epoch
+    // #[must_use]
+    // pub(crate) fn get_epoch_roster_at_or_before(
+    //     &self,
+    //     group_id: &GroupId,
+    //     epoch: Epoch,
+    // ) -> Option<EpochRoster> {
+    //     self.inner
+    //         .get_epoch_roster_at_or_before_sync(group_id, epoch)
+    // }
 }
 
 /// Per-group view of the state store
@@ -646,11 +646,11 @@ pub struct GroupStateStore {
 }
 
 impl GroupStateStore {
-    /// Get the group ID
-    #[must_use]
-    pub(crate) fn group_id(&self) -> &GroupId {
-        &self.group_id
-    }
+    // /// Get the group ID
+    // #[must_use]
+    // pub(crate) fn group_id(&self) -> &GroupId {
+    //     &self.group_id
+    // }
 
     /// Get all accepted messages from the given epoch onwards
     ///
@@ -672,11 +672,11 @@ impl GroupStateStore {
         self.inner.store_epoch_roster_sync(&self.group_id, roster)
     }
 
-    /// Get an epoch roster snapshot for a specific epoch
-    #[must_use]
-    pub(crate) fn get_epoch_roster(&self, epoch: Epoch) -> Option<EpochRoster> {
-        self.inner.get_epoch_roster_sync(&self.group_id, epoch)
-    }
+    // /// Get an epoch roster snapshot for a specific epoch
+    // #[must_use]
+    // pub(crate) fn get_epoch_roster(&self, epoch: Epoch) -> Option<EpochRoster> {
+    //     self.inner.get_epoch_roster_sync(&self.group_id, epoch)
+    // }
 
     /// Get the closest epoch roster at or before the given epoch
     #[must_use]
@@ -855,6 +855,15 @@ where
         let group_id = self.group_id;
 
         tokio::task::spawn_blocking(move || inner.highest_accepted_round_sync(&group_id))
+            .await
+            .expect("spawn_blocking panicked")
+    }
+
+    async fn get_accepted_from(&self, from_round: Epoch) -> Vec<(GroupProposal, GroupMessage)> {
+        let inner = self.inner.clone();
+        let group_id = self.group_id;
+
+        tokio::task::spawn_blocking(move || inner.get_accepted_from_sync(&group_id, from_round))
             .await
             .expect("spawn_blocking panicked")
     }

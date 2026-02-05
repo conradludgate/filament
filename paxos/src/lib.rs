@@ -37,7 +37,7 @@ pub mod proposer;
 mod traits;
 
 pub use messages::{AcceptorMessage, AcceptorRequest};
-pub(crate) use proposer::QuorumTracker;
+// pub(crate) use proposer::QuorumTracker;
 pub use proposer::{ProposeResult, Proposer};
 pub use traits::{
     Acceptor, AcceptorConn, AcceptorStateStore, Connector, Learner, Proposal, ProposalKey,

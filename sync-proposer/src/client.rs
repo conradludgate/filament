@@ -99,37 +99,37 @@ where
         self.crdt_factories.insert(type_id, Arc::new(factory));
     }
 
-    /// Get the list of supported CRDT type IDs.
-    #[must_use]
-    pub(crate) fn supported_crdt_types(&self) -> Vec<&str> {
-        self.crdt_factories.keys().map(String::as_str).collect()
-    }
+    // /// Get the list of supported CRDT type IDs.
+    // #[must_use]
+    // pub(crate) fn supported_crdt_types(&self) -> Vec<&str> {
+    //     self.crdt_factories.keys().map(String::as_str).collect()
+    // }
 
-    /// Get a CRDT factory by type ID.
-    #[must_use]
-    pub(crate) fn get_crdt_factory(&self, type_id: &str) -> Option<&dyn CrdtFactory> {
-        self.crdt_factories.get(type_id).map(Arc::as_ref)
-    }
+    // /// Get a CRDT factory by type ID.
+    // #[must_use]
+    // pub(crate) fn get_crdt_factory(&self, type_id: &str) -> Option<&dyn CrdtFactory> {
+    //     self.crdt_factories.get(type_id).map(Arc::as_ref)
+    // }
 
-    /// Get this client's endpoint address.
-    ///
-    /// This is the address other peers use to connect to this client.
-    #[must_use]
-    pub(crate) fn addr(&self) -> EndpointAddr {
-        self.connection_manager.endpoint().addr()
-    }
+    // /// Get this client's endpoint address.
+    // ///
+    // /// This is the address other peers use to connect to this client.
+    // #[must_use]
+    // pub(crate) fn addr(&self) -> EndpointAddr {
+    //     self.connection_manager.endpoint().addr()
+    // }
 
-    /// Get a reference to the iroh endpoint.
-    #[must_use]
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        self.connection_manager.endpoint()
-    }
+    // /// Get a reference to the iroh endpoint.
+    // #[must_use]
+    // pub(crate) fn endpoint(&self) -> &Endpoint {
+    //     self.connection_manager.endpoint()
+    // }
 
-    /// Get a reference to the connection manager.
-    #[must_use]
-    pub(crate) fn connection_manager(&self) -> &ConnectionManager {
-        &self.connection_manager
-    }
+    // /// Get a reference to the connection manager.
+    // #[must_use]
+    // pub(crate) fn connection_manager(&self) -> &ConnectionManager {
+    //     &self.connection_manager
+    // }
 
     /// Generate a key package for joining a group.
     ///

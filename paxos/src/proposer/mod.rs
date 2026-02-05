@@ -246,14 +246,15 @@ impl<L: Learner> Proposer<L> {
 
     /// Check if there's an active proposal in progress.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn is_proposing(&self) -> bool {
         self.active.is_some()
     }
 
-    /// Cancel the current proposal (if any).
-    pub(crate) fn cancel(&mut self) {
-        self.active = None;
-    }
+    // /// Cancel the current proposal (if any).
+    // pub(crate) fn cancel(&mut self) {
+    //     self.active = None;
+    // }
 }
 
 #[cfg(test)]
@@ -459,7 +460,7 @@ mod tests {
         match result {
             ProposeResult::Rejected { superseded_by } => {
                 assert_eq!(superseded_by.attempt(), 1);
-                assert_eq!(superseded_by.node_id(), 2);
+                assert_eq!(superseded_by.2, 2);
             }
             _ => panic!("expected Rejected"),
         }

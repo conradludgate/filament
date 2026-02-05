@@ -163,11 +163,11 @@ impl<P: Proposal> ProposalKey<P> {
         self.1
     }
 
-    /// Get the node ID from this key.
-    #[must_use]
-    pub(crate) fn node_id(&self) -> P::NodeId {
-        self.2
-    }
+    // /// Get the node ID from this key.
+    // #[must_use]
+    // pub(crate) fn node_id(&self) -> P::NodeId {
+    //     self.2
+    // }
 }
 
 /// State machine that learns from consensus and can create proposals
@@ -318,6 +318,15 @@ pub trait AcceptorStateStore<L: Learner>: Send + Sync {
 
     /// Get the highest round that has been accepted (for sync complete message).
     async fn highest_accepted_round(&self) -> Option<<L::Proposal as Proposal>::RoundId>;
+
+    /// Get all accepted (proposal, message) pairs from a given round onwards.
+    ///
+    /// Returns historical values only (no live subscription).
+    /// Used by the epoch-aware runner to apply learned values after waiting.
+    async fn get_accepted_from(
+        &self,
+        from_round: <L::Proposal as Proposal>::RoundId,
+    ) -> Vec<(L::Proposal, L::Message)>;
 }
 
 /// Connects to acceptors by their ID.

@@ -1,26 +1,45 @@
 //! Group registry implementation
 //!
-//! Provides a concrete implementation of [`GroupRegistry`] for managing
-//! multiple groups on an acceptor server.
+//! Provides [`AcceptorRegistry`] for managing multiple groups on an acceptor server.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
-use iroh::{EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, SecretKey};
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalClient, ExternalGroup};
 use mls_rs::mls_rs_codec::MlsDecode;
 use mls_rs::{CipherSuiteProvider, ExtensionList, MlsMessage};
-use universal_sync_core::{ACCEPTORS_EXTENSION_TYPE, AcceptorId, AcceptorsExt, GroupId};
+use tokio::sync::watch;
+use universal_sync_core::{ACCEPTORS_EXTENSION_TYPE, AcceptorId, AcceptorsExt, Epoch, GroupId};
 use universal_sync_paxos::Learner;
 
 use crate::acceptor::GroupAcceptor;
-use crate::server::GroupRegistry;
+use crate::learner::GroupLearningActor;
 use crate::state_store::{GroupStateStore, SharedFjallStateStore};
 
-/// Concrete implementation of [`GroupRegistry`]
+/// Epoch watcher for a group.
 ///
-/// Manages multiple MLS groups for an acceptor server. Each group is
-/// identified by its 32-byte [`GroupId`].
+/// Contains a watch sender for epoch change notifications.
+struct GroupEpochWatcher {
+    tx: watch::Sender<Epoch>,
+    rx: watch::Receiver<Epoch>,
+}
+
+impl GroupEpochWatcher {
+    fn new(initial_epoch: Epoch) -> Self {
+        let (tx, rx) = watch::channel(initial_epoch);
+        Self { tx, rx }
+    }
+
+    fn notify(&self, epoch: Epoch) {
+        let _ = self.tx.send(epoch);
+    }
+}
+
+/// Manages multiple MLS groups for an acceptor server.
+///
+/// Each group is identified by its 32-byte [`GroupId`].
 ///
 /// Groups are persisted to the state store and reconstructed on each
 /// access. This ensures groups survive server restarts.
@@ -43,8 +62,11 @@ where
     /// Persistent state store (shared across all groups)
     state_store: SharedFjallStateStore,
 
-    /// This acceptor's iroh secret key
-    secret_key: SecretKey,
+    /// Iroh endpoint for peer connections
+    endpoint: Endpoint,
+
+    /// Epoch watchers per group (also tracks which groups have learning actors)
+    epoch_watchers: Arc<RwLock<HashMap<GroupId, Arc<GroupEpochWatcher>>>>,
 }
 
 impl<C, CS> AcceptorRegistry<C, CS>
@@ -59,34 +81,41 @@ where
     /// * `cipher_suite` - Cipher suite provider for signature verification
     /// * `state_store` - Persistent state store for all groups
     /// * `secret_key` - This acceptor's iroh secret key
+    /// * `endpoint` - Iroh endpoint for peer connections
     pub fn new(
         external_client: ExternalClient<C>,
         cipher_suite: CS,
         state_store: SharedFjallStateStore,
-        secret_key: SecretKey,
+        endpoint: Endpoint,
     ) -> Self {
         Self {
             external_client: Arc::new(external_client),
             cipher_suite,
             state_store,
-            secret_key,
+            endpoint,
+            epoch_watchers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Get this acceptor's own ID (derived from secret key)
-    pub(crate) fn own_id(&self) -> AcceptorId {
-        AcceptorId::from_bytes(*self.secret_key.public().as_bytes())
+    /// Get this acceptor's own ID (derived from public key)
+    fn own_id(&self) -> AcceptorId {
+        AcceptorId::from_bytes(*self.endpoint.id().as_bytes())
     }
 
-    /// Get the state store
-    pub(crate) fn state_store(&self) -> &SharedFjallStateStore {
-        &self.state_store
-    }
+    // /// Get this acceptor's own ID (derived from secret key)
+    // pub(crate) fn own_id(&self) -> AcceptorId {
+    //     AcceptorId::from_bytes(*self.secret_key.public().as_bytes())
+    // }
 
-    /// List all registered groups
-    pub(crate) fn list_groups(&self) -> Vec<GroupId> {
-        self.state_store.list_groups()
-    }
+    // /// Get the state store
+    // pub(crate) fn state_store(&self) -> &SharedFjallStateStore {
+    //     &self.state_store
+    // }
+
+    // /// List all registered groups
+    // pub(crate) fn list_groups(&self) -> Vec<GroupId> {
+    //     self.state_store.list_groups()
+    // }
 
     /// Extract acceptor addresses from an extension list
     fn extract_acceptors_from_extensions(extensions: &ExtensionList) -> Vec<EndpointAddr> {
@@ -137,21 +166,21 @@ where
         Ok(GroupAcceptor::new(
             external_group,
             self.cipher_suite.clone(),
-            self.secret_key.clone(),
+            self.endpoint.secret_key().clone(),
             acceptors,
         ))
     }
 }
 
-impl<C, CS> GroupRegistry for AcceptorRegistry<C, CS>
+impl<C, CS> AcceptorRegistry<C, CS>
 where
     C: ExternalMlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    type Acceptor = GroupAcceptor<C, CS>;
-    type StateStore = GroupStateStore;
-
-    fn get_group(&self, group_id: &GroupId) -> Option<(Self::Acceptor, Self::StateStore)> {
+    /// Look up an existing group by ID
+    ///
+    /// Returns the acceptor and state store if the group exists.
+    pub fn get_group(&self, group_id: &GroupId) -> Option<(GroupAcceptor<C, CS>, GroupStateStore)> {
         // Load GroupInfo from persistent storage
         let group_info_bytes = self.state_store.get_group_info(group_id)?;
 
@@ -179,13 +208,28 @@ where
             }
         }
 
+        // Ensure epoch watcher and learning actor exist
+        self.ensure_epoch_watcher_and_learning(
+            *group_id,
+            acceptor.current_round(),
+            &acceptor,
+            state.clone(),
+        );
+
         Some((acceptor, state))
     }
 
-    fn create_group(
+    /// Create a new group from `GroupInfo` bytes
+    ///
+    /// The bytes are a serialized MLS `MlsMessage` containing `GroupInfo`.
+    /// Returns the group ID, acceptor, and state store if successful.
+    ///
+    /// # Errors
+    /// Returns an error if parsing or joining the group fails.
+    pub fn create_group(
         &self,
         group_info_bytes: &[u8],
-    ) -> Result<(GroupId, Self::Acceptor, Self::StateStore), String> {
+    ) -> Result<(GroupId, GroupAcceptor<C, CS>, GroupStateStore), String> {
         // Parse and observe the group
         let mls_message = MlsMessage::from_bytes(group_info_bytes)
             .map_err(|e| format!("failed to parse MLS message: {e}"))?;
@@ -206,7 +250,7 @@ where
         let acceptor = GroupAcceptor::new(
             external_group,
             self.cipher_suite.clone(),
-            self.secret_key.clone(),
+            self.endpoint.secret_key().clone(),
             acceptors,
         );
 
@@ -217,10 +261,22 @@ where
 
         let state = self.state_store.for_group(group_id);
 
+        // Create epoch watcher and learning actor for this group
+        self.ensure_epoch_watcher_and_learning(
+            group_id,
+            acceptor.current_round(),
+            &acceptor,
+            state.clone(),
+        );
+
         Ok((group_id, acceptor, state))
     }
 
-    fn store_message(
+    /// Store an application message.
+    ///
+    /// # Errors
+    /// Returns an error if the group is not found or storage fails.
+    pub fn store_message(
         &self,
         group_id: &GroupId,
         msg: &universal_sync_core::EncryptedAppMessage,
@@ -230,7 +286,11 @@ where
             .map_err(|e| format!("failed to store message: {e}"))
     }
 
-    fn get_messages_since(
+    /// Get messages since a sequence number.
+    ///
+    /// # Errors
+    /// Returns an error if the group is not found.
+    pub fn get_messages_since(
         &self,
         group_id: &GroupId,
         since_seq: u64,
@@ -238,10 +298,80 @@ where
         Ok(self.state_store.get_messages_since(group_id, since_seq))
     }
 
-    fn subscribe_messages(
+    /// Subscribe to new messages for a group.
+    pub fn subscribe_messages(
         &self,
         group_id: &GroupId,
     ) -> tokio::sync::broadcast::Receiver<universal_sync_core::EncryptedAppMessage> {
         self.state_store.subscribe_messages(group_id)
+    }
+
+    /// Get an epoch watcher for a group.
+    ///
+    /// Returns a watch receiver and a function to get the current epoch.
+    /// The acceptor will wait for learning to catch up before processing
+    /// proposals for future epochs.
+    pub fn get_epoch_watcher(
+        &self,
+        group_id: &GroupId,
+    ) -> Option<(watch::Receiver<Epoch>, Box<dyn Fn() -> Epoch + Send>)> {
+        let watchers = self.epoch_watchers.read().ok()?;
+        let watcher = watchers.get(group_id)?.clone();
+        let rx = watcher.rx.clone();
+        Some((rx.clone(), Box::new(move || *rx.borrow())))
+    }
+
+    /// Notify that an epoch has been learned for a group.
+    ///
+    /// Call this when a value reaches quorum and is applied.
+    pub fn notify_epoch_learned(&self, group_id: &GroupId, epoch: Epoch) {
+        if let Ok(watchers) = self.epoch_watchers.read()
+            && let Some(watcher) = watchers.get(group_id)
+        {
+            watcher.notify(epoch);
+        }
+    }
+
+    /// Ensure an epoch watcher and learning actor exist for a group
+    ///
+    /// Spawns a learning actor if one doesn't exist for this group.
+    fn ensure_epoch_watcher_and_learning(
+        &self,
+        group_id: GroupId,
+        current_epoch: Epoch,
+        acceptor: &GroupAcceptor<C, CS>,
+        state: GroupStateStore,
+    ) {
+        let mut watchers = self.epoch_watchers.write().expect("lock poisoned");
+
+        if watchers.contains_key(&group_id) {
+            // Already have a learning actor for this group
+            return;
+        }
+
+        // Create new epoch watcher
+        let watcher = Arc::new(GroupEpochWatcher::new(current_epoch));
+        watchers.insert(group_id, watcher.clone());
+
+        // Collect initial acceptor addresses
+        let initial_acceptors: Vec<_> = acceptor
+            .acceptor_addrs()
+            .map(|(id, addr)| (*id, addr.clone()))
+            .collect();
+
+        // Create and spawn learning actor
+        let learning_actor: GroupLearningActor<C, CS> = GroupLearningActor::new(
+            self.own_id(),
+            group_id,
+            self.endpoint.clone(),
+            initial_acceptors,
+            watcher.tx.clone(),
+        );
+
+        tokio::spawn(async move {
+            learning_actor.run(state, current_epoch).await;
+        });
+
+        tracing::debug!(?group_id, "spawned learning actor");
     }
 }

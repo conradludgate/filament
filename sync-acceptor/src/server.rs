@@ -14,14 +14,14 @@
 //! # Example
 //!
 //! ```ignore
-//! use universal_sync_acceptor::{accept_connection, GroupRegistry};
+//! use universal_sync_acceptor::{accept_connection, AcceptorRegistry};
 //!
 //! let endpoint = iroh::Endpoint::builder()
 //!     .alpns(vec![universal_sync_acceptor::PAXOS_ALPN.to_vec()])
 //!     .bind()
 //!     .await?;
 //!
-//! let registry = MyGroupRegistry::new();
+//! let registry = AcceptorRegistry::new(client, cipher_suite, state_store, secret_key);
 //!
 //! // Accept connections in a loop
 //! while let Some(incoming) = endpoint.accept().await {
@@ -36,18 +36,22 @@
 
 use futures::{SinkExt, StreamExt};
 use iroh::endpoint::{Incoming, RecvStream, SendStream};
+use mls_rs::CipherSuiteProvider;
+use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, warn};
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    EncryptedAppMessage, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
-    MemberId, MessageRequest, MessageResponse, PAXOS_ALPN,
+    GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId, MessageRequest,
+    MessageResponse, PAXOS_ALPN,
 };
-use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor};
-use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, AcceptorStateStore, Learner};
+use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor_with_epoch_waiter};
+use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Learner};
 
+use crate::acceptor::GroupAcceptor;
 use crate::connector::ConnectorError;
+use crate::registry::AcceptorRegistry;
 
 /// Server-side acceptor connection over iroh
 ///
@@ -98,59 +102,6 @@ pub(crate) fn new_message_connection(send: SendStream, recv: RecvStream) -> Iroh
     )
 }
 
-/// Registry for looking up and creating groups
-///
-/// Implementations should handle:
-/// - Looking up existing groups by ID
-/// - Creating new groups from `GroupInfo`
-/// - Managing per-group state stores
-pub trait GroupRegistry: Clone + Send + Sync + 'static {
-    /// The acceptor type for groups
-    type Acceptor: universal_sync_paxos::Acceptor<Proposal = GroupProposal, Message = GroupMessage>;
-
-    /// The state store type for groups
-    type StateStore: AcceptorStateStore<Self::Acceptor>;
-
-    /// Look up an existing group by ID
-    ///
-    /// Returns the acceptor and state store if the group exists.
-    fn get_group(&self, group_id: &GroupId) -> Option<(Self::Acceptor, Self::StateStore)>;
-
-    /// Create a new group from `GroupInfo` bytes
-    ///
-    /// The bytes are a serialized MLS `MlsMessage` containing `GroupInfo`.
-    /// Returns the group ID, acceptor, and state store if successful.
-    ///
-    /// # Errors
-    /// Returns an error if parsing or joining the group fails.
-    fn create_group(
-        &self,
-        group_info: &[u8],
-    ) -> Result<(GroupId, Self::Acceptor, Self::StateStore), String>;
-
-    /// Store an application message.
-    ///
-    /// # Errors
-    /// Returns an error if the group is not found or storage fails.
-    fn store_message(&self, group_id: &GroupId, msg: &EncryptedAppMessage) -> Result<u64, String>;
-
-    /// Get messages since a sequence number.
-    ///
-    /// # Errors
-    /// Returns an error if the group is not found.
-    fn get_messages_since(
-        &self,
-        group_id: &GroupId,
-        since_seq: u64,
-    ) -> Result<Vec<(u64, EncryptedAppMessage)>, String>;
-
-    /// Subscribe to new messages for a group.
-    fn subscribe_messages(
-        &self,
-        group_id: &GroupId,
-    ) -> tokio::sync::broadcast::Receiver<EncryptedAppMessage>;
-}
-
 /// Accept incoming iroh connection and handle multiplexed streams.
 ///
 /// This function:
@@ -172,10 +123,13 @@ pub trait GroupRegistry: Clone + Send + Sync + 'static {
 ///
 /// # Errors
 /// Returns an error if the connection fails or ALPN is wrong.
-pub async fn accept_connection<R>(incoming: Incoming, registry: R) -> Result<(), ConnectorError>
+pub async fn accept_connection<C, CS>(
+    incoming: Incoming,
+    registry: AcceptorRegistry<C, CS>,
+) -> Result<(), ConnectorError>
 where
-    R: GroupRegistry,
-    <R::Acceptor as Learner>::Error: From<ConnectorError> + From<std::io::Error>,
+    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     // Accept the connection
     let conn = incoming
@@ -194,26 +148,25 @@ where
     let remote_id = conn.remote_id();
     debug!(?remote_id, "accepted connection");
 
-    // Accept and handle one stream per connection
-    // Each stream type (proposals, messages) should use a separate connection
-    // because AcceptorStateStore methods don't return Send futures
-    let (send, recv) = conn
-        .accept_bi()
-        .await
-        .map_err(|e| ConnectorError::Connect(e.to_string()))?;
+    loop {
+        let (send, recv) = conn
+            .accept_bi()
+            .await
+            .map_err(|e| ConnectorError::Connect(e.to_string()))?;
 
-    handle_stream(send, recv, registry).await
+        tokio::spawn(handle_stream(send, recv, registry.clone()));
+    }
 }
 
 /// Handle a single multiplexed stream.
-async fn handle_stream<R>(
+async fn handle_stream<C, CS>(
     send: SendStream,
     recv: RecvStream,
-    registry: R,
+    registry: AcceptorRegistry<C, CS>,
 ) -> Result<(), ConnectorError>
 where
-    R: GroupRegistry,
-    <R::Acceptor as Learner>::Error: From<ConnectorError> + From<std::io::Error>,
+    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     // Create framed reader/writer for handshake
     let codec = LengthDelimitedCodec::builder()
@@ -259,16 +212,16 @@ where
 }
 
 /// Handle a proposal (Paxos) stream.
-async fn handle_proposal_stream<R>(
+async fn handle_proposal_stream<C, CS>(
     mut group_id: GroupId,
     create_group_info: Option<Vec<u8>>,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
-    registry: R,
+    registry: AcceptorRegistry<C, CS>,
 ) -> Result<(), ConnectorError>
 where
-    R: GroupRegistry,
-    <R::Acceptor as Learner>::Error: From<ConnectorError> + From<std::io::Error>,
+    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     // Get or create the group
     let (acceptor, state) = if let Some(group_info) = create_group_info {
@@ -320,15 +273,18 @@ where
 
     // Create the connection wrapper for Paxos protocol
     let connection =
-        new_acceptor_connection::<R::Acceptor, <R::Acceptor as Learner>::Error>(send, recv);
+        new_acceptor_connection::<GroupAcceptor<C, CS>, crate::acceptor::AcceptorError>(send, recv);
 
     // Create the handler with shared state
     let handler = AcceptorHandler::new(acceptor, state);
 
-    // Run the acceptor protocol
+    // Run the acceptor protocol with epoch waiting
     let proposer_id = MemberId(0);
+    let (epoch_rx, current_epoch_fn) = registry
+        .get_epoch_watcher(&group_id)
+        .expect("epoch watcher should exist after get_group/create_group");
 
-    run_acceptor(handler, connection, proposer_id)
+    run_acceptor_with_epoch_waiter(handler, connection, proposer_id, epoch_rx, current_epoch_fn)
         .await
         .map_err(|e| ConnectorError::Connect(e.to_string()))?;
 
@@ -337,14 +293,15 @@ where
 }
 
 /// Handle a message stream.
-async fn handle_message_stream<R>(
+async fn handle_message_stream<C, CS>(
     group_id: GroupId,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
-    registry: R,
+    registry: AcceptorRegistry<C, CS>,
 ) -> Result<(), ConnectorError>
 where
-    R: GroupRegistry,
+    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     // Check if group exists
     if registry.get_group(&group_id).is_none() {
@@ -420,14 +377,15 @@ where
 }
 
 /// Handle a single message request.
-async fn handle_message_request<R>(
+async fn handle_message_request<C, CS>(
     group_id: &GroupId,
     request: MessageRequest,
     connection: &mut IrohMessageConnection,
-    registry: &R,
+    registry: &AcceptorRegistry<C, CS>,
 ) -> Result<(), ConnectorError>
 where
-    R: GroupRegistry,
+    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     match request {
         MessageRequest::Send(msg) => match registry.store_message(group_id, &msg) {

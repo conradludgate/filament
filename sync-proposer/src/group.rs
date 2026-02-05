@@ -157,15 +157,15 @@ enum AcceptorOutbound {
 
 /// A decrypted application message received from the group.
 #[derive(Debug, Clone)]
-pub(crate) struct ReceivedAppMessage {
+pub struct ReceivedAppMessage {
     /// The sender's member index
-    pub(crate) sender: MemberId,
+    pub sender: MemberId,
     /// The epoch in which the message was sent
-    pub(crate) epoch: Epoch,
+    pub epoch: Epoch,
     /// The message index (per-sender, per-epoch)
-    pub(crate) index: u32,
+    pub index: u32,
     /// The decrypted application data
-    pub(crate) data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 /// Events emitted by a Group.

@@ -38,17 +38,17 @@ impl fmt::Display for GroupError {
 
 impl std::error::Error for GroupError {}
 
-/// Error type for connector operations (connecting to acceptors).
-///
-/// This is a simple marker type - use [`error_stack::Report`] methods
-/// to attach context describing what went wrong.
-#[derive(Debug)]
-pub struct ConnectorError;
+// /// Error type for connector operations (connecting to acceptors).
+// ///
+// /// This is a simple marker type - use [`error_stack::Report`] methods
+// /// to attach context describing what went wrong.
+// #[derive(Debug)]
+// pub struct ConnectorError;
 
-impl fmt::Display for ConnectorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("connector operation failed")
-    }
-}
+// impl fmt::Display for ConnectorError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.write_str("connector operation failed")
+//     }
+// }
 
-impl std::error::Error for ConnectorError {}
+// impl std::error::Error for ConnectorError {}

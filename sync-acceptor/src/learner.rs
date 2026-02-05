@@ -5,7 +5,7 @@
 //!
 //! 1. Receive accepted values from peers
 //! 2. Track quorum across all acceptors (including itself)
-//! 3. Apply values when quorum is reached
+//! 3. Notify when quorum is reached so values can be applied
 //!
 //! # Architecture
 //!
@@ -13,10 +13,10 @@
 //!                    ┌─────────────────────────────────────┐
 //!                    │         GroupLearningActor          │
 //!                    │                                     │
-//!  Local accepts ───►│  ┌─────────────────────────────┐   │
-//!                    │  │      QuorumTracker          │   │
-//!  Peer streams ────►│  │  (tracks quorum per round)  │   │──► apply() on quorum
-//!                    │  └─────────────────────────────┘   │
+//!  Local state ─────►│  ┌─────────────────────────────┐   │
+//!  subscription      │  │      QuorumTracker          │   │
+//!                    │  │  (tracks quorum per round)  │   │──► epoch notification
+//!  Peer streams ────►│  └─────────────────────────────┘   │
 //!                    │                                     │
 //!                    │  ┌─────────────────────────────┐   │
 //!                    │  │  PeerAcceptorActor (each)   │   │
@@ -32,25 +32,23 @@
 //! Learners act as "pseudo-proposers" by sending a sync proposal (Prepare)
 //! to initiate the learning stream from each acceptor. The acceptor responds
 //! with all accepted values from that round onwards.
-//!
-//! This reuses the existing Paxos protocol - the Prepare message initiates
-//! the stream, and the acceptor sends back accepted values as they occur.
 
 use std::collections::BTreeMap;
 
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use iroh::{Endpoint, EndpointAddr};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use universal_sync_core::{AcceptorId, Epoch, GroupId, GroupMessage, GroupProposal, PAXOS_ALPN};
-use universal_sync_paxos::Learner;
+use universal_sync_paxos::AcceptorStateStore;
 use universal_sync_paxos::proposer::QuorumTracker;
 
-use crate::acceptor::{AcceptorChangeEvent, AcceptorError, GroupAcceptor};
+use crate::acceptor::GroupAcceptor;
 use crate::connector::ConnectorError;
+use crate::state_store::GroupStateStore;
 
 /// Events sent from peer acceptor actors to the learning coordinator
 #[derive(Debug)]
-pub(crate) enum PeerEvent {
+enum PeerEvent {
     /// Peer accepted a value
     Accepted {
         /// The acceptor ID that sent this
@@ -69,41 +67,13 @@ pub(crate) enum PeerEvent {
     },
 }
 
-/// Commands to the learning actor
-#[derive(Debug)]
-pub(crate) enum LearningCommand {
-    /// Local acceptor accepted a value
-    LocalAccepted {
-        /// The accepted proposal
-        proposal: GroupProposal,
-        /// The accepted message (boxed to reduce enum size)
-        message: Box<GroupMessage>,
-    },
-    /// Acceptor set changed
-    AcceptorChanged(AcceptorChangeEvent),
-    /// Shutdown
-    Shutdown,
-}
-
-/// Events emitted by the learning actor
-#[derive(Debug)]
-pub(crate) enum LearningEvent {
-    /// A value reached quorum and was applied
-    Learned {
-        /// The new epoch after applying
-        epoch: Epoch,
-    },
-    /// An acceptor change was processed
-    AcceptorChange(AcceptorChangeEvent),
-}
-
 /// Learning actor that coordinates quorum tracking across acceptors
 ///
 /// This actor:
+/// - Subscribes to local state store for accepted values
 /// - Manages connections to peer acceptors
 /// - Tracks accepted values from all sources (local + peers)
-/// - Applies values when quorum is reached
-/// - Updates peer connections when the acceptor set changes
+/// - Notifies epoch watcher when quorum is reached
 pub(crate) struct GroupLearningActor<C, CS>
 where
     C: mls_rs::external_client::builder::MlsConfig + Clone + 'static,
@@ -123,10 +93,8 @@ where
     peer_rx: mpsc::Receiver<PeerEvent>,
     /// Channel sender for peer actors to send events
     peer_tx: mpsc::Sender<PeerEvent>,
-    /// Channel for receiving commands
-    command_rx: mpsc::Receiver<LearningCommand>,
-    /// Channel for sending events
-    event_tx: mpsc::Sender<LearningEvent>,
+    /// Epoch watcher to notify when quorum reached
+    epoch_tx: watch::Sender<Epoch>,
     /// Current peer actor handles (for cleanup)
     peer_handles: BTreeMap<AcceptorId, tokio::task::JoinHandle<()>>,
 }
@@ -143,16 +111,14 @@ where
     /// * `group_id` - The group being learned
     /// * `endpoint` - Iroh endpoint for peer connections
     /// * `initial_acceptors` - Initial set of acceptor addresses
-    /// * `command_rx` - Channel to receive commands
-    /// * `event_tx` - Channel to send events
+    /// * `epoch_tx` - Watch channel to notify epoch changes
     #[must_use]
     pub(crate) fn new(
         own_id: AcceptorId,
         group_id: GroupId,
         endpoint: Endpoint,
         initial_acceptors: impl IntoIterator<Item = (AcceptorId, EndpointAddr)>,
-        command_rx: mpsc::Receiver<LearningCommand>,
-        event_tx: mpsc::Sender<LearningEvent>,
+        epoch_tx: watch::Sender<Epoch>,
     ) -> Self {
         let (peer_tx, peer_rx) = mpsc::channel(256);
 
@@ -173,77 +139,50 @@ where
             quorum_tracker: QuorumTracker::new(total_acceptors),
             peer_rx,
             peer_tx,
-            command_rx,
-            event_tx,
+            epoch_tx,
             peer_handles: BTreeMap::new(),
         }
     }
 
     /// Run the learning actor
     ///
-    /// This spawns peer actors for each peer acceptor and coordinates
-    /// quorum tracking and application.
+    /// Subscribes to the local state store and peer acceptors, tracking quorum
+    /// and notifying the epoch watcher when values reach consensus.
     ///
     /// # Errors
     ///
-    /// Returns an error if applying a learned value to the acceptor fails.
-    pub(crate) async fn run<A>(mut self, acceptor: &mut A) -> Result<(), AcceptorError>
-    where
-        A: Learner<
-                Proposal = GroupProposal,
-                Message = GroupMessage,
-                AcceptorId = AcceptorId,
-                Error = AcceptorError,
-            >,
-    {
+    /// Returns an error if the state store subscription fails.
+    pub(crate) async fn run(mut self, state: GroupStateStore, initial_round: Epoch) {
+        // Subscribe to local state store for accepted values
+        let mut local_subscription =
+            AcceptorStateStore::<GroupAcceptor<C, CS>>::subscribe_from(&state, initial_round).await;
+
         // Spawn peer actors for initial acceptors
-        let current_round = acceptor.current_round();
         let peers: Vec<_> = self
             .peer_acceptors
             .iter()
             .map(|(id, addr)| (*id, addr.clone()))
             .collect();
         for (id, addr) in peers {
-            self.spawn_peer_actor(id, addr, current_round);
+            self.spawn_peer_actor(id, addr, initial_round);
         }
 
         loop {
             tokio::select! {
+                // Handle local accepted values
+                Some((proposal, message)) = local_subscription.next() => {
+                    self.handle_accepted(self.own_id, proposal, message);
+                }
+
                 // Handle peer events
                 Some(event) = self.peer_rx.recv() => {
                     match event {
                         PeerEvent::Accepted { acceptor_id, proposal, message } => {
-                            self.handle_peer_accepted(
-                                acceptor,
-                                acceptor_id,
-                                proposal,
-                                *message,
-                            ).await?;
+                            self.handle_accepted(acceptor_id, proposal, *message);
                         }
                         PeerEvent::Disconnected { acceptor_id, error } => {
                             tracing::warn!(?acceptor_id, %error, "peer disconnected");
-                            // Could implement reconnection logic here
-                        }
-                    }
-                }
-
-                // Handle commands
-                Some(cmd) = self.command_rx.recv() => {
-                    match cmd {
-                        LearningCommand::LocalAccepted { proposal, message } => {
-                            // Track local accept
-                            self.handle_peer_accepted(
-                                acceptor,
-                                self.own_id,
-                                proposal,
-                                *message,
-                            ).await?;
-                        }
-                        LearningCommand::AcceptorChanged(change) => {
-                            self.handle_acceptor_change(change, acceptor.current_round());
-                        }
-                        LearningCommand::Shutdown => {
-                            break;
+                            // TODO: implement reconnection logic
                         }
                     }
                 }
@@ -257,75 +196,54 @@ where
             handle.abort();
         }
         self.peer_handles.clear();
-
-        Ok(())
     }
 
     /// Handle an accepted value (from local or peer)
-    async fn handle_peer_accepted<A>(
+    fn handle_accepted(
         &mut self,
-        acceptor: &mut A,
         _acceptor_id: AcceptorId,
         proposal: GroupProposal,
         message: GroupMessage,
-    ) -> Result<(), AcceptorError>
-    where
-        A: Learner<
-                Proposal = GroupProposal,
-                Message = GroupMessage,
-                AcceptorId = AcceptorId,
-                Error = AcceptorError,
-            >,
-    {
-        let current_round = acceptor.current_round();
+    ) {
+        let current_epoch = *self.epoch_tx.borrow();
 
         // Skip old rounds
-        if proposal.epoch < current_round {
-            return Ok(());
+        if proposal.epoch < current_epoch {
+            return;
         }
 
         // Track and check for quorum
-        if let Some((p, m)) = self.quorum_tracker.track(proposal, message) {
-            // Quorum reached - apply
-            tracing::info!(epoch = ?p.epoch, "quorum reached, applying");
-            acceptor.apply(p.clone(), m.clone()).await?;
-
-            // Notify
-            let _ = self
-                .event_tx
-                .send(LearningEvent::Learned { epoch: p.epoch })
-                .await;
+        if let Some((p, _m)) = self.quorum_tracker.track(proposal, message) {
+            // Quorum reached - notify epoch watcher
+            let new_epoch = Epoch(p.epoch.0 + 1);
+            tracing::info!(epoch = ?p.epoch, "quorum reached");
+            let _ = self.epoch_tx.send(new_epoch);
         }
-
-        Ok(())
     }
 
-    /// Handle acceptor set change
-    fn handle_acceptor_change(&mut self, change: AcceptorChangeEvent, current_round: Epoch) {
-        match &change {
-            AcceptorChangeEvent::Added { id, addr } => {
-                if *id != self.own_id {
-                    self.peer_acceptors.insert(*id, addr.clone());
-                    self.spawn_peer_actor(*id, addr.clone(), current_round);
-                }
-            }
-            AcceptorChangeEvent::Removed { id } => {
-                self.peer_acceptors.remove(id);
-                if let Some(handle) = self.peer_handles.remove(id) {
-                    handle.abort();
-                }
-            }
-        }
+    // /// Handle acceptor set change
+    // pub(crate) fn handle_acceptor_change(&mut self, change: AcceptorChangeEvent) {
+    //     let current_round = *self.epoch_tx.borrow();
 
-        // Update quorum tracker with new count
-        let total = self.peer_acceptors.len() + 1;
-        self.quorum_tracker = QuorumTracker::new(total);
+    //     match &change {
+    //         AcceptorChangeEvent::Added { id, addr } => {
+    //             if *id != self.own_id {
+    //                 self.peer_acceptors.insert(*id, addr.clone());
+    //                 self.spawn_peer_actor(*id, addr.clone(), current_round);
+    //             }
+    //         }
+    //         AcceptorChangeEvent::Removed { id } => {
+    //             self.peer_acceptors.remove(id);
+    //             if let Some(handle) = self.peer_handles.remove(id) {
+    //                 handle.abort();
+    //             }
+    //         }
+    //     }
 
-        // Notify
-        let _ = self
-            .event_tx
-            .try_send(LearningEvent::AcceptorChange(change));
-    }
+    //     // Update quorum tracker with new count
+    //     let total = self.peer_acceptors.len() + 1;
+    //     self.quorum_tracker = QuorumTracker::new(total);
+    // }
 
     /// Spawn a peer actor for connecting to a peer acceptor
     fn spawn_peer_actor(&mut self, id: AcceptorId, addr: EndpointAddr, current_round: Epoch) {
@@ -355,7 +273,6 @@ async fn run_peer_actor(
     current_round: Epoch,
     tx: mpsc::Sender<PeerEvent>,
 ) -> Result<(), ConnectorError> {
-    use futures::StreamExt;
     use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
     use universal_sync_core::codec::PostcardCodec;
     use universal_sync_core::{Handshake, HandshakeResponse};
@@ -461,17 +378,4 @@ async fn run_peer_actor(
         .await;
 
     Ok(())
-}
-
-/// Create channels for a learning actor
-#[must_use]
-pub(crate) fn learning_channels() -> (
-    mpsc::Sender<LearningCommand>,
-    mpsc::Receiver<LearningCommand>,
-    mpsc::Sender<LearningEvent>,
-    mpsc::Receiver<LearningEvent>,
-) {
-    let (cmd_tx, cmd_rx) = mpsc::channel(64);
-    let (event_tx, event_rx) = mpsc::channel(64);
-    (cmd_tx, cmd_rx, event_tx, event_rx)
 }

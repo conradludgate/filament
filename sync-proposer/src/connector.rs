@@ -103,57 +103,6 @@ impl<L> Clone for IrohConnector<L> {
     }
 }
 
-impl<L> IrohConnector<L> {
-    /// Create a new connector for joining an existing group
-    ///
-    /// # Arguments
-    /// * `endpoint` - The iroh endpoint to use for connections
-    /// * `group_id` - The group to join
-    #[must_use]
-    pub(crate) fn new(endpoint: Endpoint, group_id: GroupId) -> Self {
-        Self {
-            endpoint,
-            group_id,
-            address_hints: Arc::new(HashMap::new()),
-            _marker: PhantomData,
-        }
-    }
-
-    // /// Create a new connector with address hints
-    // ///
-    // /// Use this when iroh discovery is not available and you have
-    // /// the full endpoint addresses for acceptors.
-    // ///
-    // /// # Arguments
-    // /// * `endpoint` - The iroh endpoint to use for connections
-    // /// * `group_id` - The group to join
-    // /// * `address_hints` - Map of acceptor IDs to their endpoint addresses
-    // pub(crate) fn with_address_hints(
-    //     endpoint: Endpoint,
-    //     group_id: GroupId,
-    //     address_hints: impl IntoIterator<Item = (AcceptorId, EndpointAddr)>,
-    // ) -> Self {
-    //     Self {
-    //         endpoint,
-    //         group_id,
-    //         address_hints: Arc::new(address_hints.into_iter().collect()),
-    //         _marker: PhantomData,
-    //     }
-    // }
-
-    /// Get the underlying iroh endpoint
-    #[must_use]
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
-    }
-
-    /// Get the group ID
-    #[must_use]
-    pub(crate) fn group_id(&self) -> &GroupId {
-        &self.group_id
-    }
-}
-
 impl<L> Connector<L> for IrohConnector<L>
 where
     L: Learner<Proposal = GroupProposal, Message = GroupMessage, AcceptorId = AcceptorId>,
@@ -243,36 +192,6 @@ where
             Ok(new_iroh_connection::<L, L::Error>(send, recv))
         })
     }
-}
-
-/// Register a new group with an acceptor
-///
-/// This sends a Create handshake to register the group with the acceptor.
-/// Use this when first setting up a group before using [`IrohConnector`]
-/// for ongoing Paxos connections.
-///
-/// # Arguments
-/// * `endpoint` - The iroh endpoint to use
-/// * `acceptor_id` - The acceptor to register with
-/// * `group_info` - The MLS `GroupInfo` message bytes
-///
-/// # Returns
-/// The [`GroupId`] assigned to the group on success.
-///
-/// # Errors
-/// Returns an error if the connection fails or the handshake is rejected.
-///
-/// # Panics
-/// Panics if the `AcceptorId` is not a valid public key.
-pub(crate) async fn register_group(
-    endpoint: &Endpoint,
-    acceptor_id: &AcceptorId,
-    group_info: &[u8],
-) -> Result<GroupId, ConnectorError> {
-    let public_key = PublicKey::from_bytes(acceptor_id.as_bytes())
-        .expect("AcceptorId should be a valid public key");
-
-    register_group_with_addr(endpoint, public_key, group_info).await
 }
 
 /// Register a new group with an acceptor using a full endpoint address

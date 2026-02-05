@@ -82,24 +82,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .identity_provider(BasicIdentityProvider::new())
         .build();
 
-    // Create the registry
-    let registry = AcceptorRegistry::new(
-        external_client,
-        cipher_suite,
-        state_store,
-        secret_key.clone(),
-    );
-
-    // Create the iroh endpoint
-    let mut endpoint = Endpoint::builder()
-        .secret_key(secret_key)
+    // Create the iroh endpoint (needed before registry for learning actors)
+    let mut endpoint_builder = Endpoint::builder()
+        .secret_key(secret_key.clone())
         .alpns(vec![PAXOS_ALPN.to_vec()]);
 
     for addr in tokio::net::lookup_host(args.bind).await? {
-        endpoint = endpoint.bind_addr(addr)?;
+        endpoint_builder = endpoint_builder.bind_addr(addr)?;
     }
 
-    let endpoint = endpoint.bind().await?;
+    let endpoint = endpoint_builder.bind().await?;
+
+    // Create the registry (needs endpoint for learning actors)
+    let registry =
+        AcceptorRegistry::new(external_client, cipher_suite, state_store, endpoint.clone());
 
     let addr = endpoint.addr();
     info!(?addr, "Acceptor server listening");

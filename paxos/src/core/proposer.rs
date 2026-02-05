@@ -153,12 +153,14 @@ where
 
     /// Get the current proposal key
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn proposal(&self) -> &K {
         &self.proposal
     }
 
     /// Get the current value
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn value(&self) -> &M {
         &self.value
     }
@@ -175,23 +177,23 @@ where
         matches!(self.phase, ProposerPhase::Accepting { .. })
     }
 
-    /// Check if we've learned a value
-    #[must_use]
-    pub(crate) fn is_learned(&self) -> bool {
-        matches!(self.phase, ProposerPhase::Learned)
-    }
+    // /// Check if we've learned a value
+    // #[must_use]
+    // pub(crate) fn is_learned(&self) -> bool {
+    //     matches!(self.phase, ProposerPhase::Learned)
+    // }
 
-    /// Check if we failed
-    #[must_use]
-    pub(crate) fn is_failed(&self) -> bool {
-        matches!(self.phase, ProposerPhase::Failed { .. })
-    }
+    // /// Check if we failed
+    // #[must_use]
+    // pub(crate) fn is_failed(&self) -> bool {
+    //     matches!(self.phase, ProposerPhase::Failed { .. })
+    // }
 
-    /// Get quorum size
-    #[must_use]
-    pub(crate) fn quorum(&self) -> usize {
-        self.quorum
-    }
+    // /// Get quorum size
+    // #[must_use]
+    // pub(crate) fn quorum(&self) -> usize {
+    //     self.quorum
+    // }
 
     /// Process a promise response during the Prepare phase.
     ///

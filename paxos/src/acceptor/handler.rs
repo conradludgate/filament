@@ -64,6 +64,13 @@ where
         &self.state
     }
 
+    /// Get a mutable reference to the underlying acceptor.
+    ///
+    /// Used by the runner to apply learned values.
+    pub(crate) fn acceptor_mut(&mut self) -> &mut A {
+        &mut self.acceptor
+    }
+
     /// Handle a Prepare request.
     ///
     /// Returns `Ok(Promised(...))` if the promise succeeded.

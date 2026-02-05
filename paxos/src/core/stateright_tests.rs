@@ -24,7 +24,7 @@ type Value = u64;
 /// Concrete proposal key type for model checking
 type ProposalKey = ProposalKeyGeneric<u64, u64, usize>;
 
-/// Acceptor state - uses the shared AcceptorCore
+/// Acceptor state - uses the shared `AcceptorCore`
 type AcceptorState = AcceptorCore<u64, ProposalKey, Value>;
 
 /// Core request type alias
@@ -40,7 +40,7 @@ enum PaxosMsg {
     Request(Request),
     /// Response from acceptor to proposer (uses core type)
     /// - For Prepare: contains current promised/accepted state
-    /// - For Accept: if accepted.0 == for_proposal, the accept succeeded
+    /// - For Accept: if accepted.0 == `for_proposal`, the accept succeeded
     Response(Response),
 }
 
@@ -48,7 +48,7 @@ enum PaxosMsg {
 // PROPOSER
 // =============================================================================
 
-/// Proposer state using ProposerCore for phase tracking
+/// Proposer state using `ProposerCore` for phase tracking
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ProposerState {
     /// Core proposer logic - tracks phase and quorum
@@ -134,7 +134,7 @@ impl Actor for PaxosActor {
 
         match (self, current_state) {
             (PaxosActor::Acceptor { .. }, PaxosActorState::Acceptor(acc_state)) => {
-                self.handle_acceptor_msg(&acc_state, state, src, msg, o);
+                Self::handle_acceptor_msg(&acc_state, state, src, msg, o);
             }
             (
                 PaxosActor::Proposer {
@@ -142,7 +142,7 @@ impl Actor for PaxosActor {
                 },
                 PaxosActorState::Proposer(prop_state),
             ) => {
-                self.handle_proposer_msg(*id, acceptor_ids, &prop_state, state, src, msg, o);
+                Self::handle_proposer_msg(*id, acceptor_ids, &prop_state, state, src, msg, o);
             }
             _ => {}
         }
@@ -151,7 +151,6 @@ impl Actor for PaxosActor {
 
 impl PaxosActor {
     fn handle_acceptor_msg(
-        &self,
         acc_state: &AcceptorState,
         state: &mut Cow<PaxosActorState>,
         src: Id,
@@ -180,7 +179,6 @@ impl PaxosActor {
 
     #[allow(clippy::too_many_arguments)]
     fn handle_proposer_msg(
-        &self,
         id: usize,
         acceptor_ids: &[Id],
         prop_state: &ProposerState,
@@ -325,7 +323,7 @@ fn paxos_model(
     paxos_model_with_config(num_proposers, num_acceptors, values, 3)
 }
 
-/// Build a Paxos model with custom max_attempt bound
+/// Build a Paxos model with custom `max_attempt` bound
 fn paxos_model_with_config(
     num_proposers: usize,
     num_acceptors: usize,
@@ -344,7 +342,7 @@ fn paxos_model_with_config(
                 .iter()
                 .all(|s: &Arc<PaxosActorState>| match s.as_ref() {
                     PaxosActorState::Proposer(ps) => ps.core.proposal().attempt <= cfg.max_attempt,
-                    _ => true,
+                    PaxosActorState::Acceptor(_) => true,
                 })
         });
 
@@ -410,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "slow"]
     fn check_paxos_two_proposers() {
         // 2 proposers with different values, 3 acceptors
         // Use smaller max_attempt bound (2 instead of 3) for faster checking
