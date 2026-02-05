@@ -296,9 +296,30 @@ pub async fn add_member(
     Ok(())
 }
 
-/// Add an acceptor to a document's group.
+/// Add a global acceptor (used when creating new documents).
 #[tauri::command]
-pub async fn add_acceptor(
+pub async fn add_global_acceptor(
+    state: tauri::State<'_, SharedAppState>,
+    name: String,
+    addr_b58: String,
+) -> Result<(), String> {
+    use iroh::EndpointAddr;
+
+    let addr_bytes = bs58::decode(&addr_b58)
+        .into_vec()
+        .map_err(|e| format!("invalid base58: {e}"))?;
+    let addr: EndpointAddr =
+        postcard::from_bytes(&addr_bytes).map_err(|e| format!("invalid address: {e}"))?;
+
+    let mut app = state.write().await;
+    app.add_acceptor(name, addr);
+
+    Ok(())
+}
+
+/// Add an acceptor to an existing document's group.
+#[tauri::command]
+pub async fn add_doc_acceptor(
     state: tauri::State<'_, SharedAppState>,
     group_id: String,
     addr_b58: String,

@@ -27,7 +27,8 @@ const state = {
     currentDocument: null,
     isConnected: false,
     pendingChanges: [],
-    acceptors: [], // { name, addr }
+    globalAcceptors: [], // { name, addr } - used when creating new documents
+    docAcceptors: [], // { name, addr } - acceptors added to current document
 };
 
 // DOM Elements
@@ -62,7 +63,18 @@ const elements = {
     btnInviteCancel: document.getElementById('btn-invite-cancel'),
     inviteModalClose: document.getElementById('invite-modal-close'),
     
-    // Acceptor modal (per-document)
+    // Global acceptor modal (for new documents)
+    btnGlobalAcceptors: document.getElementById('btn-global-acceptors'),
+    globalAcceptorModal: document.getElementById('global-acceptor-modal'),
+    globalAcceptorList: document.getElementById('global-acceptor-list'),
+    globalAcceptorEmpty: document.getElementById('global-acceptor-empty'),
+    globalAcceptorName: document.getElementById('global-acceptor-name'),
+    globalAcceptorAddr: document.getElementById('global-acceptor-addr'),
+    btnGlobalAcceptorAdd: document.getElementById('btn-global-acceptor-add'),
+    btnGlobalAcceptorDone: document.getElementById('btn-global-acceptor-done'),
+    globalAcceptorModalClose: document.getElementById('global-acceptor-modal-close'),
+    
+    // Document acceptor modal (add to existing doc)
     btnDocAcceptors: document.getElementById('btn-doc-acceptors'),
     acceptorModal: document.getElementById('acceptor-modal'),
     acceptorList: document.getElementById('acceptor-list'),
@@ -142,17 +154,24 @@ function updateSyncStatus(status) {
 // Acceptor Management
 // ============================================================================
 
-function renderAcceptorList() {
-    // Clear existing items (except empty message)
-    const items = elements.acceptorList.querySelectorAll('.acceptor-item');
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// --- Global Acceptors (for new documents) ---
+
+function renderGlobalAcceptorList() {
+    const items = elements.globalAcceptorList.querySelectorAll('.acceptor-item');
     items.forEach(item => item.remove());
     
-    if (state.acceptors.length === 0) {
-        elements.acceptorEmpty.classList.remove('hidden');
+    if (state.globalAcceptors.length === 0) {
+        elements.globalAcceptorEmpty.classList.remove('hidden');
     } else {
-        elements.acceptorEmpty.classList.add('hidden');
+        elements.globalAcceptorEmpty.classList.add('hidden');
         
-        state.acceptors.forEach((acceptor, index) => {
+        state.globalAcceptors.forEach((acceptor, index) => {
             const item = document.createElement('div');
             item.className = 'acceptor-item';
             item.innerHTML = `
@@ -162,38 +181,23 @@ function renderAcceptorList() {
                 </div>
                 <button class="acceptor-item-remove" data-index="${index}" title="Remove">✕</button>
             `;
-            elements.acceptorList.appendChild(item);
+            elements.globalAcceptorList.appendChild(item);
         });
         
-        // Add remove handlers
-        elements.acceptorList.querySelectorAll('.acceptor-item-remove').forEach(btn => {
+        elements.globalAcceptorList.querySelectorAll('.acceptor-item-remove').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const index = parseInt(e.target.dataset.index, 10);
-                removeAcceptor(index);
+                removeGlobalAcceptor(index);
             });
         });
     }
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-async function addAcceptor(name, addr) {
-    if (!state.currentDocument) {
-        showToast('No document open', 'error');
-        return;
-    }
-    
+async function addGlobalAcceptor(name, addr) {
     try {
-        await invoke('add_acceptor', { 
-            groupId: state.currentDocument.group_id,
-            addrB58: addr 
-        });
-        state.acceptors.push({ name, addr });
-        renderAcceptorList();
+        await invoke('add_global_acceptor', { name, addrB58: addr });
+        state.globalAcceptors.push({ name, addr });
+        renderGlobalAcceptorList();
         showToast(`Added acceptor: ${name}`, 'success');
     } catch (error) {
         console.error('Failed to add acceptor:', error);
@@ -201,12 +205,56 @@ async function addAcceptor(name, addr) {
     }
 }
 
-function removeAcceptor(index) {
-    // Note: Backend doesn't support removal yet, just remove from UI state
-    const acceptor = state.acceptors[index];
-    state.acceptors.splice(index, 1);
-    renderAcceptorList();
+function removeGlobalAcceptor(index) {
+    const acceptor = state.globalAcceptors[index];
+    state.globalAcceptors.splice(index, 1);
+    renderGlobalAcceptorList();
     showToast(`Removed acceptor: ${acceptor.name}`, 'info');
+}
+
+// --- Document Acceptors (for existing documents) ---
+
+function renderDocAcceptorList() {
+    const items = elements.acceptorList.querySelectorAll('.acceptor-item');
+    items.forEach(item => item.remove());
+    
+    if (state.docAcceptors.length === 0) {
+        elements.acceptorEmpty.classList.remove('hidden');
+    } else {
+        elements.acceptorEmpty.classList.add('hidden');
+        
+        state.docAcceptors.forEach((acceptor, index) => {
+            const item = document.createElement('div');
+            item.className = 'acceptor-item';
+            item.innerHTML = `
+                <div class="acceptor-item-info">
+                    <span class="acceptor-item-name">${escapeHtml(acceptor.name)}</span>
+                    <span class="acceptor-item-addr" title="${escapeHtml(acceptor.addr)}">${acceptor.addr.slice(0, 32)}...</span>
+                </div>
+            `;
+            elements.acceptorList.appendChild(item);
+        });
+    }
+}
+
+async function addDocAcceptor(name, addr) {
+    if (!state.currentDocument) {
+        showToast('No document open', 'error');
+        return;
+    }
+    
+    try {
+        await invoke('add_doc_acceptor', { 
+            groupId: state.currentDocument.group_id,
+            addrB58: addr 
+        });
+        state.docAcceptors.push({ name, addr });
+        renderDocAcceptorList();
+        showToast(`Added acceptor: ${name}`, 'success');
+    } catch (error) {
+        console.error('Failed to add acceptor:', error);
+        showToast(`Failed to add acceptor: ${error}`, 'error');
+    }
 }
 
 // ============================================================================
@@ -292,7 +340,7 @@ async function joinDocumentWithWelcome(welcomeBytes) {
         const doc = await invoke('join_document_bytes', { welcome: welcomeBytes });
         
         state.currentDocument = doc;
-        state.acceptors = []; // Reset acceptors for joined document
+        state.docAcceptors = []; // Reset acceptors for joined document
         elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
         elements.docId.title = doc.group_id;
         elements.editor.value = doc.text;
@@ -319,7 +367,7 @@ async function createDocument() {
         const doc = await invoke('create_document');
         
         state.currentDocument = doc;
-        state.acceptors = []; // Reset acceptors for new document
+        state.docAcceptors = []; // Reset acceptors for new document
         elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
         elements.docId.title = doc.group_id;
         elements.editor.value = doc.text;
@@ -521,20 +569,49 @@ function setupEventListeners() {
     // Editor input
     elements.editor.addEventListener('input', handleEditorInput);
     
-    // Acceptor modal (per-document)
+    // Global acceptor modal (for new documents)
+    elements.btnGlobalAcceptors.addEventListener('click', () => {
+        renderGlobalAcceptorList();
+        showModal(elements.globalAcceptorModal);
+    });
+    
+    const closeGlobalAcceptorModal = () => hideModal(elements.globalAcceptorModal);
+    elements.btnGlobalAcceptorDone.addEventListener('click', closeGlobalAcceptorModal);
+    elements.globalAcceptorModalClose.addEventListener('click', closeGlobalAcceptorModal);
+    elements.globalAcceptorModal.querySelector('.modal-backdrop').addEventListener('click', closeGlobalAcceptorModal);
+    
+    elements.btnGlobalAcceptorAdd.addEventListener('click', async () => {
+        const name = elements.globalAcceptorName.value.trim();
+        const addr = elements.globalAcceptorAddr.value.trim();
+        
+        if (!name) {
+            showToast('Please enter a name for the acceptor', 'error');
+            return;
+        }
+        if (!addr) {
+            showToast('Please enter the acceptor address', 'error');
+            return;
+        }
+        
+        await addGlobalAcceptor(name, addr);
+        elements.globalAcceptorName.value = '';
+        elements.globalAcceptorAddr.value = '';
+    });
+
+    // Document acceptor modal (for existing documents)
     elements.btnDocAcceptors.addEventListener('click', () => {
         if (!state.currentDocument) {
             showToast('No document open', 'error');
             return;
         }
-        renderAcceptorList();
+        renderDocAcceptorList();
         showModal(elements.acceptorModal);
     });
     
-    const closeAcceptorModal = () => hideModal(elements.acceptorModal);
-    elements.btnAcceptorDone.addEventListener('click', closeAcceptorModal);
-    elements.acceptorModalClose.addEventListener('click', closeAcceptorModal);
-    elements.acceptorModal.querySelector('.modal-backdrop').addEventListener('click', closeAcceptorModal);
+    const closeDocAcceptorModal = () => hideModal(elements.acceptorModal);
+    elements.btnAcceptorDone.addEventListener('click', closeDocAcceptorModal);
+    elements.acceptorModalClose.addEventListener('click', closeDocAcceptorModal);
+    elements.acceptorModal.querySelector('.modal-backdrop').addEventListener('click', closeDocAcceptorModal);
     
     elements.btnAddAcceptorConfirm.addEventListener('click', async () => {
         const name = elements.acceptorName.value.trim();
@@ -549,7 +626,7 @@ function setupEventListeners() {
             return;
         }
         
-        await addAcceptor(name, addr);
+        await addDocAcceptor(name, addr);
         elements.acceptorName.value = '';
         elements.acceptorAddr.value = '';
     });
