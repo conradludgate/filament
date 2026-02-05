@@ -144,21 +144,6 @@ where
         }
     }
 
-    // /// Get all accepted values from a given round onwards
-    // #[must_use]
-    // pub(crate) fn accepted_from(&self, from_round: R) -> Vec<(P, M)> {
-    //     self.accepted
-    //         .range(from_round..)
-    //         .map(|(_, (p, m))| (p.clone(), m.clone()))
-    //         .collect()
-    // }
-
-    // /// Get the highest round that has been accepted
-    // #[must_use]
-    // pub(crate) fn highest_accepted_round(&self) -> Option<R> {
-    //     self.accepted.keys().next_back().copied()
-    // }
-
     /// Handle a request and produce a response.
     ///
     /// This is a convenience method that combines `prepare` and `accept`

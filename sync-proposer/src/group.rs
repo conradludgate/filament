@@ -54,7 +54,7 @@ use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorAdd, AcceptorId, AcceptorRemove, Crdt, CrdtFactory, CrdtRegistrationExt,
     EncryptedAppMessage, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, MemberId,
-    MessageId, WelcomeBundle,
+    MessageId, PAXOS_ALPN, WelcomeBundle,
 };
 use universal_sync_paxos::proposer::{ProposeResult, Proposer, QuorumTracker};
 use universal_sync_paxos::{AcceptorMessage, Learner, Proposal};
@@ -1367,10 +1367,6 @@ where
                 // Store the addr so we can register after consensus
                 // For now, just start the proposal
                 self.start_proposal(message, reply).await;
-
-                // TODO: After consensus, register with the new acceptor
-                // This would require tracking the addr and doing the registration
-                // after apply_proposal is called
             }
             Err(e) => {
                 let _ = reply.send(Err(e));
@@ -1686,7 +1682,7 @@ where
         // Connect to the new member's endpoint
         let conn = self
             .endpoint
-            .connect(member_addr.clone(), crate::connector::PAXOS_ALPN)
+            .connect(member_addr.clone(), PAXOS_ALPN)
             .await
             .map_err(|e| {
                 Report::new(GroupError).attach(format!("failed to connect to new member: {e}"))

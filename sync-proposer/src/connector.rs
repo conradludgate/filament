@@ -15,12 +15,9 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    AcceptorId, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
+    AcceptorId, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, PAXOS_ALPN,
 };
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner};
-
-/// ALPN protocol identifier for Paxos connections
-pub(crate) const PAXOS_ALPN: &[u8] = b"universal-sync/paxos/1";
 
 /// Error type for iroh connector operations
 #[derive(Debug)]

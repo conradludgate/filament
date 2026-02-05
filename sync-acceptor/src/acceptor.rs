@@ -17,7 +17,7 @@
 //! it's stored in the state store and later "learned" when the acceptor
 //! is recreated for a new connection.
 //!
-//! # Multi-Acceptor Deployment (TODO)
+//! # Multi-Acceptor Deployment
 //!
 //! For multiple acceptors, each acceptor server should:
 //!
@@ -195,47 +195,10 @@ where
         self
     }
 
-    // /// Get this acceptor's own ID (derived from secret key)
-    // pub(crate) fn own_id(&self) -> AcceptorId {
-    //     AcceptorId::from_bytes(*self.secret_key.public().as_bytes())
-    // }
-
-    // /// Update the set of known acceptors from addresses
-    // pub(crate) fn set_acceptors(&mut self, acceptors: impl IntoIterator<Item = EndpointAddr>) {
-    //     self.acceptors = acceptors
-    //         .into_iter()
-    //         .map(|addr| {
-    //             let id = AcceptorId::from_bytes(*addr.id.as_bytes());
-    //             (id, addr)
-    //         })
-    //         .collect();
-    // }
-
-    // /// Get a reference to the external group
-    // pub(crate) fn external_group(&self) -> &ExternalGroup<C> {
-    //     &self.external_group
-    // }
-
     /// Get the acceptor addresses
     pub(crate) fn acceptor_addrs(&self) -> impl Iterator<Item = (&AcceptorId, &EndpointAddr)> {
         self.acceptors.iter()
     }
-
-    // /// Add an acceptor by address
-    // ///
-    // /// Returns the `AcceptorId` that was added.
-    // pub(crate) fn add_acceptor(&mut self, addr: EndpointAddr) -> AcceptorId {
-    //     let id = AcceptorId::from_bytes(*addr.id.as_bytes());
-    //     self.acceptors.insert(id, addr);
-    //     id
-    // }
-
-    // /// Remove an acceptor by ID
-    // ///
-    // /// Returns the address if the acceptor was present.
-    // pub(crate) fn remove_acceptor(&mut self, id: &AcceptorId) -> Option<EndpointAddr> {
-    //     self.acceptors.remove(id)
-    // }
 
     /// Get a member's public signing key from the current roster
     fn get_member_public_key(&self, member_id: MemberId) -> Option<SignaturePublicKey> {
@@ -472,24 +435,6 @@ where
 
         Ok(())
     }
-}
-
-// Implement Acceptor trait for GroupAcceptor (marker trait)
-impl<C, CS> universal_sync_paxos::Acceptor for GroupAcceptor<C, CS>
-where
-    C: ExternalMlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    // No methods required - Acceptor is now a marker trait.
-    //
-    // The key insight is that:
-    // - Validation is handled by Learner::validate()
-    // - Persistence is handled by AcceptorStateStore::accept()
-    // - Application is handled by Learner::apply() when quorum is confirmed
-    //
-    // This acceptor validates proposals from MLS group members and
-    // stores accepted values, but only applies them when learning
-    // confirms that consensus was reached.
 }
 
 // Private helper methods

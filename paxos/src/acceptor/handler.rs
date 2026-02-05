@@ -4,8 +4,9 @@ use std::fmt;
 
 use tracing::trace;
 
+use crate::Learner;
 use crate::messages::AcceptorMessage;
-use crate::traits::{Acceptor, AcceptorStateStore, Proposal};
+use crate::traits::{AcceptorStateStore, Proposal};
 
 /// Error returned when a proposal fails validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +21,7 @@ impl fmt::Display for InvalidProposal {
 impl std::error::Error for InvalidProposal {}
 
 /// Outcome of handling a Prepare request.
-pub(crate) enum PromiseOutcome<A: Acceptor> {
+pub(crate) enum PromiseOutcome<A: Learner> {
     /// Successfully promised to this proposal.
     Promised(AcceptorMessage<A>),
     /// Rejected because a higher proposal was already promised/accepted.
@@ -28,7 +29,7 @@ pub(crate) enum PromiseOutcome<A: Acceptor> {
 }
 
 /// Outcome of handling an Accept request.
-pub(crate) enum AcceptOutcome<A: Acceptor> {
+pub(crate) enum AcceptOutcome<A: Learner> {
     /// Successfully accepted this proposal.
     Accepted(AcceptorMessage<A>),
     /// Rejected because a higher proposal was already promised/accepted.
@@ -46,7 +47,7 @@ pub struct AcceptorHandler<A, S> {
 
 impl<A, S> AcceptorHandler<A, S>
 where
-    A: Acceptor,
+    A: Learner,
     S: AcceptorStateStore<A>,
 {
     /// Create a new acceptor handler.

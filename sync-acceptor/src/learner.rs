@@ -181,8 +181,8 @@ where
                             self.handle_accepted(acceptor_id, proposal, *message);
                         }
                         PeerEvent::Disconnected { acceptor_id, error } => {
-                            tracing::warn!(?acceptor_id, %error, "peer disconnected");
-                            // TODO: implement reconnection logic
+                            // Peer actor handles its own reconnection, this is just informational
+                            tracing::debug!(?acceptor_id, %error, "peer disconnected (will reconnect)");
                         }
                     }
                 }
@@ -221,30 +221,6 @@ where
         }
     }
 
-    // /// Handle acceptor set change
-    // pub(crate) fn handle_acceptor_change(&mut self, change: AcceptorChangeEvent) {
-    //     let current_round = *self.epoch_tx.borrow();
-
-    //     match &change {
-    //         AcceptorChangeEvent::Added { id, addr } => {
-    //             if *id != self.own_id {
-    //                 self.peer_acceptors.insert(*id, addr.clone());
-    //                 self.spawn_peer_actor(*id, addr.clone(), current_round);
-    //             }
-    //         }
-    //         AcceptorChangeEvent::Removed { id } => {
-    //             self.peer_acceptors.remove(id);
-    //             if let Some(handle) = self.peer_handles.remove(id) {
-    //                 handle.abort();
-    //             }
-    //         }
-    //     }
-
-    //     // Update quorum tracker with new count
-    //     let total = self.peer_acceptors.len() + 1;
-    //     self.quorum_tracker = QuorumTracker::new(total);
-    // }
-
     /// Spawn a peer actor for connecting to a peer acceptor
     fn spawn_peer_actor(&mut self, id: AcceptorId, addr: EndpointAddr, current_round: Epoch) {
         let endpoint = self.endpoint.clone();
@@ -252,27 +228,104 @@ where
         let tx = self.peer_tx.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = run_peer_actor(endpoint, addr, group_id, id, current_round, tx).await {
-                tracing::warn!(?id, %e, "peer actor failed");
-            }
+            run_peer_actor(endpoint, addr, group_id, id, current_round, tx).await;
         });
 
         self.peer_handles.insert(id, handle);
     }
 }
 
-/// Run a peer acceptor actor
+/// Maximum reconnection attempts before giving up
+const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+/// Initial reconnection delay
+const INITIAL_RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+/// Maximum reconnection delay
+const MAX_RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Run a peer acceptor actor with reconnection logic
 ///
 /// Connects to a peer acceptor, sends a sync proposal to initiate the
 /// learning stream, and forwards received accepts to the learning actor.
+/// Automatically reconnects with exponential backoff on disconnection.
 async fn run_peer_actor(
     endpoint: Endpoint,
     addr: EndpointAddr,
     group_id: GroupId,
     acceptor_id: AcceptorId,
-    current_round: Epoch,
+    initial_round: Epoch,
     tx: mpsc::Sender<PeerEvent>,
-) -> Result<(), ConnectorError> {
+) {
+    let mut reconnect_attempts = 0u32;
+    let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
+    let mut current_round = initial_round;
+
+    loop {
+        // Try to run a connection
+        match run_peer_connection(&endpoint, &addr, group_id, acceptor_id, current_round, &tx)
+            .await
+        {
+            Ok(last_epoch) => {
+                // Connection closed gracefully, update round for next connection
+                current_round = last_epoch;
+                // Reset backoff on successful connection that ran for a while
+                reconnect_attempts = 0;
+                reconnect_delay = INITIAL_RECONNECT_DELAY;
+            }
+            Err(e) => {
+                reconnect_attempts += 1;
+
+                if reconnect_attempts > MAX_RECONNECT_ATTEMPTS {
+                    tracing::warn!(
+                        ?acceptor_id,
+                        %e,
+                        "max reconnect attempts reached, giving up on peer"
+                    );
+                    let _ = tx
+                        .send(PeerEvent::Disconnected {
+                            acceptor_id,
+                            error: format!("max reconnects exceeded: {e}"),
+                        })
+                        .await;
+                    return;
+                }
+
+                tracing::debug!(
+                    ?acceptor_id,
+                    attempt = reconnect_attempts,
+                    delay_ms = reconnect_delay.as_millis(),
+                    %e,
+                    "reconnecting to peer acceptor"
+                );
+            }
+        }
+
+        // Notify about disconnection (informational)
+        let _ = tx
+            .send(PeerEvent::Disconnected {
+                acceptor_id,
+                error: "connection closed, reconnecting".to_string(),
+            })
+            .await;
+
+        // Wait before reconnecting
+        tokio::time::sleep(reconnect_delay).await;
+
+        // Exponential backoff with cap
+        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+    }
+}
+
+/// Run a single peer connection session
+///
+/// Returns the last epoch seen on success (for resuming), or an error on failure.
+async fn run_peer_connection(
+    endpoint: &Endpoint,
+    addr: &EndpointAddr,
+    group_id: GroupId,
+    acceptor_id: AcceptorId,
+    current_round: Epoch,
+    tx: &mpsc::Sender<PeerEvent>,
+) -> Result<Epoch, ConnectorError> {
     use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
     use universal_sync_core::codec::PostcardCodec;
     use universal_sync_core::{Handshake, HandshakeResponse};
@@ -281,7 +334,7 @@ async fn run_peer_actor(
 
     // Connect to the peer acceptor
     let conn = endpoint
-        .connect(addr, PAXOS_ALPN)
+        .connect(addr.clone(), PAXOS_ALPN)
         .await
         .map_err(|e| ConnectorError::Connect(e.to_string()))?;
 
@@ -354,11 +407,19 @@ async fn run_peer_actor(
 
     tracing::debug!(?acceptor_id, "learning stream established");
 
+    // Track the last epoch we saw for resumption
+    let mut last_epoch = current_round;
+
     // Read accepted values and forward to learning actor
     while let Some(result) = reader.next().await {
         let response = result.map_err(|e| ConnectorError::Io(std::io::Error::other(e)))?;
 
         if let Some((proposal, message)) = response.accepted {
+            // Update last epoch for resumption
+            if proposal.epoch > last_epoch {
+                last_epoch = proposal.epoch;
+            }
+
             tx.send(PeerEvent::Accepted {
                 acceptor_id,
                 proposal,
@@ -369,13 +430,5 @@ async fn run_peer_actor(
         }
     }
 
-    // Connection closed
-    let _ = tx
-        .send(PeerEvent::Disconnected {
-            acceptor_id,
-            error: "connection closed".to_string(),
-        })
-        .await;
-
-    Ok(())
+    Ok(last_epoch)
 }

@@ -18,6 +18,9 @@ use crate::acceptor::GroupAcceptor;
 use crate::learner::GroupLearningActor;
 use crate::state_store::{GroupStateStore, SharedFjallStateStore};
 
+/// Return type for [`AcceptorRegistry::get_epoch_watcher`].
+pub type EpochWatcher = (watch::Receiver<Epoch>, Box<dyn Fn() -> Epoch + Send>);
+
 /// Epoch watcher for a group.
 ///
 /// Contains a watch sender for epoch change notifications.
@@ -324,7 +327,7 @@ where
     pub fn get_epoch_watcher(
         &self,
         group_id: &GroupId,
-    ) -> Option<(watch::Receiver<Epoch>, Box<dyn Fn() -> Epoch + Send>)> {
+    ) -> Option<EpochWatcher> {
         let watchers = self.epoch_watchers.read().ok()?;
         let watcher = watchers.get(group_id)?.clone();
         let rx = watcher.rx.clone();

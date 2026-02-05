@@ -28,12 +28,6 @@ impl<L: Learner> QuorumTracker<L> {
         }
     }
 
-    // /// Get the number of acceptors this tracker was configured for.
-    // #[must_use]
-    // pub(crate) fn num_acceptors(&self) -> usize {
-    //     self.num_acceptors
-    // }
-
     /// Track a (proposal, message) pair. Returns `Some((&proposal, &message))` if quorum
     /// was just reached, `None` otherwise.
     pub fn track(
@@ -63,13 +57,7 @@ impl<L: Learner> QuorumTracker<L> {
     ) -> Option<(&L::Proposal, &L::Message)> {
         self.counts
             .iter()
-            .find(|(k, (count, _, _))| k.round() == round && *count >= self.quorum)
+            .find(|(k, (count, _, _))| k.0 == round && *count >= self.quorum)
             .map(|(_, (_, proposal, message))| (proposal, message))
     }
-
-    // /// Get the quorum threshold.
-    // #[must_use]
-    // pub(crate) fn quorum(&self) -> usize {
-    //     self.quorum
-    // }
 }

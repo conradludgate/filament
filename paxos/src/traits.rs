@@ -151,23 +151,11 @@ impl<P: Proposal> ProposalKey<P> {
         Self(round, attempt, node_id)
     }
 
-    /// Get the round ID from this key.
-    #[must_use]
-    pub(crate) fn round(&self) -> P::RoundId {
-        self.0
-    }
-
     /// Get the attempt ID from this key.
     #[must_use]
     pub fn attempt(&self) -> P::AttemptId {
         self.1
     }
-
-    // /// Get the node ID from this key.
-    // #[must_use]
-    // pub(crate) fn node_id(&self) -> P::NodeId {
-    //     self.2
-    // }
 }
 
 /// State machine that learns from consensus and can create proposals
@@ -219,25 +207,6 @@ pub trait Learner: Send + Sync + 'static {
         message: Self::Message,
     ) -> Result<(), Self::Error>;
 }
-
-/// Marker trait for a Learner that can act as an acceptor.
-///
-/// Acceptors validate proposals from proposers and store accepted values
-/// in an [`AcceptorStateStore`]. The key difference from a regular Learner
-/// is that acceptors don't create proposals themselves - they only validate
-/// and store proposals from others.
-///
-/// # Separation of Concerns
-///
-/// - **Validation**: Handled by [`Learner::validate()`]
-/// - **Persistence**: Handled by [`AcceptorStateStore::accept()`]
-/// - **Learning**: Handled by [`Learner::apply()`] when quorum is confirmed
-///
-/// The previous `Acceptor::accept()` method was removed because:
-/// 1. Persistence is already handled by `AcceptorStateStore::accept()`
-/// 2. Applying to state should only happen when quorum is confirmed (learning),
-///    not when a single acceptor accepts a value
-pub trait Acceptor: Learner {}
 
 /// Shared state for an acceptor, allowing multiple connections to coordinate.
 ///

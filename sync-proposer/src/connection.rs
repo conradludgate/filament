@@ -25,9 +25,9 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use tokio::sync::RwLock;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use universal_sync_core::{AcceptorId, GroupId, Handshake, HandshakeResponse};
+use universal_sync_core::{AcceptorId, GroupId, Handshake, HandshakeResponse, PAXOS_ALPN};
 
-use crate::connector::{ConnectorError, PAXOS_ALPN};
+use crate::connector::ConnectorError;
 
 /// Manages connections to acceptors with stream multiplexing.
 ///
@@ -69,11 +69,6 @@ impl ConnectionManager {
     pub(crate) async fn add_address_hint(&self, acceptor_id: AcceptorId, addr: EndpointAddr) {
         self.address_hints.write().await.insert(acceptor_id, addr);
     }
-
-    // /// Remove an address hint for an acceptor.
-    // pub(crate) async fn remove_address_hint(&self, acceptor_id: &AcceptorId) {
-    //     self.address_hints.write().await.remove(acceptor_id);
-    // }
 
     /// Get or create a connection to an acceptor.
     ///
@@ -182,57 +177,6 @@ impl ConnectionManager {
             .map_err(|e| ConnectorError::Connect(e.to_string()))
     }
 
-    // /// Register a new group with an acceptor.
-    // ///
-    // /// This opens a bidirectional stream and sends a `CreateGroup` handshake.
-    // ///
-    // /// # Errors
-    // /// Returns an error if connection or handshake fails.
-    // pub(crate) async fn register_group(
-    //     &self,
-    //     acceptor_id: &AcceptorId,
-    //     group_info: &[u8],
-    // ) -> Result<(SendStream, RecvStream), ConnectorError> {
-    //     let conn = self.get_connection(acceptor_id).await?;
-    //     let (send, recv) = self
-    //         .open_stream_with_handshake(&conn, Handshake::CreateGroup(group_info.to_vec()))
-    //         .await?;
-    //     Ok((send, recv))
-    // }
-
-    // /// Register a new group with an acceptor using a full endpoint address.
-    // ///
-    // /// Like [`Self::register_group`] but accepts an [`iroh::EndpointAddr`]
-    // /// for local testing where discovery may not be available.
-    // ///
-    // /// # Errors
-    // /// Returns an error if connection or handshake fails.
-    // pub(crate) async fn register_group_with_addr(
-    //     &self,
-    //     addr: impl Into<EndpointAddr>,
-    //     group_info: &[u8],
-    // ) -> Result<(SendStream, RecvStream), ConnectorError> {
-    //     let addr = addr.into();
-
-    //     // Connect directly without caching (we don't have an AcceptorId yet)
-    //     let conn = self
-    //         .endpoint
-    //         .connect(addr.clone(), PAXOS_ALPN)
-    //         .await
-    //         .map_err(|e| ConnectorError::Connect(e.to_string()))?;
-
-    //     let (send, recv) = self
-    //         .open_stream_with_handshake(&conn, Handshake::CreateGroup(group_info.to_vec()))
-    //         .await?;
-
-    //     // Cache the connection by the remote's public key
-    //     let acceptor_id = AcceptorId::from_bytes(*conn.remote_id().as_bytes());
-    //     self.connections.write().await.insert(acceptor_id, conn);
-    //     self.address_hints.write().await.insert(acceptor_id, addr);
-
-    //     Ok((send, recv))
-    // }
-
     /// Open a stream with a handshake.
     ///
     /// Returns the raw streams after handshake completion.
@@ -296,19 +240,4 @@ impl ConnectionManager {
 
         Ok((send, recv))
     }
-
-    // /// Close and remove a cached connection to an acceptor.
-    // pub(crate) async fn close_connection(&self, acceptor_id: &AcceptorId) {
-    //     if let Some(conn) = self.connections.write().await.remove(acceptor_id) {
-    //         conn.close(0u8.into(), b"closed");
-    //     }
-    // }
-
-    // /// Close all cached connections.
-    // pub(crate) async fn close_all(&self) {
-    //     let connections: Vec<_> = self.connections.write().await.drain().collect();
-    //     for (_, conn) in connections {
-    //         conn.close(0u8.into(), b"closed");
-    //     }
-    // }
 }

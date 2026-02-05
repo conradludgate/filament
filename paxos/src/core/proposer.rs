@@ -177,24 +177,6 @@ where
         matches!(self.phase, ProposerPhase::Accepting { .. })
     }
 
-    // /// Check if we've learned a value
-    // #[must_use]
-    // pub(crate) fn is_learned(&self) -> bool {
-    //     matches!(self.phase, ProposerPhase::Learned)
-    // }
-
-    // /// Check if we failed
-    // #[must_use]
-    // pub(crate) fn is_failed(&self) -> bool {
-    //     matches!(self.phase, ProposerPhase::Failed { .. })
-    // }
-
-    // /// Get quorum size
-    // #[must_use]
-    // pub(crate) fn quorum(&self) -> usize {
-    //     self.quorum
-    // }
-
     /// Process a promise response during the Prepare phase.
     ///
     /// - `acceptor_id`: The acceptor that sent the response
