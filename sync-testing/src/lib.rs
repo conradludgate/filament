@@ -14,7 +14,7 @@ use universal_sync_core::{
     CRDT_REGISTRATION_EXTENSION_TYPE, MEMBER_ADDR_EXTENSION_TYPE, NoCrdtFactory,
     SUPPORTED_CRDTS_EXTENSION_TYPE,
 };
-use universal_sync_proposer::GroupClient;
+use universal_sync_proposer::{GroupClient, ReplContext};
 pub use yrs_crdt::{YrsCrdt, YrsCrdtFactory};
 
 /// Default cipher suite for testing
@@ -124,4 +124,26 @@ pub fn test_group_client(
     // Register default CRDT factory
     client.register_crdt_factory(NoCrdtFactory);
     client
+}
+
+/// Create a test [`ReplContext`] with the given identity name and endpoint.
+///
+/// This combines a fully configured MLS client with an iroh endpoint
+/// and wraps it in a `ReplContext` for testing REPL commands.
+///
+/// The client is pre-registered with a `NoCrdtFactory` for the "none" type.
+///
+/// # Arguments
+/// * `name` - A human-readable name for this client (e.g., "alice", "bob")
+/// * `endpoint` - The iroh endpoint for networking
+///
+/// # Panics
+/// Panics if key generation or client building fails.
+#[must_use]
+pub fn test_repl_context(
+    name: &'static str,
+    endpoint: iroh::Endpoint,
+) -> ReplContext<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
+    let client = test_group_client(name, endpoint);
+    ReplContext::new(client)
 }

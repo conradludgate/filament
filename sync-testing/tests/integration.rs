@@ -3,9 +3,10 @@
 //! These tests verify the networking layer and MLS integration.
 //! All tests have timeouts to prevent hanging.
 
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use iroh::Endpoint;
+use iroh::{Endpoint, RelayMode};
 use mls_rs::external_client::ExternalClient;
 use tempfile::TempDir;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -26,10 +27,17 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Create an iroh endpoint for testing
+/// Create an iroh endpoint for testing.
+///
+/// Uses an empty builder with relays disabled and binds only to localhost
+/// for faster local-only connections.
 async fn test_endpoint() -> Endpoint {
-    Endpoint::builder()
+    // Bind to localhost with a random port for faster local-only connections
+    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+    Endpoint::empty_builder(RelayMode::Disabled)
         .alpns(vec![PAXOS_ALPN.to_vec()])
+        .bind_addr(bind_addr)
+        .expect("valid bind address")
         .bind()
         .await
         .expect("failed to create endpoint")
@@ -100,6 +108,7 @@ async fn test_mls_group_creation_with_group_api() {
     group.shutdown().await;
 }
 
+/// Test Alice adding Bob to a group using the Group API.
 #[tokio::test]
 async fn test_alice_adds_bob_with_group_api() {
     init_tracing();
@@ -172,15 +181,8 @@ async fn test_alice_adds_bob_with_group_api() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // --- Alice adds Bob ---
-    let bob = test_group_client("bob", test_endpoint().await);
+    let mut bob = test_group_client("bob", test_endpoint().await);
     let bob_key_package = bob.generate_key_package().expect("bob key package");
-
-    // Bob starts listening for welcome in background
-    let bob_clone = bob.clone();
-    let welcome_handle = tokio::spawn(async move { bob_clone.wait_for_welcome().await });
-
-    // Give Bob a moment to start listening
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     alice_group
         .add_member(bob_key_package)
@@ -189,11 +191,8 @@ async fn test_alice_adds_bob_with_group_api() {
 
     tracing::info!("Alice added Bob and sent welcome");
 
-    // Wait for Bob to receive the welcome
-    let welcome = welcome_handle
-        .await
-        .expect("welcome task panicked")
-        .expect("failed to receive welcome");
+    // Wait for Bob to receive the welcome (automatically received in background)
+    let welcome = bob.recv_welcome().await.expect("failed to receive welcome");
 
     tracing::info!("Bob received welcome message");
 
@@ -241,6 +240,7 @@ async fn test_alice_adds_bob_with_group_api() {
     acceptor_task.abort();
 }
 
+/// Test adding and removing acceptors from a group.
 #[tokio::test]
 async fn test_acceptor_add_remove() {
     init_tracing();
@@ -434,6 +434,7 @@ async fn test_group_without_acceptors() {
     group.shutdown().await;
 }
 
+/// Test multiple key updates in a group with an acceptor.
 #[tokio::test]
 async fn test_multiple_key_updates() {
     init_tracing();
@@ -468,10 +469,7 @@ async fn test_multiple_key_updates() {
 }
 
 /// Test removing a member from a group.
-///
-/// TODO: This test is timing out - remove_member operation needs investigation.
 #[tokio::test]
-#[ignore = "remove_member times out - needs investigation"]
 async fn test_remove_member() {
     init_tracing();
 
@@ -491,24 +489,15 @@ async fn test_remove_member() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob using GroupClient
-    let bob = test_group_client("bob", test_endpoint().await);
+    let mut bob = test_group_client("bob", test_endpoint().await);
     let bob_key_package = bob.generate_key_package().expect("bob key package");
-
-    let bob_clone = bob.clone();
-    let welcome_handle = tokio::spawn(async move { bob_clone.wait_for_welcome().await });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     alice_group
         .add_member(bob_key_package)
         .await
         .expect("add bob");
 
-    let welcome = welcome_handle
-        .await
-        .expect("welcome task panicked")
-        .expect("failed to receive welcome");
-
+    let welcome = bob.recv_welcome().await.expect("failed to receive welcome");
     let bob_group = bob.join_group(&welcome).await.expect("bob join");
 
     let context = alice_group.context().await.expect("context after add bob");
@@ -532,6 +521,7 @@ async fn test_remove_member() {
     acceptor_task.abort();
 }
 
+/// Test adding three members to a group.
 #[tokio::test]
 async fn test_three_member_group() {
     init_tracing();
@@ -552,39 +542,29 @@ async fn test_three_member_group() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob using GroupClient
-    let bob = test_group_client("bob", test_endpoint().await);
+    let mut bob = test_group_client("bob", test_endpoint().await);
     let bob_key_package = bob.generate_key_package().expect("bob key package");
-
-    let bob_clone = bob.clone();
-    let welcome_handle = tokio::spawn(async move { bob_clone.wait_for_welcome().await });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     alice_group
         .add_member(bob_key_package)
         .await
         .expect("add bob");
 
-    let welcome = welcome_handle.await.expect("panic").expect("welcome");
+    let welcome = bob.recv_welcome().await.expect("bob welcome");
     let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Carol using GroupClient
-    let carol = test_group_client("carol", test_endpoint().await);
+    let mut carol = test_group_client("carol", test_endpoint().await);
     let carol_key_package = carol.generate_key_package().expect("carol key package");
-
-    let carol_clone = carol.clone();
-    let welcome_handle = tokio::spawn(async move { carol_clone.wait_for_welcome().await });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     alice_group
         .add_member(carol_key_package)
         .await
         .expect("add carol");
 
-    let welcome = welcome_handle.await.expect("panic").expect("welcome");
+    let welcome = carol.recv_welcome().await.expect("carol welcome");
     let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
 
     // Verify all have correct member count
@@ -674,6 +654,7 @@ async fn test_group_creation_with_initial_acceptor() {
     acceptor_task.abort();
 }
 
+/// Test concurrent operations with a single member group.
 #[tokio::test]
 async fn test_concurrent_operations_single_member() {
     init_tracing();
@@ -760,5 +741,359 @@ async fn test_group_client_with_acceptor() {
     tracing::info!(epoch = ?ctx.epoch, "Updated keys with GroupClient");
 
     alice_group.shutdown().await;
+    acceptor_task.abort();
+}
+
+// =============================================================================
+// ReplContext Tests - using the REPL command interface
+// =============================================================================
+
+use universal_sync_testing::test_repl_context;
+
+/// Test basic REPL workflow: create_group, list_groups, group_context
+#[tokio::test]
+async fn test_repl_basic_workflow() {
+    init_tracing();
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    // Create a group
+    let result = alice.execute("create_group").await;
+    assert!(result.is_ok(), "create_group should succeed: {result:?}");
+    let output = result.unwrap();
+    assert!(output.contains("Created group:"), "Should show group ID");
+
+    // List groups
+    let result = alice.execute("list_groups").await;
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(output.contains("Groups:"), "Should list groups");
+
+    // Get group context (need to extract group_id from create output)
+    let group_id = alice.groups.keys().next().expect("should have a group");
+    let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+
+    let result = alice
+        .execute(&format!("group_context {group_id_b58}"))
+        .await;
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(output.contains("Epoch: 0"), "Should be at epoch 0");
+    assert!(output.contains("Members: 1"), "Should have 1 member");
+
+    // Cleanup
+    for (_id, group) in alice.groups.drain() {
+        group.shutdown().await;
+    }
+}
+
+/// Test REPL key_package command
+#[tokio::test]
+async fn test_repl_key_package() {
+    init_tracing();
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    // Generate key package
+    let result = alice.execute("key_package").await;
+    assert!(result.is_ok(), "key_package should succeed");
+    let output = result.unwrap();
+
+    // Should be valid base58
+    let decoded = bs58::decode(&output.trim()).into_vec();
+    assert!(decoded.is_ok(), "Should be valid base58");
+}
+
+/// Test REPL add_acceptor workflow
+#[tokio::test]
+async fn test_repl_add_acceptor() {
+    init_tracing();
+
+    let (acceptor_task, acceptor_addr, _acceptor_dir) = spawn_acceptor().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    // Create group
+    alice.execute("create_group").await.expect("create_group");
+
+    let group_id = alice.groups.keys().next().expect("should have a group");
+    let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+
+    // Serialize acceptor address
+    let addr_bytes = postcard::to_allocvec(&acceptor_addr).expect("serialize addr");
+    let addr_b58 = bs58::encode(&addr_bytes).into_string();
+
+    // Add acceptor
+    let result = alice
+        .execute(&format!("add_acceptor {group_id_b58} {addr_b58}"))
+        .await;
+    assert!(result.is_ok(), "add_acceptor should succeed: {result:?}");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify acceptor was added
+    let result = alice
+        .execute(&format!("group_context {group_id_b58}"))
+        .await;
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        output.contains("Acceptors:"),
+        "Should show acceptors section"
+    );
+    assert!(
+        !output.contains("Acceptors: none"),
+        "Should have an acceptor"
+    );
+
+    // Cleanup
+    for (_id, group) in alice.groups.drain() {
+        group.shutdown().await;
+    }
+    acceptor_task.abort();
+}
+
+/// Test REPL update_keys command
+///
+/// Creates a group with an acceptor, then uses REPL to update keys.
+#[tokio::test]
+async fn test_repl_update_keys() {
+    init_tracing();
+
+    let (acceptor_task, acceptor_addr, _acceptor_dir) = spawn_acceptor().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create group WITH acceptor using Group API (reliable path)
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+    let alice_group = alice
+        .client
+        .create_group(std::slice::from_ref(&acceptor_addr), "none")
+        .await
+        .expect("create group with acceptor");
+
+    let group_id = alice_group.group_id();
+    let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+    alice.groups.insert(group_id, alice_group);
+
+    // Wait for acceptor registration
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Update keys using REPL
+    let result = alice.execute(&format!("update_keys {group_id_b58}")).await;
+    assert!(result.is_ok(), "update_keys should succeed: {result:?}");
+    let output = result.unwrap();
+    assert!(output.contains("New epoch:"), "Should show new epoch");
+
+    // Verify epoch advanced (create + update = epoch 1)
+    let result = alice
+        .execute(&format!("group_context {group_id_b58}"))
+        .await;
+    let output = result.unwrap();
+    assert!(
+        output.contains("Epoch: 1"),
+        "Should be at epoch 1: {output}"
+    );
+
+    // Cleanup
+    for (_id, group) in alice.groups.drain() {
+        group.shutdown().await;
+    }
+    acceptor_task.abort();
+}
+
+/// Test REPL add_member workflow with automatic welcome reception
+///
+/// This test creates a group with an initial acceptor using the GroupClient API,
+/// then uses REPL commands to add members and verify auto-welcome works.
+#[tokio::test]
+async fn test_repl_add_member_with_auto_welcome() {
+    init_tracing();
+
+    let (acceptor_task, acceptor_addr, _acceptor_dir) = spawn_acceptor().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Alice creates a group WITH an acceptor using Group API (this is the reliable path)
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+    let alice_group = alice
+        .client
+        .create_group(std::slice::from_ref(&acceptor_addr), "none")
+        .await
+        .expect("create group with acceptor");
+
+    let group_id = alice_group.group_id();
+    let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+    alice.groups.insert(group_id, alice_group);
+
+    // Wait for acceptor registration
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Bob generates a key package using REPL
+    let mut bob = test_repl_context("bob", test_endpoint().await);
+    let bob_kp = bob.execute("key_package").await.expect("key_package");
+    let bob_kp = bob_kp.trim();
+
+    // Alice adds Bob using REPL command
+    let result = alice
+        .execute(&format!("add_member {group_id_b58} {bob_kp}"))
+        .await;
+    assert!(result.is_ok(), "add_member should succeed: {result:?}");
+
+    // Give welcome time to arrive
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Bob processes pending welcomes (simulating pressing Enter in REPL)
+    let result = bob.execute("").await;
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    // Should show auto-join message
+    assert!(
+        output.contains("Automatically joined"),
+        "Should show auto-join: {output}"
+    );
+    assert_eq!(bob.groups.len(), 1, "Bob should have joined one group");
+
+    // Bob should now see the group in list
+    let result = bob.execute("list_groups").await;
+    let output = result.unwrap();
+    assert!(output.contains("Groups:"), "Bob should have groups");
+
+    // Cleanup
+    for (_id, group) in alice.groups.drain() {
+        group.shutdown().await;
+    }
+    for (_id, group) in bob.groups.drain() {
+        group.shutdown().await;
+    }
+    acceptor_task.abort();
+}
+
+/// Test REPL help command
+#[tokio::test]
+async fn test_repl_help() {
+    init_tracing();
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    let result = alice.execute("help").await;
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    // Verify help contains key commands
+    assert!(output.contains("key_package"));
+    assert!(output.contains("create_group"));
+    assert!(output.contains("add_member"));
+    assert!(output.contains("update_keys"));
+    assert!(output.contains("list_groups"));
+}
+
+/// Test REPL error handling for unknown commands
+#[tokio::test]
+async fn test_repl_unknown_command() {
+    init_tracing();
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    let result = alice.execute("nonexistent_command").await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("Unknown command"));
+}
+
+/// Test REPL error handling for missing arguments
+#[tokio::test]
+async fn test_repl_missing_arguments() {
+    init_tracing();
+
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+
+    // Commands that require arguments
+    let result = alice.execute("join_group").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Usage:"));
+
+    let result = alice.execute("add_acceptor").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Usage:"));
+
+    let result = alice.execute("update_keys").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Usage:"));
+}
+
+/// Test full workflow: Alice creates group with acceptor, updates keys, adds Bob
+///
+/// This test verifies the complete REPL workflow for group management.
+#[tokio::test]
+async fn test_repl_full_workflow() {
+    init_tracing();
+
+    let (acceptor_task, acceptor_addr, _acceptor_dir) = spawn_acceptor().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Alice creates a group WITH acceptor using Group API (reliable path)
+    let mut alice = test_repl_context("alice", test_endpoint().await);
+    let alice_group = alice
+        .client
+        .create_group(std::slice::from_ref(&acceptor_addr), "none")
+        .await
+        .expect("create group with acceptor");
+
+    let group_id = alice_group.group_id();
+    let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+    alice.groups.insert(group_id, alice_group);
+
+    // Wait for acceptor registration
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Alice updates keys using REPL
+    alice
+        .execute(&format!("update_keys {group_id_b58}"))
+        .await
+        .expect("update_keys");
+
+    // Bob generates key package using REPL
+    let mut bob = test_repl_context("bob", test_endpoint().await);
+    let bob_kp = bob.execute("key_package").await.expect("key_package");
+    let bob_kp = bob_kp.trim();
+
+    // Alice adds Bob using REPL
+    alice
+        .execute(&format!("add_member {group_id_b58} {bob_kp}"))
+        .await
+        .expect("add_member");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Bob receives welcome automatically
+    bob.execute("").await.expect("process welcomes");
+    assert_eq!(bob.groups.len(), 1, "Bob should have joined");
+
+    // Verify Alice's context using REPL
+    let alice_ctx = alice
+        .execute(&format!("group_context {group_id_b58}"))
+        .await
+        .expect("alice context");
+    assert!(
+        alice_ctx.contains("Members: 2"),
+        "Alice should see 2 members"
+    );
+
+    // Verify both have the acceptor
+    assert!(
+        alice_ctx.contains("Acceptors:"),
+        "Alice should have acceptors section"
+    );
+
+    tracing::info!("Full REPL workflow test complete");
+
+    // Cleanup
+    for (_id, group) in alice.groups.drain() {
+        group.shutdown().await;
+    }
+    for (_id, group) in bob.groups.drain() {
+        group.shutdown().await;
+    }
     acceptor_task.abort();
 }

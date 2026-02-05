@@ -572,4 +572,13 @@ where
             }
         }
     }
+
+    /// Store the initial epoch roster for the current epoch.
+    ///
+    /// This should be called after creating or loading a group to ensure
+    /// the epoch roster is available for signature validation.
+    pub(crate) fn store_initial_epoch_roster(&self) {
+        let epoch = Epoch(self.external_group.group_context().epoch);
+        self.store_current_epoch_roster(epoch);
+    }
 }

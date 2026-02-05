@@ -30,3 +30,4 @@ pub use connector::{ConnectorError, IrohConnection, IrohConnector};
 pub use error::GroupError;
 pub use group::{Group, GroupContext, GroupEvent, ReceivedAppMessage};
 pub use learner::{GroupLearner, LearnerError};
+pub use repl::ReplContext;

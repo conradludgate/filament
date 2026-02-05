@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use iroh::{Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr};
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalClient, ExternalGroup};
 use mls_rs::mls_rs_codec::MlsDecode;
@@ -192,6 +192,10 @@ where
         // Attach state store for epoch roster lookups during validation
         let mut acceptor = acceptor.with_state_store(state.clone());
 
+        // Store the initial epoch roster for signature validation
+        // (This may be redundant if we already stored it, but it's idempotent)
+        acceptor.store_initial_epoch_roster();
+
         // Replay all accepted messages to bring the acceptor up to date
         // This is necessary because the GroupInfo we stored is from epoch 0,
         // but the acceptor may have processed commits since then.
@@ -260,6 +264,12 @@ where
             .map_err(|e| format!("failed to persist group: {e}"))?;
 
         let state = self.state_store.for_group(group_id);
+
+        // Attach state store for epoch roster lookups during validation
+        let acceptor = acceptor.with_state_store(state.clone());
+
+        // Store the initial epoch roster for signature validation
+        acceptor.store_initial_epoch_roster();
 
         // Create epoch watcher and learning actor for this group
         self.ensure_epoch_watcher_and_learning(

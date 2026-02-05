@@ -11,6 +11,7 @@ use iroh::{Endpoint, EndpointAddr};
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
+use tokio::sync::mpsc;
 use universal_sync_core::{CrdtFactory, MemberAddrExt, SupportedCrdtsExt};
 
 use crate::connection::ConnectionManager;
@@ -61,6 +62,8 @@ pub struct GroupClient<C, CS> {
     connection_manager: ConnectionManager,
     /// Registry of CRDT factories by type ID
     crdt_factories: HashMap<String, Arc<dyn CrdtFactory>>,
+    /// Channel receiver for welcome messages received in the background
+    welcome_rx: mpsc::Receiver<Vec<u8>>,
 }
 
 impl<C, CS> GroupClient<C, CS>
@@ -69,6 +72,9 @@ where
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     /// Create a new `GroupClient`.
+    ///
+    /// This spawns a background task to listen for incoming welcome messages
+    /// from other members. Use [`recv_welcome`](Self::recv_welcome) to receive them.
     ///
     /// # Arguments
     /// * `client` - The MLS client
@@ -81,12 +87,40 @@ where
         cipher_suite: CS,
         endpoint: Endpoint,
     ) -> Self {
+        let (welcome_tx, welcome_rx) = mpsc::channel(16);
+        let connection_manager = ConnectionManager::new(endpoint);
+
+        // Spawn background task to accept incoming welcome messages
+        let endpoint_clone = connection_manager.endpoint().clone();
+        tokio::spawn(async move {
+            Self::welcome_acceptor_loop(endpoint_clone, welcome_tx).await;
+        });
+
         Self {
             client: Arc::new(client),
             signer,
             cipher_suite,
-            connection_manager: ConnectionManager::new(endpoint),
+            connection_manager,
             crdt_factories: HashMap::new(),
+            welcome_rx,
+        }
+    }
+
+    /// Background loop that accepts incoming connections and handles welcome messages.
+    async fn welcome_acceptor_loop(endpoint: Endpoint, tx: mpsc::Sender<Vec<u8>>) {
+        loop {
+            match crate::group::wait_for_welcome(&endpoint).await {
+                Ok(welcome_bytes) => {
+                    if tx.send(welcome_bytes).await.is_err() {
+                        // Channel closed, client dropped
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(?e, "welcome acceptor error (may be normal on shutdown)");
+                    // Continue accepting - the error might be transient
+                }
+            }
         }
     }
 
@@ -218,29 +252,25 @@ where
         .await
     }
 
-    /// Wait for a welcome message from an inviter.
+    /// Receive the next welcome message from the background acceptor.
     ///
-    /// This listens for an incoming connection with a `SendWelcome` handshake
-    /// and returns the welcome bytes.
+    /// Welcome messages are received in the background whenever another member
+    /// adds this client to their group. This method returns the next queued
+    /// welcome message, or waits for one to arrive.
     ///
-    /// # Errors
-    /// Returns an error if receiving the welcome fails.
-    pub async fn wait_for_welcome(&self) -> Result<Vec<u8>, Report<GroupError>> {
-        crate::group::wait_for_welcome(self.connection_manager.endpoint()).await
+    /// Returns `None` if the client is shutting down.
+    pub async fn recv_welcome(&mut self) -> Option<Vec<u8>> {
+        self.welcome_rx.recv().await
+    }
+
+    /// Try to receive a welcome message without blocking.
+    ///
+    /// Returns `Some(welcome_bytes)` if a welcome is already queued,
+    /// or `None` if no welcomes are currently available.
+    pub fn try_recv_welcome(&mut self) -> Option<Vec<u8>> {
+        self.welcome_rx.try_recv().ok()
     }
 }
 
-impl<C, CS> Clone for GroupClient<C, CS>
-where
-    CS: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            client: Arc::clone(&self.client),
-            signer: self.signer.clone(),
-            cipher_suite: self.cipher_suite.clone(),
-            connection_manager: self.connection_manager.clone(),
-            crdt_factories: self.crdt_factories.clone(),
-        }
-    }
-}
+// Note: GroupClient is intentionally NOT Clone because the welcome_rx channel
+// can only have one receiver. If you need to share a client, use Arc<Mutex<GroupClient>>.

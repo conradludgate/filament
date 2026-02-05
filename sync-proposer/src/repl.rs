@@ -33,14 +33,73 @@ where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    /// Execute a REPL command
-    pub async fn execute(&mut self, line: &str) -> Result<String, String> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() {
-            return Ok(String::new());
+    /// Create a new REPL context with the given client.
+    #[must_use]
+    pub fn new(client: GroupClient<C, CS>) -> Self {
+        Self {
+            client,
+            groups: HashMap::new(),
+        }
+    }
+
+    /// Process any pending welcome messages in the background.
+    ///
+    /// This should be called periodically (e.g., before each command) to
+    /// automatically join groups when welcome messages are received.
+    ///
+    /// Returns a list of newly joined group IDs.
+    pub async fn process_pending_welcomes(&mut self) -> Vec<GroupId> {
+        let mut joined_groups = Vec::new();
+
+        // Process all pending welcomes
+        while let Some(welcome_bytes) = self.client.try_recv_welcome() {
+            match self.client.join_group(&welcome_bytes).await {
+                Ok(group) => {
+                    let group_id = group.group_id();
+                    info!(?group_id, "Automatically joined group from welcome");
+                    self.groups.insert(group_id, group);
+                    joined_groups.push(group_id);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "Failed to join group from welcome");
+                }
+            }
         }
 
-        match parts[0] {
+        joined_groups
+    }
+
+    /// Execute a REPL command
+    pub async fn execute(&mut self, line: &str) -> Result<String, String> {
+        // First, process any pending welcomes
+        let joined = self.process_pending_welcomes().await;
+        let mut output = String::new();
+        if !joined.is_empty() {
+            use std::fmt::Write;
+            let _ = writeln!(
+                output,
+                "=== Automatically joined {} group(s) ===",
+                joined.len()
+            );
+            for group_id in &joined {
+                let _ = writeln!(
+                    output,
+                    "  Joined: {}",
+                    bs58::encode(group_id.as_bytes()).into_string()
+                );
+            }
+            output.push('\n');
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            if output.is_empty() {
+                return Ok(String::new());
+            }
+            return Ok(output);
+        }
+
+        let result = match parts[0] {
             "help" | "?" => Ok(Self::help()),
             "exit" | "quit" => Err("exit".to_string()),
             "key_package" => self.cmd_key_package(),
@@ -108,16 +167,22 @@ where
                 "Unknown command: {}. Type 'help' for available commands.",
                 parts[0]
             )),
+        };
+
+        // Prepend any auto-join notifications to the result
+        match result {
+            Ok(cmd_output) => Ok(format!("{output}{cmd_output}")),
+            Err(e) => Err(e),
         }
     }
 
     fn help() -> String {
         r"Available commands:
-  key_package                              - Generate a new key package (prints hex)
-  create_group                             - Create a new group (prints group ID hex)
-  join_group <welcome_hex>                 - Join a group from a Welcome message
-  add_acceptor <group_id> <addr_hex>       - Add an acceptor to a group
-  add_member <group_id> <key_package>      - Add a member to a group (prints Welcome hex)
+  key_package                              - Generate a new key package (prints base58)
+  create_group                             - Create a new group (prints group ID base58)
+  join_group <welcome_base58>              - Join a group from a Welcome message
+  add_acceptor <group_id> <addr_base58>    - Add an acceptor to a group
+  add_member <group_id> <key_package>      - Add a member to a group (sends welcome directly)
   update_keys <group_id>                   - Update keys in a group
   remove_acceptor <group_id> <pubkey>      - Remove an acceptor from a group
   remove_member <group_id> <member_index>  - Remove a member from a group
@@ -127,6 +192,14 @@ where
   recv <group_id>                          - Receive and decrypt the next message
   help                                     - Show this help
   exit / quit                              - Exit the REPL
+
+Adding a new member (two terminal workflow):
+  1. New member: key_package           -> copy the base58 output
+  2. Existing member: add_member <group_id> <key_package_base58>
+  3. New member: (automatically joins - press Enter to see notification)
+
+Note: Welcome messages are received automatically in the background.
+      Press Enter or run any command to see if you've been added to a group.
 "
         .to_string()
     }

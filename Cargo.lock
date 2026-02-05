@@ -4757,9 +4757,11 @@ dependencies = [
 name = "universal-sync-testing"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "iroh",
  "mls-rs",
  "mls-rs-crypto-rustcrypto",
+ "postcard",
  "tempfile",
  "tokio",
  "tracing",
