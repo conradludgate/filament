@@ -15,7 +15,7 @@ path = "src/main.rs"
 [features]
 default = []
 # Enable Tauri integration (requires frontend setup)
-tauri = ["dep:tauri", "dep:tauri-plugin-shell"]
+tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 
 [dependencies]
 universal-sync-core = { path = "../sync-core" }
@@ -40,6 +40,9 @@ bs58.workspace = true
 # Tauri dependencies (optional, enabled with "tauri" feature)
 tauri = { version = "2", features = [], optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -67,6 +67,7 @@ pub fn parse_group_id(b58: &str) -> Result<GroupId, String> {
 // ============================================================================
 
 #[cfg(feature = "tauri")]
+#[allow(clippy::missing_errors_doc)]
 pub mod tauri_commands {
     //! Tauri command implementations.
     //!
@@ -105,7 +106,7 @@ pub mod tauri_commands {
             .await
             .map_err(|e| format!("failed to create document: {e:?}"))?;
 
-        let group_id = doc.group().group_id();
+        let group_id = doc.group_id().await;
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
         let text = doc.text().await;
 
@@ -140,7 +141,7 @@ pub mod tauri_commands {
             .await
             .map_err(|e| format!("failed to join document: {e:?}"))?;
 
-        let group_id = doc.group().group_id();
+        let group_id = doc.group_id().await;
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
         let text = doc.text().await;
 
