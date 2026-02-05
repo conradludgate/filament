@@ -1,7 +1,7 @@
 //! Synchronized document using yrs CRDT
 //!
-//! This module provides [`SyncedDocument`], which wraps a yrs document
-//! and synchronizes changes through a universal-sync Group.
+//! This module provides [`SyncedDocument`], which uses the Group's internal
+//! yrs CRDT to provide E2EE collaborative text editing.
 
 use std::sync::Arc;
 
@@ -11,9 +11,9 @@ use mls_rs::CipherSuiteProvider;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use universal_sync_proposer::{Group, GroupError, ReceivedAppMessage};
-use yrs::updates::decoder::Decode;
-use yrs::{Doc, GetString, Text, Transact, Update};
+use universal_sync_proposer::{Group, GroupError};
+use universal_sync_testing::YrsCrdt;
+use yrs::{GetString, Text, Transact};
 
 /// A text editing operation (delta).
 #[derive(Debug, Clone)]
@@ -82,21 +82,20 @@ impl Drop for SyncHandle {
     }
 }
 
+/// Name of the text field in the yrs document
+const TEXT_NAME: &str = "content";
+
 /// A synchronized text document.
 ///
-/// Wraps a yrs document and a universal-sync Group to provide
-/// E2EE collaborative text editing.
+/// Uses the Group's internal yrs CRDT to provide E2EE collaborative text editing.
+/// The CRDT is automatically kept in sync when messages are sent/received.
 pub struct SyncedDocument<C, CS>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    /// The yrs document
-    doc: Arc<Mutex<Doc>>,
     /// The underlying sync group (wrapped for sharing with sync loop)
     group: Arc<Mutex<Group<C, CS>>>,
-    /// Name of the text field in the yrs document
-    text_name: &'static str,
     /// Handle to the sync loop (if running)
     sync_handle: Option<SyncHandle>,
 }
@@ -106,25 +105,31 @@ where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    /// Create a new synced document from a group and yrs document.
+    /// Create a new synced document from a group.
     ///
-    /// The document uses a text field named "content" by default.
+    /// The document uses the Group's internal CRDT.
     #[must_use]
-    pub fn new(group: Group<C, CS>, doc: Doc) -> Self {
+    pub fn new(group: Group<C, CS>) -> Self {
         Self {
-            doc: Arc::new(Mutex::new(doc)),
             group: Arc::new(Mutex::new(group)),
-            text_name: "content",
             sync_handle: None,
         }
     }
 
     /// Get the current text content.
     pub async fn text(&self) -> String {
-        let doc = self.doc.lock().await;
-        let text = doc.get_or_insert_text(self.text_name);
-        let txn = doc.transact();
-        text.get_string(&txn)
+        let group = self.group.lock().await;
+        let crdt = group.crdt();
+        let crdt_guard = crdt.lock().unwrap();
+        
+        if let Some(yrs_crdt) = crdt_guard.as_any().downcast_ref::<YrsCrdt>() {
+            let doc = yrs_crdt.doc();
+            let text = doc.get_or_insert_text(TEXT_NAME);
+            let txn = doc.transact();
+            text.get_string(&txn)
+        } else {
+            String::new()
+        }
     }
 
     /// Insert text at the given position.
@@ -134,16 +139,24 @@ where
     /// # Errors
     /// Returns an error if encryption or sending fails.
     pub async fn insert(&mut self, position: u32, content: &str) -> Result<(), Report<GroupError>> {
+        let mut group = self.group.lock().await;
+        
+        // Create the update by modifying the CRDT
         let update = {
-            let doc = self.doc.lock().await;
-            let text = doc.get_or_insert_text(self.text_name);
-            let mut txn = doc.transact_mut();
-            text.insert(&mut txn, position, content);
-            txn.encode_update_v1()
+            let crdt = group.crdt();
+            let mut crdt_guard = crdt.lock().unwrap();
+            
+            if let Some(yrs_crdt) = crdt_guard.as_any_mut().downcast_mut::<YrsCrdt>() {
+                let doc = yrs_crdt.doc_mut();
+                let text = doc.get_or_insert_text(TEXT_NAME);
+                let mut txn = doc.transact_mut();
+                text.insert(&mut txn, position, content);
+                txn.encode_update_v1()
+            } else {
+                return Ok(()); // No yrs CRDT, nothing to do
+            }
         };
 
-        // Send the update to the group
-        let mut group = self.group.lock().await;
         tracing::debug!(
             update_len = update.len(),
             position = position,
@@ -160,16 +173,24 @@ where
     /// # Errors
     /// Returns an error if encryption or sending fails.
     pub async fn delete(&mut self, position: u32, length: u32) -> Result<(), Report<GroupError>> {
+        let mut group = self.group.lock().await;
+        
+        // Create the update by modifying the CRDT
         let update = {
-            let doc = self.doc.lock().await;
-            let text = doc.get_or_insert_text(self.text_name);
-            let mut txn = doc.transact_mut();
-            text.remove_range(&mut txn, position, length);
-            txn.encode_update_v1()
+            let crdt = group.crdt();
+            let mut crdt_guard = crdt.lock().unwrap();
+            
+            if let Some(yrs_crdt) = crdt_guard.as_any_mut().downcast_mut::<YrsCrdt>() {
+                let doc = yrs_crdt.doc_mut();
+                let text = doc.get_or_insert_text(TEXT_NAME);
+                let mut txn = doc.transact_mut();
+                text.remove_range(&mut txn, position, length);
+                txn.encode_update_v1()
+            } else {
+                return Ok(());
+            }
         };
 
-        // Send the update to the group
-        let mut group = self.group.lock().await;
         tracing::debug!(update_len = update.len(), "sending delete update to group");
         group.send_message(&update).await?;
 
@@ -185,42 +206,6 @@ where
             TextDelta::Insert { position, text } => self.insert(position, &text).await,
             TextDelta::Delete { position, length } => self.delete(position, length).await,
         }
-    }
-
-    /// Apply a remote update received from another group member.
-    ///
-    /// # Errors
-    /// Returns an error if the update is malformed.
-    pub async fn apply_remote_update(&self, update_bytes: &[u8]) -> Result<(), Report<DocumentError>> {
-        let update = Update::decode_v1(update_bytes)
-            .map_err(|e| Report::new(DocumentError).attach(format!("decode error: {e}")))?;
-
-        let doc = self.doc.lock().await;
-        doc.transact_mut()
-            .apply_update(update)
-            .map_err(|e| Report::new(DocumentError).attach(format!("apply error: {e}")))?;
-
-        Ok(())
-    }
-
-    /// Receive the next message from the group and apply it.
-    ///
-    /// Returns `None` if the channel is closed.
-    ///
-    /// # Errors
-    /// Returns an error if the update is malformed.
-    pub async fn recv_and_apply(&mut self) -> Option<Result<ReceivedAppMessage, Report<DocumentError>>> {
-        let msg = {
-            let mut group = self.group.lock().await;
-            group.recv_message().await?
-        };
-
-        // Apply the update
-        if let Err(e) = self.apply_remote_update(&msg.data).await {
-            return Some(Err(e));
-        }
-
-        Some(Ok(msg))
     }
 
     /// Start a background sync loop that receives and applies remote updates.
@@ -240,9 +225,7 @@ where
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let doc = Arc::clone(&self.doc);
         let group = Arc::clone(&self.group);
-        let text_name = self.text_name;
 
         let task = tokio::spawn(async move {
             loop {
@@ -281,53 +264,31 @@ where
                             "sync loop: received message from group"
                         );
 
-                        // Apply the update and get new text in a single lock scope
-                        // (yrs::Update is not Send, so we can't hold it across await)
-                        let result: Option<(u32, u64, String)> = {
-                            let d = doc.lock().await;
-
-                            let update = match Update::decode_v1(&msg.data) {
-                                Ok(u) => u,
-                                Err(e) => {
-                                    tracing::warn!(?e, "sync loop: failed to decode update");
-                                    continue;
-                                }
-                            };
-
-                            let before_text = {
-                                let t = d.get_or_insert_text(text_name);
-                                let txn = d.transact();
-                                t.get_string(&txn)
-                            };
+                        // The Group's internal CRDT is already updated by recv_message,
+                        // so we just need to read the current text.
+                        let text = {
+                            let g = group.lock().await;
+                            let crdt = g.crdt();
+                            let crdt_guard = crdt.lock().unwrap();
                             
-                            if let Err(e) = d.transact_mut().apply_update(update) {
-                                tracing::warn!(?e, "sync loop: failed to apply update");
+                            if let Some(yrs_crdt) = crdt_guard.as_any().downcast_ref::<YrsCrdt>() {
+                                let doc = yrs_crdt.doc();
+                                let t = doc.get_or_insert_text(TEXT_NAME);
+                                let txn = doc.transact();
+                                t.get_string(&txn)
+                            } else {
                                 continue;
                             }
-
-                            // Get the new text content
-                            let t = d.get_or_insert_text(text_name);
-                            let txn = d.transact();
-                            let text = t.get_string(&txn);
-                            
-                            tracing::debug!(
-                                before_len = before_text.len(),
-                                after_len = text.len(),
-                                before_text = %before_text,
-                                after_text = %text,
-                                "sync loop: applied update"
-                            );
-
-                            Some((msg.sender.0, msg.epoch.0, text))
                         };
 
-                        let Some((sender, epoch, text)) = result else {
-                            continue;
-                        };
+                        tracing::debug!(
+                            text_len = text.len(),
+                            "sync loop: got updated text"
+                        );
 
                         let event = DocumentUpdateEvent {
-                            sender,
-                            epoch,
+                            sender: msg.sender.0,
+                            epoch: msg.epoch.0,
                             text,
                         };
 
@@ -369,12 +330,6 @@ where
     pub async fn group_id(&self) -> universal_sync_core::GroupId {
         let group = self.group.lock().await;
         group.group_id()
-    }
-
-    /// Get a clone of the document Arc for observation.
-    #[must_use]
-    pub fn doc_handle(&self) -> Arc<Mutex<Doc>> {
-        Arc::clone(&self.doc)
     }
 
     /// Shutdown the document and its underlying group.

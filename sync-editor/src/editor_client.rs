@@ -18,7 +18,6 @@ use universal_sync_core::{
 };
 use universal_sync_proposer::{GroupClient, GroupError};
 use universal_sync_testing::YrsCrdtFactory;
-use yrs::Doc;
 
 use crate::SyncedDocument;
 
@@ -35,8 +34,6 @@ where
 {
     /// The underlying group client
     client: GroupClient<C, CS>,
-    /// The signing public key (for deriving yrs client IDs)
-    signing_public_key: Vec<u8>,
 }
 
 /// Derive a yrs client ID from a signing public key using SHA256.
@@ -88,6 +85,7 @@ pub fn create_editor_client(
 
     // Create yrs factory with derived client ID
     let yrs_client_id = derive_yrs_client_id(&signing_public_key);
+    tracing::info!(yrs_client_id, "Generated yrs client ID from signing key");
     let yrs_factory = YrsCrdtFactory::with_fixed_client_id(yrs_client_id);
 
     let mut group_client = GroupClient::new(client, secret_key, cipher_suite, endpoint);
@@ -98,7 +96,6 @@ pub fn create_editor_client(
 
     EditorClient {
         client: group_client,
-        signing_public_key,
     }
 }
 
@@ -115,28 +112,22 @@ where
     /// * `client` - The underlying group client
     /// * `signing_public_key` - The MLS signing public key (for yrs client ID)
     #[must_use]
-    pub fn new(mut client: GroupClient<C, CS>, signing_public_key: Vec<u8>) -> Self {
+    pub fn new(mut client: GroupClient<C, CS>, signing_public_key: &[u8]) -> Self {
         // Register CRDT factories
-        let yrs_client_id = derive_yrs_client_id(&signing_public_key);
+        let yrs_client_id = derive_yrs_client_id(signing_public_key);
         let yrs_factory = YrsCrdtFactory::with_fixed_client_id(yrs_client_id);
         client.register_crdt_factory(NoCrdtFactory);
         client.register_crdt_factory(yrs_factory);
 
-        Self {
-            client,
-            signing_public_key,
-        }
+        Self { client }
     }
 
     /// Create an editor client from parts without registering CRDT factories.
     ///
     /// Use this when you need more control over factory registration.
     #[must_use]
-    pub fn from_parts(client: GroupClient<C, CS>, signing_public_key: Vec<u8>) -> Self {
-        Self {
-            client,
-            signing_public_key,
-        }
+    pub fn from_parts(client: GroupClient<C, CS>) -> Self {
+        Self { client }
     }
 
     /// Create a new collaborative document.
@@ -151,12 +142,7 @@ where
         acceptors: &[EndpointAddr],
     ) -> Result<SyncedDocument<C, CS>, Report<GroupError>> {
         let group = self.client.create_group(acceptors, "yrs").await?;
-
-        // Create yrs document with derived client ID
-        let yrs_client_id = derive_yrs_client_id(&self.signing_public_key);
-        let doc = Doc::with_client_id(yrs_client_id);
-
-        Ok(SyncedDocument::new(group, doc))
+        Ok(SyncedDocument::new(group))
     }
 
     /// Join an existing document using a welcome message.
@@ -170,44 +156,10 @@ where
         &self,
         welcome_bytes: &[u8],
     ) -> Result<SyncedDocument<C, CS>, Report<GroupError>> {
-        use universal_sync_core::WelcomeBundle;
-        use yrs::updates::decoder::Decode;
-        use yrs::{Transact, Update};
-
-        // Parse the welcome bundle to get the CRDT snapshot
-        let welcome_bundle = WelcomeBundle::from_bytes(welcome_bytes).map_err(|e| {
-            Report::new(GroupError).attach(format!("failed to parse welcome bundle: {e}"))
-        })?;
-
-        // Join the group
+        // The Group's internal CRDT is automatically initialized from the
+        // welcome bundle's CRDT snapshot, so we just need to wrap the group.
         let group = self.client.join_group(welcome_bytes).await?;
-
-        // Create yrs document with derived client ID
-        let yrs_client_id = derive_yrs_client_id(&self.signing_public_key);
-        let doc = Doc::with_client_id(yrs_client_id);
-
-        // Apply the CRDT snapshot if present
-        if welcome_bundle.has_crdt() {
-            tracing::debug!(
-                snapshot_len = welcome_bundle.crdt_snapshot.len(),
-                "Applying CRDT snapshot from welcome"
-            );
-            
-            match Update::decode_v1(&welcome_bundle.crdt_snapshot) {
-                Ok(update) => {
-                    if let Err(e) = doc.transact_mut().apply_update(update) {
-                        tracing::warn!(?e, "Failed to apply CRDT snapshot from welcome");
-                    } else {
-                        tracing::info!("Applied CRDT snapshot from welcome");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(?e, "Failed to decode CRDT snapshot from welcome");
-                }
-            }
-        }
-
-        Ok(SyncedDocument::new(group, doc))
+        Ok(SyncedDocument::new(group))
     }
 
     /// Generate a key package for joining a document.
@@ -234,12 +186,6 @@ where
     pub fn group_client(&self) -> &GroupClient<C, CS> {
         &self.client
     }
-
-    /// Get the yrs client ID for this client.
-    #[must_use]
-    pub fn yrs_client_id(&self) -> u64 {
-        derive_yrs_client_id(&self.signing_public_key)
-    }
 }
 
 /// Get a document from a group.
@@ -248,13 +194,10 @@ where
 #[must_use]
 pub fn document_from_group<C, CS>(
     group: universal_sync_proposer::Group<C, CS>,
-    signing_public_key: &[u8],
 ) -> SyncedDocument<C, CS>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    let yrs_client_id = derive_yrs_client_id(signing_public_key);
-    let doc = Doc::with_client_id(yrs_client_id);
-    SyncedDocument::new(group, doc)
+    SyncedDocument::new(group)
 }

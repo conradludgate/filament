@@ -40,6 +40,7 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
@@ -258,6 +259,9 @@ where
 
     /// Cached group ID (immutable after creation)
     group_id: GroupId,
+
+    /// Shared CRDT for application state synchronization
+    crdt: Arc<Mutex<Box<dyn Crdt>>>,
 }
 
 impl<C, CS> Drop for Group<C, CS>
@@ -533,6 +537,9 @@ where
         let (request_tx, request_rx) = mpsc::channel(64);
         let (app_message_tx, app_message_rx) = mpsc::channel(256);
 
+        // Wrap CRDT in Arc<Mutex<>> for shared access
+        let crdt = Arc::new(Mutex::new(crdt));
+
         // Spawn the group actor
         let actor = GroupActor::new(
             learner,
@@ -543,7 +550,7 @@ where
             app_message_tx,
             event_tx.clone(),
             cancel_token.clone(),
-            crdt,
+            crdt.clone(),
         );
 
         let actor_handle = tokio::spawn(actor.run());
@@ -555,6 +562,7 @@ where
             cancel_token,
             actor_handle: Some(actor_handle),
             group_id,
+            crdt,
         }
     }
 
@@ -688,6 +696,26 @@ where
     /// Returns `None` if the channel is closed (group shutting down).
     pub async fn recv_message(&mut self) -> Option<ReceivedAppMessage> {
         self.app_message_rx.recv().await
+    }
+
+    /// Get the shared CRDT for application state synchronization.
+    ///
+    /// The CRDT is automatically kept in sync when messages are sent/received.
+    /// Use this to access the current state or perform type-specific operations.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let crdt = group.crdt();
+    /// let guard = crdt.lock().unwrap();
+    /// if let Some(yrs_crdt) = guard.as_any().downcast_ref::<YrsCrdt>() {
+    ///     let doc = yrs_crdt.doc();
+    ///     // ... use yrs-specific APIs
+    /// }
+    /// ```
+    #[must_use]
+    pub fn crdt(&self) -> &Arc<Mutex<Box<dyn Crdt>>> {
+        &self.crdt
     }
 
     /// Add an acceptor to the federation.
@@ -861,8 +889,8 @@ where
     /// Active proposal state (waiting for quorum)
     active_proposal: Option<ActiveProposal>,
 
-    /// CRDT for application state synchronization
-    crdt: Box<dyn Crdt>,
+    /// CRDT for application state synchronization (shared with Group handle)
+    crdt: Arc<Mutex<Box<dyn Crdt>>>,
 }
 
 /// State for an active proposal waiting for quorum
@@ -919,7 +947,7 @@ where
         app_message_tx: mpsc::Sender<ReceivedAppMessage>,
         event_tx: broadcast::Sender<GroupEvent>,
         cancel_token: CancellationToken,
-        crdt: Box<dyn Crdt>,
+        crdt: Arc<Mutex<Box<dyn Crdt>>>,
     ) -> Self {
         let num_acceptors = learner.acceptor_ids().count();
         let message_epoch = learner.mls_epoch();
@@ -1174,7 +1202,7 @@ where
         }
 
         // Capture CRDT snapshot before building commit (snapshot of current state)
-        let crdt_snapshot = self.crdt.snapshot().ok();
+        let crdt_snapshot = self.crdt.lock().ok().and_then(|c| c.snapshot().ok());
 
         // Build the commit
         let result = blocking(|| {
@@ -1285,8 +1313,10 @@ where
         reply: oneshot::Sender<Result<EncryptedAppMessage, Report<GroupError>>>,
     ) {
         // Update the internal CRDT to keep it in sync for snapshots
-        if let Err(e) = self.crdt.merge(data) {
-            tracing::warn!(?e, "failed to merge local update into CRDT snapshot");
+        if let Ok(mut crdt) = self.crdt.lock() {
+            if let Err(e) = crdt.merge(data) {
+                tracing::warn!(?e, "failed to merge local update into CRDT snapshot");
+            }
         }
 
         // Get current epoch and check if we need to reset the message counter
@@ -2156,8 +2186,10 @@ where
         let data = app_msg.data().to_vec();
 
         // Update the internal CRDT to keep it in sync for snapshots
-        if let Err(e) = self.crdt.merge(&data) {
-            tracing::warn!(?e, "failed to merge remote update into CRDT snapshot");
+        if let Ok(mut crdt) = self.crdt.lock() {
+            if let Err(e) = crdt.merge(&data) {
+                tracing::warn!(?e, "failed to merge remote update into CRDT snapshot");
+            }
         }
 
         let received_msg = ReceivedAppMessage {

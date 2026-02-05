@@ -18,6 +18,7 @@
 //! This ensures the client ID remains stable across group membership changes (unlike
 //! MLS member indexes which can shift when members are removed).
 
+use std::any::Any;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -129,6 +130,14 @@ impl Crdt for YrsCrdt {
         let txn = self.doc.transact();
         // Encode all state as an update from empty state vector
         Ok(txn.encode_state_as_update_v1(&StateVector::default()))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

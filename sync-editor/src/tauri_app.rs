@@ -102,7 +102,7 @@ fn create_app_client(name: &str, endpoint: Endpoint) -> AppEditorClient {
     // Create the group client
     let group_client = GroupClient::new(mls_client, secret_key, cipher_suite, endpoint);
 
-    EditorClient::new(group_client, signing_public_key)
+    EditorClient::new(group_client, &signing_public_key)
 }
 
 /// Initialize the app state

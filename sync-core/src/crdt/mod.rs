@@ -22,6 +22,7 @@
 //! - [`NoCrdt`] - A no-op implementation for groups without CRDT support
 //! - `YrsCrdt` - Yjs/Yrs document CRDT (in `universal-sync-testing` crate)
 
+use std::any::Any;
 use std::fmt;
 
 /// Error type for CRDT operations
@@ -91,6 +92,15 @@ pub trait Crdt: Send + Sync {
     /// # Errors
     /// Returns an error if serialization fails.
     fn snapshot(&self) -> Result<Vec<u8>, CrdtError>;
+
+    /// Return self as `Any` for downcasting to concrete types.
+    ///
+    /// This enables applications to access type-specific CRDT functionality
+    /// (e.g., yrs `Doc` methods for text editing).
+    fn as_any(&self) -> &dyn Any;
+
+    /// Return self as mutable `Any` for downcasting to concrete types.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Factory for creating CRDT instances.
@@ -143,6 +153,14 @@ impl Crdt for NoCrdt {
     fn snapshot(&self) -> Result<Vec<u8>, CrdtError> {
         // Empty snapshot
         Ok(Vec::new())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
