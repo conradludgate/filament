@@ -345,3 +345,35 @@ pub async fn list_documents(state: tauri::State<'_, SharedAppState>) -> Result<V
         .collect();
     Ok(ids)
 }
+
+/// List acceptors for a document.
+#[tauri::command]
+pub async fn list_acceptors(
+    state: tauri::State<'_, SharedAppState>,
+    group_id: String,
+) -> Result<Vec<String>, String> {
+    use universal_sync_core::AcceptorId;
+    
+    let gid = parse_group_id(&group_id)?;
+    let app = state.read().await;
+
+    let doc = app
+        .get_document(&gid)
+        .ok_or_else(|| format!("document not found: {group_id}"))?;
+
+    // Get the group handle and acquire the lock
+    let group_handle = doc.group_handle();
+    let mut group = group_handle.lock().await;
+    
+    let context = group.context().await
+        .map_err(|e| format!("failed to get context: {e:?}"))?;
+    
+    // Convert AcceptorIds to base58 strings for the frontend
+    let acceptor_ids: Vec<String> = context
+        .acceptors
+        .iter()
+        .map(|id: &AcceptorId| bs58::encode(id.as_bytes()).into_string())
+        .collect();
+
+    Ok(acceptor_ids)
+}

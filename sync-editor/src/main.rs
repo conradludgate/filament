@@ -49,6 +49,7 @@ fn main() {
             tauri_app::add_member,
             tauri_app::add_acceptor,
             tauri_app::list_documents,
+            tauri_app::list_acceptors,
         ])
         .setup(|_app| {
             tracing::info!("Tauri app setup complete");

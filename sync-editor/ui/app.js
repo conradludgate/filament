@@ -27,7 +27,7 @@ const state = {
     currentDocument: null,
     isConnected: false,
     pendingChanges: [],
-    docAcceptors: [], // { name, addr } - acceptors for current document
+    docAcceptors: [], // acceptor IDs for current document
 };
 
 // DOM Elements
@@ -67,7 +67,6 @@ const elements = {
     acceptorModal: document.getElementById('acceptor-modal'),
     acceptorList: document.getElementById('acceptor-list'),
     acceptorEmpty: document.getElementById('acceptor-empty'),
-    acceptorName: document.getElementById('acceptor-name'),
     acceptorAddr: document.getElementById('acceptor-addr'),
     btnAddAcceptorConfirm: document.getElementById('btn-add-acceptor-confirm'),
     btnAcceptorDone: document.getElementById('btn-acceptor-done'),
@@ -157,13 +156,16 @@ function renderDocAcceptorList() {
     } else {
         elements.acceptorEmpty.classList.add('hidden');
         
-        state.docAcceptors.forEach((acceptor, index) => {
+        state.docAcceptors.forEach((acceptorId) => {
             const item = document.createElement('div');
             item.className = 'acceptor-item';
+            // Display first/last parts of the ID for readability
+            const shortId = acceptorId.length > 16 
+                ? `${acceptorId.slice(0, 8)}...${acceptorId.slice(-8)}`
+                : acceptorId;
             item.innerHTML = `
                 <div class="acceptor-item-info">
-                    <span class="acceptor-item-name">${escapeHtml(acceptor.name)}</span>
-                    <span class="acceptor-item-addr" title="${escapeHtml(acceptor.addr)}">${acceptor.addr.slice(0, 32)}...</span>
+                    <span class="acceptor-item-id" title="${escapeHtml(acceptorId)}">${escapeHtml(shortId)}</span>
                 </div>
             `;
             elements.acceptorList.appendChild(item);
@@ -171,7 +173,7 @@ function renderDocAcceptorList() {
     }
 }
 
-async function addDocAcceptor(name, addr) {
+async function addDocAcceptor(addr) {
     if (!state.currentDocument) {
         showToast('No document open', 'error');
         return;
@@ -182,12 +184,25 @@ async function addDocAcceptor(name, addr) {
             groupId: state.currentDocument.group_id,
             addrB58: addr 
         });
-        state.docAcceptors.push({ name, addr });
-        renderDocAcceptorList();
-        showToast(`Added acceptor: ${name}`, 'success');
+        // The acceptor list will be updated via the acceptor-added event
+        showToast('Acceptor added!', 'success');
     } catch (error) {
         console.error('Failed to add acceptor:', error);
         showToast(`Failed to add acceptor: ${error}`, 'error');
+    }
+}
+
+async function fetchDocAcceptors() {
+    if (!state.currentDocument) return;
+    
+    try {
+        const acceptors = await invoke('list_acceptors', {
+            groupId: state.currentDocument.group_id
+        });
+        state.docAcceptors = acceptors;
+        renderDocAcceptorList();
+    } catch (error) {
+        console.error('Failed to fetch acceptors:', error);
     }
 }
 
@@ -275,13 +290,13 @@ async function joinDocumentWithWelcome(welcomeBytes) {
         const doc = await invoke('join_document_bytes', { welcome: welcomeBytes });
         
         state.currentDocument = doc;
-        state.docAcceptors = []; // Reset acceptors for joined document
         elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
         elements.docId.title = doc.group_id;
         elements.editor.value = doc.text;
         lastText = doc.text;
         
         showEditor();
+        await fetchDocAcceptors();
         updateSyncStatus('synced');
         showToast('Joined document!', 'success');
         
@@ -302,13 +317,13 @@ async function createDocument() {
         const doc = await invoke('create_document');
         
         state.currentDocument = doc;
-        state.docAcceptors = []; // Reset acceptors for new document
         elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
         elements.docId.title = doc.group_id;
         elements.editor.value = doc.text;
         lastText = doc.text;
         
         showEditor();
+        await fetchDocAcceptors();
         updateSyncStatus('synced');
         showToast('Document created!', 'success');
         
@@ -520,20 +535,14 @@ function setupEventListeners() {
     elements.acceptorModal.querySelector('.modal-backdrop').addEventListener('click', closeDocAcceptorModal);
     
     elements.btnAddAcceptorConfirm.addEventListener('click', async () => {
-        const name = elements.acceptorName.value.trim();
         const addr = elements.acceptorAddr.value.trim();
         
-        if (!name) {
-            showToast('Please enter a name for the acceptor', 'error');
-            return;
-        }
         if (!addr) {
             showToast('Please enter the acceptor address', 'error');
             return;
         }
         
-        await addDocAcceptor(name, addr);
-        elements.acceptorName.value = '';
+        await addDocAcceptor(addr);
         elements.acceptorAddr.value = '';
     });
 
@@ -575,6 +584,16 @@ async function setupTauriEvents() {
             lastText = text;
             
             updateSyncStatus('synced');
+        }
+    });
+    
+    // Listen for acceptor list changes
+    await listen('acceptors-updated', (event) => {
+        const { group_id, acceptors } = event.payload;
+        
+        if (state.currentDocument && state.currentDocument.group_id === group_id) {
+            state.docAcceptors = acceptors;
+            renderDocAcceptorList();
         }
     });
     
