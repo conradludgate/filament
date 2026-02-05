@@ -398,6 +398,7 @@ where
 
         // Create CRDT from factory
         let crdt = crdt_factory.create();
+        tracing::debug!(crdt_type = %crdt.type_id(), "Created CRDT for new group");
 
         Ok(Self::spawn_actors(
             learner,
@@ -505,6 +506,7 @@ where
 
         // Create CRDT from snapshot if present, otherwise create empty
         let crdt = if welcome_bundle.has_crdt() {
+            tracing::debug!(snapshot_len = welcome_bundle.crdt_snapshot.len(), "Creating CRDT from snapshot");
             crdt_factory
                 .from_snapshot(&welcome_bundle.crdt_snapshot)
                 .map_err(|e| {
@@ -512,8 +514,10 @@ where
                         .attach(format!("failed to create CRDT from snapshot: {e:?}"))
                 })?
         } else {
+            tracing::debug!("Creating empty CRDT (no snapshot in welcome)");
             crdt_factory.create()
         };
+        tracing::debug!(crdt_type = %crdt.type_id(), "Created CRDT for joined group");
 
         Ok(Self::spawn_actors(
             learner,
