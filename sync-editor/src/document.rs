@@ -271,11 +271,13 @@ where
                         let text = {
                             let g = group.lock().await;
                             let crdt = g.crdt();
+                            let crdt_ptr = std::sync::Arc::as_ptr(crdt);
                             let crdt_guard = crdt.lock().unwrap();
                             
                             // Try to downcast to YrsCrdt
                             let crdt_type = crdt_guard.type_id();
-                            tracing::debug!(crdt_type, "sync loop: checking CRDT type");
+                            let snapshot_size = crdt_guard.snapshot().map(|s| s.len()).unwrap_or(0);
+                            tracing::debug!(crdt_type, ?crdt_ptr, snapshot_size, "sync loop: checking CRDT");
                             
                             if let Some(yrs_crdt) = crdt_guard.as_any().downcast_ref::<YrsCrdt>() {
                                 let doc = yrs_crdt.doc();
