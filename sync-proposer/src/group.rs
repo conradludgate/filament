@@ -2217,10 +2217,14 @@ where
         tracing::debug!(data_len = data.len(), "merging remote update into CRDT");
         match self.crdt.lock() {
             Ok(mut crdt) => {
+                let crdt_type = crdt.type_id().to_owned();
+                tracing::debug!(%crdt_type, "acquired CRDT lock for merge");
+                let snapshot_before = crdt.snapshot().ok().map(|s| s.len()).unwrap_or(0);
                 if let Err(e) = crdt.merge(&data) {
                     tracing::warn!(?e, "failed to merge remote update into CRDT snapshot");
                 } else {
-                    tracing::debug!("CRDT merge successful");
+                    let snapshot_after = crdt.snapshot().ok().map(|s| s.len()).unwrap_or(0);
+                    tracing::debug!(snapshot_before, snapshot_after, "CRDT merge successful");
                 }
             }
             Err(e) => {
