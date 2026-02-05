@@ -50,8 +50,7 @@ const elements = {
     joinModal: document.getElementById('join-modal'),
     myInviteCode: document.getElementById('my-invite-code'),
     btnCopyInviteCode: document.getElementById('btn-copy-invite-code'),
-    joinWelcome: document.getElementById('join-welcome'),
-    btnJoinConfirm: document.getElementById('btn-join-confirm'),
+    joinStatus: document.getElementById('join-status'),
     btnJoinCancel: document.getElementById('btn-join-cancel'),
     joinModalClose: document.getElementById('join-modal-close'),
     
@@ -144,14 +143,84 @@ async function generateInviteCode() {
 async function showJoinModal() {
     showModal(elements.joinModal);
     elements.myInviteCode.value = 'Generating...';
-    elements.joinWelcome.value = '';
+    elements.joinStatus.classList.add('hidden');
     
     try {
         const inviteCode = await generateInviteCode();
         elements.myInviteCode.value = inviteCode;
+        
+        // Show waiting status
+        elements.joinStatus.classList.remove('hidden');
+        elements.joinStatus.innerHTML = `
+            <span class="join-status-icon">⏳</span>
+            <span class="join-status-text">Waiting to be added...</span>
+        `;
+        
+        // Start listening for welcome message
+        startWelcomeListener();
+        
     } catch (error) {
         elements.myInviteCode.value = 'Error generating invite code';
         showToast('Failed to generate invite code', 'error');
+    }
+}
+
+// Welcome listener state
+let welcomeListenerActive = false;
+
+async function startWelcomeListener() {
+    if (welcomeListenerActive) return;
+    welcomeListenerActive = true;
+    
+    try {
+        // Poll for welcome message (backend will receive it via p2p)
+        const welcome = await invoke('recv_welcome');
+        
+        if (welcome && welcomeListenerActive) {
+            // Update status
+            elements.joinStatus.innerHTML = `
+                <span class="join-status-icon">✓</span>
+                <span class="join-status-text">Added! Joining document...</span>
+            `;
+            elements.joinStatus.classList.add('success');
+            
+            // Join the document
+            await joinDocumentWithWelcome(welcome);
+            
+            // Close modal
+            hideModal(elements.joinModal);
+        }
+    } catch (error) {
+        if (welcomeListenerActive) {
+            console.error('Welcome listener error:', error);
+        }
+    } finally {
+        welcomeListenerActive = false;
+    }
+}
+
+function stopWelcomeListener() {
+    welcomeListenerActive = false;
+}
+
+async function joinDocumentWithWelcome(welcomeBytes) {
+    try {
+        updateSyncStatus('syncing');
+        const doc = await invoke('join_document_bytes', { welcome: welcomeBytes });
+        
+        state.currentDocument = doc;
+        elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
+        elements.docId.title = doc.group_id;
+        elements.editor.value = doc.text;
+        
+        showEditor();
+        updateSyncStatus('synced');
+        showToast('Joined document!', 'success');
+        
+    } catch (error) {
+        console.error('Failed to join document:', error);
+        showToast(`Failed to join: ${error}`, 'error');
+        updateSyncStatus('error');
     }
 }
 
@@ -180,26 +249,6 @@ async function createDocument() {
     }
 }
 
-async function joinDocument(welcomeMessage) {
-    try {
-        updateSyncStatus('syncing');
-        const doc = await invoke('join_document', { welcomeB58: welcomeMessage });
-        
-        state.currentDocument = doc;
-        elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
-        elements.docId.title = doc.group_id;
-        elements.editor.value = doc.text;
-        
-        showEditor();
-        updateSyncStatus('synced');
-        showToast('Joined document!', 'success');
-        
-    } catch (error) {
-        console.error('Failed to join document:', error);
-        showToast(`Failed to join: ${error}`, 'error');
-        updateSyncStatus('error');
-    }
-}
 
 async function refreshText() {
     if (!state.currentDocument) return;
@@ -304,9 +353,14 @@ function setupEventListeners() {
     
     // Join document
     elements.btnJoinDoc.addEventListener('click', () => showJoinModal());
-    elements.btnJoinCancel.addEventListener('click', () => hideModal(elements.joinModal));
-    elements.joinModalClose.addEventListener('click', () => hideModal(elements.joinModal));
-    elements.joinModal.querySelector('.modal-backdrop').addEventListener('click', () => hideModal(elements.joinModal));
+    
+    const closeJoinModal = () => {
+        stopWelcomeListener();
+        hideModal(elements.joinModal);
+    };
+    elements.btnJoinCancel.addEventListener('click', closeJoinModal);
+    elements.joinModalClose.addEventListener('click', closeJoinModal);
+    elements.joinModal.querySelector('.modal-backdrop').addEventListener('click', closeJoinModal);
     
     // Copy invite code
     elements.btnCopyInviteCode.addEventListener('click', async () => {
@@ -322,17 +376,6 @@ function setupEventListeners() {
         } catch (error) {
             showToast('Failed to copy', 'error');
         }
-    });
-    
-    elements.btnJoinConfirm.addEventListener('click', async () => {
-        const welcome = elements.joinWelcome.value.trim();
-        if (!welcome) {
-            showToast('Please enter the welcome message', 'error');
-            return;
-        }
-        hideModal(elements.joinModal);
-        await joinDocument(welcome);
-        elements.joinWelcome.value = '';
     });
     
     // Copy document ID

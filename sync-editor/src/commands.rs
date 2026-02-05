@@ -119,25 +119,46 @@ pub mod tauri_commands {
         })
     }
 
-    /// Join an existing document using a welcome message.
+    /// Wait for a welcome message from the network.
+    /// 
+    /// This blocks until a welcome is received via p2p networking.
+    /// Returns the welcome bytes that can be passed to `join_document_bytes`.
     #[tauri::command]
-    pub async fn join_document<C, CS>(
+    pub async fn recv_welcome<C, CS>(
         state: TauriState<C, CS>,
-        welcome_b58: String,
+    ) -> Result<Vec<u8>, String>
+    where
+        C: MlsConfig + Clone + Send + Sync + 'static,
+        CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
+    {
+        let mut app = state.write().await;
+
+        let welcome = app
+            .client
+            .recv_welcome()
+            .await
+            .ok_or_else(|| "welcome channel closed".to_string())?;
+
+        Ok(welcome)
+    }
+
+    /// Join an existing document using raw welcome bytes.
+    /// 
+    /// This is used after receiving a welcome via `recv_welcome`.
+    #[tauri::command]
+    pub async fn join_document_bytes<C, CS>(
+        state: TauriState<C, CS>,
+        welcome: Vec<u8>,
     ) -> Result<DocumentInfo, String>
     where
         C: MlsConfig + Clone + Send + Sync + 'static,
         CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
     {
-        let welcome_bytes = bs58::decode(&welcome_b58)
-            .into_vec()
-            .map_err(|e| format!("invalid base58: {e}"))?;
-
         let mut app = state.write().await;
 
         let doc = app
             .client
-            .join_document(&welcome_bytes)
+            .join_document(&welcome)
             .await
             .map_err(|e| format!("failed to join document: {e:?}"))?;
 
@@ -150,7 +171,7 @@ pub mod tauri_commands {
         Ok(DocumentInfo {
             group_id: group_id_b58,
             text,
-            member_count: 1, // Will be updated when we get context
+            member_count: 1,
         })
     }
 

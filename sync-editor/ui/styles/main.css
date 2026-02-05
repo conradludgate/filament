@@ -525,43 +525,32 @@ body {
     border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
-/* Join step UI */
-.join-step {
-    margin-bottom: var(--space-md);
+/* Join modal */
+.modal-intro {
+    color: var(--ink-secondary);
+    font-size: 0.875rem;
+    margin-bottom: var(--space-lg);
+    line-height: 1.5;
 }
 
-.step-header {
+.join-status {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    font-weight: 500;
-    margin-bottom: var(--space-xs);
+    margin-top: var(--space-lg);
+    padding: var(--space-md);
+    background: var(--accent-subtle);
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
 }
 
-.step-number {
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--accent);
-    color: white;
-    border-radius: 50%;
-    font-size: 0.75rem;
-    font-weight: 600;
+.join-status-icon {
+    font-size: 1.25rem;
+    animation: pulse 1.5s ease-in-out infinite;
 }
 
-.step-description {
-    color: var(--ink-muted);
-    font-size: 0.8125rem;
-    margin-bottom: var(--space-sm);
-    padding-left: calc(24px + var(--space-sm));
-}
-
-.step-divider {
-    height: 1px;
-    background: var(--ink-faint);
-    margin: var(--space-lg) 0;
+.join-status.success .join-status-icon {
+    animation: none;
 }
 
 .invite-code-box {

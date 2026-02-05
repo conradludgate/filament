@@ -92,47 +92,31 @@
                     <button class="modal-close" id="join-modal-close">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <!-- Step 1: Get invite code -->
-                    <div class="join-step" id="join-step-1">
-                        <div class="step-header">
-                            <span class="step-number">1</span>
-                            <span>Get your invite code</span>
-                        </div>
-                        <p class="step-description">Share this code with a document member so they can add you.</p>
-                        <div class="invite-code-box">
-                            <textarea 
-                                id="my-invite-code" 
-                                class="input-textarea invite-code" 
-                                readonly
-                                rows="3"
-                                placeholder="Generating..."
-                            ></textarea>
-                            <button id="btn-copy-invite-code" class="btn btn-secondary btn-sm">
-                                📋 Copy
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="step-divider"></div>
-
-                    <!-- Step 2: Paste welcome -->
-                    <div class="join-step" id="join-step-2">
-                        <div class="step-header">
-                            <span class="step-number">2</span>
-                            <span>Enter welcome message</span>
-                        </div>
-                        <p class="step-description">After you've been added, paste the welcome message here.</p>
+                    <p class="modal-intro">Share your invite code with a document member. Once they add you, you'll automatically join.</p>
+                    
+                    <label>
+                        <span>Your Invite Code</span>
+                    </label>
+                    <div class="invite-code-box">
                         <textarea 
-                            id="join-welcome" 
-                            class="input-textarea" 
-                            placeholder="Paste welcome message here..."
+                            id="my-invite-code" 
+                            class="input-textarea invite-code" 
+                            readonly
                             rows="3"
+                            placeholder="Generating..."
                         ></textarea>
+                        <button id="btn-copy-invite-code" class="btn btn-secondary btn-sm">
+                            📋 Copy
+                        </button>
+                    </div>
+                    
+                    <div id="join-status" class="join-status hidden">
+                        <span class="join-status-icon">⏳</span>
+                        <span class="join-status-text">Waiting to be added...</span>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button id="btn-join-cancel" class="btn btn-secondary">Cancel</button>
-                    <button id="btn-join-confirm" class="btn btn-primary">Join Document</button>
                 </div>
             </div>
         </div>
