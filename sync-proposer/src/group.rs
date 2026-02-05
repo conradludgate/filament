@@ -1331,12 +1331,9 @@ where
         data: &[u8],
         reply: oneshot::Sender<Result<EncryptedAppMessage, Report<GroupError>>>,
     ) {
-        // Update the internal CRDT to keep it in sync for snapshots
-        if let Ok(mut crdt) = self.crdt.lock() {
-            if let Err(e) = crdt.merge(data) {
-                tracing::warn!(?e, "failed to merge local update into CRDT snapshot");
-            }
-        }
+        // NOTE: We don't merge here because the caller (SyncedDocument) has already
+        // modified the shared CRDT before encoding the update. Merging again would
+        // cause duplicate operations even though yrs should deduplicate them.
 
         // Get current epoch and check if we need to reset the message counter
         let current_epoch = self.learner.mls_epoch();
