@@ -170,16 +170,42 @@ where
         &self,
         welcome_bytes: &[u8],
     ) -> Result<SyncedDocument<C, CS>, Report<GroupError>> {
+        use universal_sync_core::WelcomeBundle;
+        use yrs::updates::decoder::Decode;
+        use yrs::{Transact, Update};
+
+        // Parse the welcome bundle to get the CRDT snapshot
+        let welcome_bundle = WelcomeBundle::from_bytes(welcome_bytes).map_err(|e| {
+            Report::new(GroupError).attach(format!("failed to parse welcome bundle: {e}"))
+        })?;
+
+        // Join the group
         let group = self.client.join_group(welcome_bytes).await?;
 
         // Create yrs document with derived client ID
         let yrs_client_id = derive_yrs_client_id(&self.signing_public_key);
         let doc = Doc::with_client_id(yrs_client_id);
 
-        // Note: The CRDT snapshot from the welcome should be applied
-        // through the group's CRDT handling, but we also need to ensure
-        // the yrs Doc is properly initialized. For now, we create a fresh doc
-        // and rely on receiving updates to sync state.
+        // Apply the CRDT snapshot if present
+        if welcome_bundle.has_crdt() {
+            tracing::debug!(
+                snapshot_len = welcome_bundle.crdt_snapshot.len(),
+                "Applying CRDT snapshot from welcome"
+            );
+            
+            match Update::decode_v1(&welcome_bundle.crdt_snapshot) {
+                Ok(update) => {
+                    if let Err(e) = doc.transact_mut().apply_update(update) {
+                        tracing::warn!(?e, "Failed to apply CRDT snapshot from welcome");
+                    } else {
+                        tracing::info!("Applied CRDT snapshot from welcome");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "Failed to decode CRDT snapshot from welcome");
+                }
+            }
+        }
 
         Ok(SyncedDocument::new(group, doc))
     }

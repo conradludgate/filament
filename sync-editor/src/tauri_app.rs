@@ -73,6 +73,14 @@ fn create_app_client(name: &str, endpoint: Endpoint) -> AppEditorClient {
         .expect("key generation should succeed");
 
     let signing_public_key = public_key.as_ref().to_vec();
+    
+    // Log the yrs client ID for debugging
+    let yrs_client_id = {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(&signing_public_key);
+        u64::from_be_bytes(hash[..8].try_into().expect("sha256 produces 32 bytes"))
+    };
+    tracing::info!(yrs_client_id, "Generated yrs client ID from signing key");
 
     // Create a basic credential
     let credential = BasicCredential::new(name.as_bytes().to_vec());

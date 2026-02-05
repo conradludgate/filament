@@ -144,6 +144,7 @@ where
 
         // Send the update to the group
         let mut group = self.group.lock().await;
+        tracing::debug!(update_len = update.len(), "sending insert update to group");
         group.send_message(&update).await?;
 
         Ok(())
@@ -164,6 +165,7 @@ where
 
         // Send the update to the group
         let mut group = self.group.lock().await;
+        tracing::debug!(update_len = update.len(), "sending delete update to group");
         group.send_message(&update).await?;
 
         Ok(())
@@ -266,6 +268,13 @@ where
                             tracing::debug!("sync loop: group channel closed");
                             break;
                         };
+                        
+                        tracing::debug!(
+                            sender = msg.sender.0,
+                            epoch = msg.epoch.0,
+                            data_len = msg.data.len(),
+                            "sync loop: received message from group"
+                        );
 
                         // Apply the update and get new text in a single lock scope
                         // (yrs::Update is not Send, so we can't hold it across await)
@@ -280,6 +289,12 @@ where
                                 }
                             };
 
+                            let before_text = {
+                                let t = d.get_or_insert_text(text_name);
+                                let txn = d.transact();
+                                t.get_string(&txn)
+                            };
+                            
                             if let Err(e) = d.transact_mut().apply_update(update) {
                                 tracing::warn!(?e, "sync loop: failed to apply update");
                                 continue;
@@ -289,6 +304,12 @@ where
                             let t = d.get_or_insert_text(text_name);
                             let txn = d.transact();
                             let text = t.get_string(&txn);
+                            
+                            tracing::debug!(
+                                before_len = before_text.len(),
+                                after_len = text.len(),
+                                "sync loop: applied update"
+                            );
 
                             Some((msg.sender.0, msg.epoch.0, text))
                         };
