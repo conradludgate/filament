@@ -4195,6 +4195,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-editor"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "error-stack",
+ "futures",
+ "iroh",
+ "mls-rs",
+ "mls-rs-core",
+ "mls-rs-crypto-rustcrypto",
+ "postcard",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "universal-sync-acceptor",
+ "universal-sync-core",
+ "universal-sync-proposer",
+ "universal-sync-testing",
+ "yrs",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

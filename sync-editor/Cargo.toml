@@ -1,0 +1,39 @@
+[package]
+name = "sync-editor"
+version = "0.1.0"
+edition = "2024"
+description = "Federated E2EE collaborative text editor using universal-sync"
+
+[lib]
+name = "sync_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sync-editor"
+path = "src/main.rs"
+
+[dependencies]
+universal-sync-core = { path = "../sync-core" }
+universal-sync-proposer = { path = "../sync-proposer" }
+universal-sync-testing = { path = "../sync-testing" }
+mls-rs = { workspace = true, features = ["prior_epoch", "private_message"] }
+mls-rs-core.workspace = true
+mls-rs-crypto-rustcrypto.workspace = true
+serde.workspace = true
+postcard.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+iroh.workspace = true
+yrs.workspace = true
+sha2.workspace = true
+error-stack.workspace = true
+bs58.workspace = true
+
+# Tauri dependencies (to be enabled later)
+# tauri = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true
+universal-sync-acceptor = { path = "../sync-acceptor" }
