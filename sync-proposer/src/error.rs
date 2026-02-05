@@ -17,12 +17,12 @@ use std::fmt;
 /// async fn add_member(group: &mut Group, key_package: &[u8]) -> Result<(), Report<GroupError>> {
 ///     parse_key_package(key_package)
 ///         .change_context(GroupError)
-///         .attach_printable("invalid key package format")?;
+///         .attach("invalid key package format")?;
 ///     
 ///     group.propose_add(...)
 ///         .await
 ///         .change_context(GroupError)
-///         .attach_printable("failed to propose member addition")?;
+///         .attach("failed to propose member addition")?;
 ///     
 ///     Ok(())
 /// }

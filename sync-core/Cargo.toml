@@ -3,9 +3,13 @@ name = "universal-sync-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+yrs = ["dep:yrs"]
+
 [dependencies]
 universal-sync-paxos = { path = "../paxos" }
-mls-rs = { version = "0.43", default-features = false }
+mls-rs = { version = "0.52", default-features = false }
 serde.workspace = true
 postcard.workspace = true
 iroh.workspace = true
@@ -16,3 +20,6 @@ tokio-util.workspace = true
 tokio.workspace = true
 futures.workspace = true
 bytes.workspace = true
+
+# Optional CRDT implementations
+yrs = { version = "0.25", optional = true }

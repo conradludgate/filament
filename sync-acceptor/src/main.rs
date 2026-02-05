@@ -2,7 +2,6 @@
 //!
 //! Runs a Paxos acceptor server for Universal Sync groups.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -99,10 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .alpns(vec![PAXOS_ALPN.to_vec()]);
 
     for addr in tokio::net::lookup_host(args.bind).await? {
-        endpoint = match addr {
-            SocketAddr::V4(addr) => endpoint.bind_addr_v4(addr),
-            SocketAddr::V6(addr) => endpoint.bind_addr_v6(addr),
-        };
+        endpoint = endpoint.bind_addr(addr)?;
     }
 
     let endpoint = endpoint.bind().await?;

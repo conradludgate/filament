@@ -19,9 +19,14 @@ postcard = { version = "1", features = ["alloc"] }
 pin-project-lite = "0.2"
 fjall = "3"
 tempfile = "3"
-iroh = "0.95"
+iroh = "0.96"
+mls-rs-crypto-rustcrypto = { version = "0.20", default-features = false }
+mls-rs-core = "0.25"
+mls-rs = { version = "0.52", default-features = false }
+yrs = { version = "0.25" }
+zeroize = "1.8"
 
-error-stack = "0.5"
+error-stack = "0.6"
 bs58 = "0.5"
 async-stream = "0.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

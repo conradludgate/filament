@@ -254,21 +254,21 @@ where
             if !self.is_known_acceptor(&acceptor_id) {
                 tracing::debug!(?acceptor_id, "sync proposal from unknown acceptor");
                 return Err(Report::new(ValidationError)
-                    .attach_printable("sync proposal from unknown acceptor")
-                    .attach_printable(format!("acceptor_id: {acceptor_id:?}")));
+                    .attach("sync proposal from unknown acceptor")
+                    .attach(format!("acceptor_id: {acceptor_id:?}")));
             }
 
             // Verify the iroh ed25519 signature
             let public_key = PublicKey::from_bytes(&proposal.message_hash).map_err(|_| {
                 tracing::debug!("invalid public key in message_hash");
-                Report::new(ValidationError).attach_printable("invalid public key in message_hash")
+                Report::new(ValidationError).attach("invalid public key in message_hash")
             })?;
 
             // Signature must be exactly 64 bytes (ed25519)
             let sig_bytes: [u8; Signature::LENGTH] =
                 proposal.signature.as_slice().try_into().map_err(|_| {
                     tracing::debug!("invalid signature length");
-                    Report::new(ValidationError).attach_printable({
+                    Report::new(ValidationError).attach({
                         format!(
                             "invalid signature length: expected {}, got {}",
                             Signature::LENGTH,
@@ -281,8 +281,7 @@ where
             let data = proposal.unsigned().to_bytes();
             public_key.verify(&data, &signature).map_err(|_| {
                 tracing::debug!("sync proposal signature verification failed");
-                Report::new(ValidationError)
-                    .attach_printable("sync proposal signature verification failed")
+                Report::new(ValidationError).attach("sync proposal signature verification failed")
             })?;
 
             tracing::debug!(?acceptor_id, "accepting sync proposal from known acceptor");
@@ -294,9 +293,8 @@ where
             .get_member_public_key(proposal.member_id)
             .ok_or_else(|| {
                 tracing::debug!("proposal member not found in roster");
-                Report::new(ValidationError).attach_printable({
-                    format!("member {:?} not found in roster", proposal.member_id)
-                })
+                Report::new(ValidationError)
+                    .attach({ format!("member {:?} not found in roster", proposal.member_id) })
             })?;
 
         let data = proposal.unsigned().to_bytes();
@@ -305,8 +303,7 @@ where
             .verify(&public_key, &proposal.signature, &data)
             .map_err(|_| {
                 tracing::debug!("proposal signature verification failed");
-                Report::new(ValidationError)
-                    .attach_printable("proposal signature verification failed")
+                Report::new(ValidationError).attach("proposal signature verification failed")
             })?;
 
         Ok(Validated::assert_valid())

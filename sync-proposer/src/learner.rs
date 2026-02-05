@@ -326,7 +326,7 @@ where
 
         // Check epoch matches current
         if proposal.epoch.0 != self.group.context().epoch {
-            return Err(Report::new(ValidationError).attach_printable({
+            return Err(Report::new(ValidationError).attach({
                 format!(
                     "epoch mismatch: expected {}, got {}",
                     self.group.context().epoch,
@@ -337,23 +337,20 @@ where
 
         // Check sender is a valid group member
         if !self.is_member(proposal.member_id) {
-            return Err(Report::new(ValidationError).attach_printable({
-                format!("member {:?} not found in roster", proposal.member_id)
-            }));
+            return Err(Report::new(ValidationError)
+                .attach({ format!("member {:?} not found in roster", proposal.member_id) }));
         }
 
         // All proposals must have signatures
         if proposal.signature.is_empty() {
-            return Err(
-                Report::new(ValidationError).attach_printable("proposal has empty signature")
-            );
+            return Err(Report::new(ValidationError).attach("proposal has empty signature"));
         }
 
         // Verify the signature
         self.verify_proposal(proposal).map_err(|e| {
             Report::new(ValidationError)
-                .attach_printable("signature verification failed")
-                .attach_printable(e.to_string())
+                .attach("signature verification failed")
+                .attach(e.to_string())
         })?;
 
         Ok(Validated::assert_valid())

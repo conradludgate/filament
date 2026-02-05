@@ -141,7 +141,7 @@ where
     fn cmd_key_package(&self) -> Result<String, String> {
         let kp = self
             .client
-            .generate_key_package_message(ExtensionList::default(), ExtensionList::default())
+            .generate_key_package_message(ExtensionList::default(), ExtensionList::default(), None)
             .map_err(|e| format!("Failed to generate key package: {e:?}"))?;
 
         let bytes = kp
@@ -158,6 +158,7 @@ where
             self.cipher_suite.clone(),
             &self.connection_manager,
             &[],
+            None, // No CRDT
         )
         .await
         .map_err(|e| format!("Failed to create group: {e:?}"))?;
@@ -181,6 +182,7 @@ where
             self.cipher_suite.clone(),
             &self.connection_manager,
             &welcome_bytes,
+            None, // No CRDT
         )
         .await
         .map_err(|e| format!("Failed to join group: {e:?}"))?;

@@ -31,8 +31,8 @@ impl std::error::Error for GroupError {}
 
 Use context methods to add information:
 - `.change_context(GroupError)` to convert between domains
-- `.attach_printable("context")` for human-readable context
-- `.attach()` for structured data
+- `.attach("context")` for human-readable context
+- `.attach_opaque()` for structured data
 
 **Don't**: Create enum variants for every error case, use `thiserror`, or lose inner error context.
 

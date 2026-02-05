@@ -107,15 +107,13 @@ where
         let member_addr_ext = MemberAddrExt::new(self.connection_manager.endpoint().addr());
         let mut kp_extensions = ExtensionList::default();
         kp_extensions.set_from(member_addr_ext).map_err(|e| {
-            Report::new(GroupError)
-                .attach_printable(format!("failed to set member address extension: {e:?}"))
+            Report::new(GroupError).attach(format!("failed to set member address extension: {e:?}"))
         })?;
 
         self.client
-            .generate_key_package_message(kp_extensions, ExtensionList::default())
+            .generate_key_package_message(kp_extensions, ExtensionList::default(), None)
             .map_err(|e| {
-                Report::new(GroupError)
-                    .attach_printable(format!("failed to generate key package: {e:?}"))
+                Report::new(GroupError).attach(format!("failed to generate key package: {e:?}"))
             })
     }
 
@@ -136,6 +134,7 @@ where
             self.cipher_suite.clone(),
             &self.connection_manager,
             acceptors,
+            None, // No CRDT - use with_crdt variant for CRDT support
         )
         .await
     }
@@ -157,6 +156,7 @@ where
             self.cipher_suite.clone(),
             &self.connection_manager,
             welcome_bytes,
+            None, // No CRDT - use with_crdt variant for CRDT support
         )
         .await
     }

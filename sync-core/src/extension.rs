@@ -20,6 +20,9 @@ pub const ACCEPTOR_REMOVE_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF
 /// Extension type for member's endpoint address (key package extension)
 pub const MEMBER_ADDR_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF798);
 
+/// Extension type for CRDT registration (group context extension)
+pub const CRDT_REGISTRATION_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF799);
+
 /// MLS group context extension containing the full list of acceptors
 ///
 /// This extension is set when the group is created and updated whenever
@@ -299,6 +302,79 @@ impl MlsCodecExtension for MemberAddrExt {
     }
 }
 
+/// MLS group context extension registering the CRDT type for this group.
+///
+/// This extension is set when the group is created and identifies which
+/// CRDT implementation the group uses for state synchronization.
+///
+/// When joining a group, members check this extension to ensure they have
+/// a compatible CRDT factory registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrdtRegistrationExt {
+    /// CRDT type identifier (e.g., "yjs", "automerge", "counter", "none")
+    pub type_id: String,
+}
+
+impl CrdtRegistrationExt {
+    /// Create a new CRDT registration extension
+    #[must_use]
+    pub fn new(type_id: impl Into<String>) -> Self {
+        Self {
+            type_id: type_id.into(),
+        }
+    }
+
+    /// Get the CRDT type identifier
+    #[must_use]
+    pub fn type_id(&self) -> &str {
+        &self.type_id
+    }
+}
+
+impl MlsSize for CrdtRegistrationExt {
+    fn mls_encoded_len(&self) -> usize {
+        // Length prefix (4 bytes) + string bytes
+        4 + self.type_id.len()
+    }
+}
+
+impl MlsEncode for CrdtRegistrationExt {
+    #[expect(clippy::cast_possible_truncation)]
+    fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
+        let bytes = self.type_id.as_bytes();
+        let len = bytes.len() as u32;
+        writer.extend_from_slice(&len.to_be_bytes());
+        writer.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl MlsDecode for CrdtRegistrationExt {
+    fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
+        if reader.len() < 4 {
+            return Err(mls_rs_codec::Error::UnexpectedEOF);
+        }
+        let len = u32::from_be_bytes([reader[0], reader[1], reader[2], reader[3]]) as usize;
+        *reader = &reader[4..];
+
+        if reader.len() < len {
+            return Err(mls_rs_codec::Error::UnexpectedEOF);
+        }
+
+        let type_id = String::from_utf8(reader[..len].to_vec())
+            .map_err(|_| mls_rs_codec::Error::Custom(POSTCARD_ERROR))?;
+        *reader = &reader[len..];
+
+        Ok(Self { type_id })
+    }
+}
+
+impl MlsCodecExtension for CrdtRegistrationExt {
+    fn extension_type() -> ExtensionType {
+        CRDT_REGISTRATION_EXTENSION_TYPE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -376,6 +452,29 @@ mod tests {
         assert!(AcceptorsExt::extension_type().raw_value() >= 0xF000);
         assert!(AcceptorAdd::extension_type().raw_value() >= 0xF000);
         assert!(AcceptorRemove::extension_type().raw_value() >= 0xF000);
+        assert!(CrdtRegistrationExt::extension_type().raw_value() >= 0xF000);
+    }
+
+    #[test]
+    fn test_crdt_registration_roundtrip() {
+        let ext = CrdtRegistrationExt::new("yjs");
+
+        let encoded = ext.mls_encode_to_vec().unwrap();
+
+        let decoded = CrdtRegistrationExt::mls_decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(ext, decoded);
+        assert_eq!(decoded.type_id(), "yjs");
+    }
+
+    #[test]
+    fn test_crdt_registration_empty() {
+        let ext = CrdtRegistrationExt::new("");
+
+        let encoded = ext.mls_encode_to_vec().unwrap();
+
+        let decoded = CrdtRegistrationExt::mls_decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(ext, decoded);
+        assert_eq!(decoded.type_id(), "");
     }
 
     #[test]

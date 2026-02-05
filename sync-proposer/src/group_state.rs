@@ -8,6 +8,7 @@ use std::sync::Arc;
 use error_stack::{Report, ResultExt};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use mls_rs_core::group::{EpochRecord, GroupState, GroupStateStorage};
+use zeroize::Zeroizing;
 
 /// Error type for group state storage operations.
 #[derive(Debug)]
@@ -62,12 +63,12 @@ impl FjallGroupStateStorage {
         let db = Database::builder(path)
             .open()
             .change_context(GroupStateError)
-            .attach_printable_lazy(|| format!("failed to open database at {}", path.display()))?;
+            .attach_opaque_with(|| format!("failed to open database at {}", path.display()))?;
 
         let keyspace = db
             .keyspace("mls_groups", KeyspaceCreateOptions::default)
             .change_context(GroupStateError)
-            .attach_printable("failed to open keyspace")?;
+            .attach("failed to open keyspace")?;
 
         Ok(Self {
             inner: Arc::new(FjallGroupStateStorageInner { db, keyspace }),
@@ -100,21 +101,25 @@ impl FjallGroupStateStorage {
 impl GroupStateStorage for FjallGroupStateStorage {
     type Error = GroupStateError;
 
-    fn state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn state(&self, group_id: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, Self::Error> {
         self.inner
             .keyspace
             .get(Self::state_key(group_id))
             .map_err(|_| GroupStateError)
-            .map(|opt| opt.map(|slice| slice.to_vec()))
+            .map(|opt| opt.map(|slice| Zeroizing::new(slice.to_vec())))
     }
 
-    fn epoch(&self, group_id: &[u8], epoch_id: u64) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn epoch(
+        &self,
+        group_id: &[u8],
+        epoch_id: u64,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, Self::Error> {
         let key = Self::epoch_key(group_id, epoch_id);
         self.inner
             .keyspace
             .get(&key)
             .map_err(|_| GroupStateError)
-            .map(|opt| opt.map(|slice| slice.to_vec()))
+            .map(|opt| opt.map(|slice| Zeroizing::new(slice.to_vec())))
     }
 
     fn write(
@@ -128,7 +133,7 @@ impl GroupStateStorage for FjallGroupStateStorage {
         // Write group state
         self.inner
             .keyspace
-            .insert(Self::state_key(group_id), &state.data)
+            .insert(Self::state_key(group_id), &*state.data)
             .map_err(|_| GroupStateError)?;
 
         // Write new epoch records
@@ -136,7 +141,7 @@ impl GroupStateStorage for FjallGroupStateStorage {
             let epoch_key = Self::epoch_key(group_id, record.id);
             self.inner
                 .keyspace
-                .insert(&epoch_key, &record.data)
+                .insert(&epoch_key, &*record.data)
                 .map_err(|_| GroupStateError)?;
         }
 
@@ -145,7 +150,7 @@ impl GroupStateStorage for FjallGroupStateStorage {
             let epoch_key = Self::epoch_key(group_id, record.id);
             self.inner
                 .keyspace
-                .insert(&epoch_key, &record.data)
+                .insert(&epoch_key, &*record.data)
                 .map_err(|_| GroupStateError)?;
         }
 
@@ -192,18 +197,18 @@ mod tests {
         // Write state and epoch
         let state = GroupState {
             id: group_id.to_vec(),
-            data: state_data.clone(),
+            data: Zeroizing::new(state_data.clone()),
         };
-        let epochs = vec![EpochRecord::new(1, epoch_data.clone())];
+        let epochs = vec![EpochRecord::new(1, Zeroizing::new(epoch_data.clone()))];
 
         storage.write(state, epochs, vec![]).unwrap();
 
         // Read back
         let loaded_state = storage.state(group_id).unwrap();
-        assert_eq!(loaded_state, Some(state_data));
+        assert_eq!(loaded_state, Some(Zeroizing::new(state_data)));
 
         let loaded_epoch = storage.epoch(group_id, 1).unwrap();
-        assert_eq!(loaded_epoch, Some(epoch_data));
+        assert_eq!(loaded_epoch, Some(Zeroizing::new(epoch_data)));
 
         let max_epoch = storage.max_epoch_id(group_id).unwrap();
         assert_eq!(max_epoch, Some(1));
@@ -219,12 +224,12 @@ mod tests {
         // Write multiple epochs
         let state = GroupState {
             id: group_id.to_vec(),
-            data: vec![],
+            data: Zeroizing::new(vec![]),
         };
         let epochs = vec![
-            EpochRecord::new(1, b"epoch1".to_vec()),
-            EpochRecord::new(5, b"epoch5".to_vec()),
-            EpochRecord::new(3, b"epoch3".to_vec()),
+            EpochRecord::new(1, Zeroizing::new(b"epoch1".to_vec())),
+            EpochRecord::new(5, Zeroizing::new(b"epoch5".to_vec())),
+            EpochRecord::new(3, Zeroizing::new(b"epoch3".to_vec())),
         ];
 
         storage.write(state, epochs, vec![]).unwrap();

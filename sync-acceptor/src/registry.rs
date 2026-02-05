@@ -130,7 +130,7 @@ where
 
         let external_group = self
             .external_client
-            .observe_group(mls_message, None)
+            .observe_group(mls_message, None, None)
             .map_err(|e| format!("failed to observe group: {e}"))?;
 
         // Extract acceptors from the group's extensions
@@ -191,7 +191,7 @@ where
 
         let external_group = self
             .external_client
-            .observe_group(mls_message, None)
+            .observe_group(mls_message, None, None)
             .map_err(|e| format!("failed to observe group: {e}"))?;
 
         // Extract the group ID

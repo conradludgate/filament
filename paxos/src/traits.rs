@@ -47,7 +47,7 @@ impl core::error::Error for ValidationError {}
 /// fn validate(&self, proposal: &Self::Proposal) -> Result<Validated, Report<ValidationError>> {
 ///     if proposal.epoch != self.current_epoch() {
 ///         return Err(Report::new(ValidationError)
-///             .attach_printable("epoch mismatch"));
+///             .attach("epoch mismatch"));
 ///     }
 ///     // ... more checks ...
 ///     Ok(Validated::assert_valid())

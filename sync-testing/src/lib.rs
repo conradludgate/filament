@@ -3,6 +3,7 @@
 //! This crate provides test utilities for Universal Sync, importing both
 //! proposer and acceptor functionality for integration testing.
 
+pub mod yrs_crdt;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
@@ -12,6 +13,7 @@ use universal_sync_core::{
     ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, ACCEPTORS_EXTENSION_TYPE,
     MEMBER_ADDR_EXTENSION_TYPE,
 };
+pub use yrs_crdt::{YrsCrdt, YrsCrdtFactory};
 
 /// Default cipher suite for testing
 pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
