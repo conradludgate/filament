@@ -574,6 +574,106 @@ body {
     font-size: 0.75rem;
 }
 
+/* Acceptor modal */
+.acceptor-list {
+    margin-bottom: var(--space-lg);
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.acceptor-empty {
+    color: var(--ink-muted);
+    font-size: 0.875rem;
+    font-style: italic;
+    padding: var(--space-md);
+    text-align: center;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+}
+
+.acceptor-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--space-xs);
+}
+
+.acceptor-item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.acceptor-item-name {
+    font-weight: 500;
+    font-size: 0.875rem;
+}
+
+.acceptor-item-addr {
+    font-size: 0.6875rem;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acceptor-item-remove {
+    background: transparent;
+    border: none;
+    color: var(--ink-muted);
+    cursor: pointer;
+    padding: var(--space-xs);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+}
+
+.acceptor-item-remove:hover {
+    color: var(--error);
+    background: var(--accent-subtle);
+}
+
+.acceptor-add-form label {
+    display: block;
+    margin-bottom: var(--space-sm);
+}
+
+.acceptor-input-row {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: flex-start;
+}
+
+.acceptor-input-row .input-text {
+    width: 100px;
+    flex-shrink: 0;
+}
+
+.acceptor-input-row .input-textarea {
+    flex: 1;
+    font-size: 0.75rem;
+}
+
+.input-text {
+    padding: var(--space-sm) var(--space-md);
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    color: var(--ink-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--ink-faint);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast);
+}
+
+.input-text:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
 /* Toast notifications */
 .toast-container {
     position: fixed;

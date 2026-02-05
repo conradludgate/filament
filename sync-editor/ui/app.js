@@ -27,6 +27,7 @@ const state = {
     currentDocument: null,
     isConnected: false,
     pendingChanges: [],
+    acceptors: [], // { name, addr }
 };
 
 // DOM Elements
@@ -60,6 +61,17 @@ const elements = {
     btnInviteConfirm: document.getElementById('btn-invite-confirm'),
     btnInviteCancel: document.getElementById('btn-invite-cancel'),
     inviteModalClose: document.getElementById('invite-modal-close'),
+    
+    // Acceptor modal
+    btnAddAcceptor: document.getElementById('btn-add-acceptor'),
+    acceptorModal: document.getElementById('acceptor-modal'),
+    acceptorList: document.getElementById('acceptor-list'),
+    acceptorEmpty: document.getElementById('acceptor-empty'),
+    acceptorName: document.getElementById('acceptor-name'),
+    acceptorAddr: document.getElementById('acceptor-addr'),
+    btnAddAcceptorConfirm: document.getElementById('btn-add-acceptor-confirm'),
+    btnAcceptorDone: document.getElementById('btn-acceptor-done'),
+    acceptorModalClose: document.getElementById('acceptor-modal-close'),
 };
 
 // ============================================================================
@@ -124,6 +136,69 @@ function updateSyncStatus(status) {
             elements.syncStatus.lastChild.textContent = 'Error';
             break;
     }
+}
+
+// ============================================================================
+// Acceptor Management
+// ============================================================================
+
+function renderAcceptorList() {
+    // Clear existing items (except empty message)
+    const items = elements.acceptorList.querySelectorAll('.acceptor-item');
+    items.forEach(item => item.remove());
+    
+    if (state.acceptors.length === 0) {
+        elements.acceptorEmpty.classList.remove('hidden');
+    } else {
+        elements.acceptorEmpty.classList.add('hidden');
+        
+        state.acceptors.forEach((acceptor, index) => {
+            const item = document.createElement('div');
+            item.className = 'acceptor-item';
+            item.innerHTML = `
+                <div class="acceptor-item-info">
+                    <span class="acceptor-item-name">${escapeHtml(acceptor.name)}</span>
+                    <span class="acceptor-item-addr" title="${escapeHtml(acceptor.addr)}">${acceptor.addr.slice(0, 32)}...</span>
+                </div>
+                <button class="acceptor-item-remove" data-index="${index}" title="Remove">✕</button>
+            `;
+            elements.acceptorList.appendChild(item);
+        });
+        
+        // Add remove handlers
+        elements.acceptorList.querySelectorAll('.acceptor-item-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const index = parseInt(e.target.dataset.index, 10);
+                removeAcceptor(index);
+            });
+        });
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function addAcceptor(name, addr) {
+    try {
+        await invoke('add_acceptor', { name, addrB58: addr });
+        state.acceptors.push({ name, addr });
+        renderAcceptorList();
+        showToast(`Added acceptor: ${name}`, 'success');
+    } catch (error) {
+        console.error('Failed to add acceptor:', error);
+        showToast(`Failed to add acceptor: ${error}`, 'error');
+    }
+}
+
+function removeAcceptor(index) {
+    // Note: Backend doesn't support removal yet, just remove from UI state
+    const acceptor = state.acceptors[index];
+    state.acceptors.splice(index, 1);
+    renderAcceptorList();
+    showToast(`Removed acceptor: ${acceptor.name}`, 'info');
 }
 
 // ============================================================================
@@ -434,6 +509,35 @@ function setupEventListeners() {
     // Editor input
     elements.editor.addEventListener('input', handleEditorInput);
     
+    // Acceptor modal
+    elements.btnAddAcceptor.addEventListener('click', () => {
+        renderAcceptorList();
+        showModal(elements.acceptorModal);
+    });
+    
+    const closeAcceptorModal = () => hideModal(elements.acceptorModal);
+    elements.btnAcceptorDone.addEventListener('click', closeAcceptorModal);
+    elements.acceptorModalClose.addEventListener('click', closeAcceptorModal);
+    elements.acceptorModal.querySelector('.modal-backdrop').addEventListener('click', closeAcceptorModal);
+    
+    elements.btnAddAcceptorConfirm.addEventListener('click', async () => {
+        const name = elements.acceptorName.value.trim();
+        const addr = elements.acceptorAddr.value.trim();
+        
+        if (!name) {
+            showToast('Please enter a name for the acceptor', 'error');
+            return;
+        }
+        if (!addr) {
+            showToast('Please enter the acceptor address', 'error');
+            return;
+        }
+        
+        await addAcceptor(name, addr);
+        elements.acceptorName.value = '';
+        elements.acceptorAddr.value = '';
+    });
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
         // Cmd/Ctrl + N = New document
