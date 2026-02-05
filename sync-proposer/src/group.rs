@@ -41,7 +41,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use error_stack::Report;
+use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
@@ -54,7 +54,7 @@ use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorAdd, AcceptorId, AcceptorRemove, Crdt, CrdtFactory, CrdtRegistrationExt,
     EncryptedAppMessage, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, MemberId,
-    MessageId, PAXOS_ALPN, WelcomeBundle,
+    MessageId, OperationContext, PAXOS_ALPN, WelcomeBundle,
 };
 use universal_sync_paxos::proposer::{ProposeResult, Proposer, QuorumTracker};
 use universal_sync_paxos::{AcceptorMessage, Learner, Proposal};
@@ -331,7 +331,8 @@ where
                 .set_from(CrdtRegistrationExt::new(&crdt_type_id))
                 .map_err(|e| {
                     Report::new(GroupError)
-                        .attach(format!("failed to set CRDT registration extension: {e:?}"))
+                        .attach(OperationContext::CREATING_GROUP)
+                        .attach(format!("failed to set CRDT extension: {e:?}"))
                 })?;
 
             let group = client
@@ -341,7 +342,9 @@ where
                     None,
                 )
                 .map_err(|e| {
-                    Report::new(GroupError).attach(format!("failed to create MLS group: {e:?}"))
+                    Report::new(GroupError)
+                        .attach(OperationContext::CREATING_GROUP)
+                        .attach(format!("MLS group creation failed: {e:?}"))
                 })?;
 
             // Extract the group ID
@@ -356,10 +359,14 @@ where
                 None
             } else {
                 let group_info_msg = learner.group().group_info_message(true).map_err(|e| {
-                    Report::new(GroupError).attach(format!("failed to create group info: {e:?}"))
+                    Report::new(GroupError)
+                        .attach(OperationContext::CREATING_GROUP)
+                        .attach(format!("failed to create group info: {e:?}"))
                 })?;
                 Some(group_info_msg.to_bytes().map_err(|e| {
-                    Report::new(GroupError).attach(format!("failed to serialize group info: {e:?}"))
+                    Report::new(GroupError)
+                        .attach(OperationContext::CREATING_GROUP)
+                        .attach(format!("failed to serialize group info: {e:?}"))
                 })?)
             };
 
@@ -375,7 +382,7 @@ where
                     .await
                     .map_err(|e| {
                         Report::new(GroupError)
-                            .attach(format!("failed to register with acceptor: {e}"))
+                            .attach(format!("failed to register with acceptor: {e:?}"))
                     })?;
             }
         }
@@ -424,19 +431,26 @@ where
         use universal_sync_core::AcceptorsExt;
 
         // Parse the welcome bundle (handles both raw MLS welcome and WelcomeBundle)
-        let welcome_bundle = WelcomeBundle::from_bytes(welcome_bytes)
-            .map_err(|e| Report::new(GroupError).attach(format!("invalid welcome bundle: {e}")))?;
+        let welcome_bundle = WelcomeBundle::from_bytes(welcome_bytes).map_err(|e| {
+            Report::new(GroupError)
+                .attach(OperationContext::JOINING_GROUP)
+                .attach(format!("invalid welcome bundle: {e:?}"))
+        })?;
 
         // Join the group (blocking I/O via storage)
         let (learner, group_id, crdt_type_id) = blocking(|| {
             // Parse the MLS Welcome message from the bundle
             let welcome = MlsMessage::from_bytes(&welcome_bundle.mls_welcome).map_err(|e| {
-                Report::new(GroupError).attach(format!("invalid welcome message: {e:?}"))
+                Report::new(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)
+                    .attach(format!("invalid welcome message: {e:?}"))
             })?;
 
             // Join the group - info contains the GroupInfo extensions
             let (group, info) = client.join_group(None, &welcome, None).map_err(|e| {
-                Report::new(GroupError).attach(format!("failed to join group: {e:?}"))
+                Report::new(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)
+                    .attach(format!("MLS join failed: {e:?}"))
             })?;
 
             // Extract the group ID
@@ -449,6 +463,7 @@ where
                 .get_as::<AcceptorsExt>()
                 .map_err(|e| {
                     Report::new(GroupError)
+                        .attach(OperationContext::JOINING_GROUP)
                         .attach(format!("failed to read acceptors extension: {e:?}"))
                 })?
                 .map(|ext| ext.0)
@@ -461,7 +476,8 @@ where
                 .get_as::<CrdtRegistrationExt>()
                 .map_err(|e| {
                     Report::new(GroupError)
-                        .attach(format!("failed to read CRDT registration extension: {e:?}"))
+                        .attach(OperationContext::JOINING_GROUP)
+                        .attach(format!("failed to read CRDT extension: {e:?}"))
                 })?
                 .map_or_else(|| "none".to_owned(), |ext| ext.type_id);
 
@@ -489,7 +505,7 @@ where
                 .from_snapshot(&welcome_bundle.crdt_snapshot)
                 .map_err(|e| {
                     Report::new(GroupError)
-                        .attach(format!("failed to create CRDT from snapshot: {e}"))
+                        .attach(format!("failed to create CRDT from snapshot: {e:?}"))
                 })?
         } else {
             crdt_factory.create()
@@ -1073,9 +1089,7 @@ where
                 self.learner.group().group_info_message(true).map_err(|e| {
                     Report::new(GroupError).attach(format!("group info failed: {e:?}"))
                 })?;
-            group_info
-                .to_bytes()
-                .map_err(|e| Report::new(GroupError).attach(format!("serialization failed: {e:?}")))
+            group_info.to_bytes().change_context(GroupError)
         })?;
 
         // Register with the acceptor
@@ -1085,7 +1099,7 @@ where
             &group_info_bytes,
         )
         .await
-        .map_err(|e| Report::new(GroupError).attach(format!("registration failed: {e}")))?;
+        .change_context(GroupError)?;
 
         Ok(())
     }
@@ -1150,6 +1164,15 @@ where
         member_addr: EndpointAddr,
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
+        // Safety check: cannot add members without at least one acceptor
+        let acceptor_count = self.learner.acceptor_ids().len();
+        if acceptor_count == 0 {
+            let _ = reply.send(Err(Report::new(GroupError).attach(
+                "cannot add members to a group without acceptors: add an acceptor first",
+            )));
+            return;
+        }
+
         // Capture CRDT snapshot before building commit (snapshot of current state)
         let crdt_snapshot = self.crdt.snapshot().ok();
 
@@ -1162,12 +1185,10 @@ where
                 .group_mut()
                 .commit_builder()
                 .add_member(key_package)
-                .map_err(|e| Report::new(GroupError).attach(format!("add_member failed: {e:?}")))?
+                .change_context(GroupError)?
                 .set_group_info_ext(acceptors_ext)
                 .build()
-                .map_err(|e| {
-                    Report::new(GroupError).attach(format!("commit build failed: {e:?}"))
-                })?;
+                .change_context(GroupError)?;
 
             // Extract the welcome message bytes for later
             let mls_welcome = commit_output
@@ -1194,7 +1215,7 @@ where
                     Ok(bytes) => bytes,
                     Err(e) => {
                         let _ = reply.send(Err(Report::new(GroupError)
-                            .attach(format!("welcome bundle serialization failed: {e}"))));
+                            .attach(format!("welcome bundle serialization failed: {e:?}"))));
                         return;
                     }
                 };
@@ -1220,11 +1241,9 @@ where
                 .group_mut()
                 .commit_builder()
                 .remove_member(member_index)
-                .map_err(|e| {
-                    Report::new(GroupError).attach(format!("remove_member failed: {e:?}"))
-                })?
+                .change_context(GroupError)?
                 .build()
-                .map_err(|e| Report::new(GroupError).attach(format!("commit build failed: {e:?}")))
+                .change_context(GroupError)
         });
 
         match result {
@@ -1245,7 +1264,7 @@ where
                 .group_mut()
                 .commit_builder()
                 .build()
-                .map_err(|e| Report::new(GroupError).attach(format!("commit build failed: {e:?}")))
+                .change_context(GroupError)
         });
 
         match result {
@@ -1289,7 +1308,7 @@ where
             Ok(msg) => msg,
             Err(e) => {
                 let _ = reply.send(Err(
-                    Report::new(GroupError).attach(format!("encrypt failed: {e}"))
+                    Report::new(GroupError).attach(format!("encrypt failed: {e:?}"))
                 ));
                 return;
             }
@@ -1346,19 +1365,15 @@ where
         let result = blocking(|| {
             let add_ext = AcceptorAdd::new(addr.clone());
             let mut extensions = ExtensionList::default();
-            extensions
-                .set_from(add_ext)
-                .map_err(|e| Report::new(GroupError).attach(format!("extension failed: {e:?}")))?;
+            extensions.set_from(add_ext).change_context(GroupError)?;
 
             self.learner
                 .group_mut()
                 .commit_builder()
                 .set_group_context_ext(extensions)
-                .map_err(|e| {
-                    Report::new(GroupError).attach(format!("set extension failed: {e:?}"))
-                })?
+                .change_context(GroupError)?
                 .build()
-                .map_err(|e| Report::new(GroupError).attach(format!("commit build failed: {e:?}")))
+                .change_context(GroupError)
         });
 
         match result {
@@ -1383,22 +1398,30 @@ where
         use mls_rs::ExtensionList;
         use universal_sync_core::AcceptorRemove;
 
+        // Safety check: cannot remove the last acceptor if the group has multiple members
+        let acceptor_count = self.learner.acceptor_ids().len();
+        let member_count = self.learner.group().roster().members_iter().count();
+
+        if acceptor_count <= 1 && member_count > 1 {
+            let _ = reply.send(Err(Report::new(GroupError).attach(
+                "cannot remove the last acceptor from a group with multiple members: \
+                 remove other members first or add another acceptor",
+            )));
+            return;
+        }
+
         let result = blocking(|| {
             let remove_ext = AcceptorRemove::new(acceptor_id);
             let mut extensions = ExtensionList::default();
-            extensions
-                .set_from(remove_ext)
-                .map_err(|e| Report::new(GroupError).attach(format!("extension failed: {e:?}")))?;
+            extensions.set_from(remove_ext).change_context(GroupError)?;
 
             self.learner
                 .group_mut()
                 .commit_builder()
                 .set_group_context_ext(extensions)
-                .map_err(|e| {
-                    Report::new(GroupError).attach(format!("set extension failed: {e:?}"))
-                })?
+                .change_context(GroupError)?
                 .build()
-                .map_err(|e| Report::new(GroupError).attach(format!("commit build failed: {e:?}")))
+                .change_context(GroupError)
         });
 
         match result {
@@ -1685,14 +1708,14 @@ where
             .connect(member_addr.clone(), PAXOS_ALPN)
             .await
             .map_err(|e| {
-                Report::new(GroupError).attach(format!("failed to connect to new member: {e}"))
+                Report::new(GroupError).attach(format!("failed to connect to new member: {e:?}"))
             })?;
 
         tracing::debug!("connected to new member, opening stream");
 
         // Open a stream and send the welcome handshake
         let (send, _recv) = conn.open_bi().await.map_err(|e| {
-            Report::new(GroupError).attach(format!("failed to open stream to new member: {e}"))
+            Report::new(GroupError).attach(format!("failed to open stream to new member: {e:?}"))
         })?;
 
         let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
@@ -1700,25 +1723,21 @@ where
         // Send the welcome handshake
         let handshake = Handshake::SendWelcome(welcome.to_vec());
         let handshake_bytes = postcard::to_stdvec(&handshake).map_err(|e| {
-            Report::new(GroupError).attach(format!("failed to serialize handshake: {e}"))
+            Report::new(GroupError).attach(format!("failed to serialize handshake: {e:?}"))
         })?;
 
-        framed
-            .send(handshake_bytes.into())
-            .await
-            .map_err(|e| Report::new(GroupError).attach(format!("failed to send welcome: {e}")))?;
+        framed.send(handshake_bytes.into()).await.map_err(|e| {
+            Report::new(GroupError).attach(format!("failed to send welcome: {e:?}"))
+        })?;
 
         tracing::debug!("sent welcome handshake, finishing stream");
 
         // Finish the stream and wait for it to be acknowledged
         let mut send = framed.into_inner();
-        send.finish()
-            .map_err(|e| Report::new(GroupError).attach(format!("failed to finish stream: {e}")))?;
+        send.finish().change_context(GroupError)?;
 
         // Wait for the stream to be fully closed (data acknowledged)
-        send.stopped()
-            .await
-            .map_err(|e| Report::new(GroupError).attach(format!("stream close error: {e}")))?;
+        send.stopped().await.change_context(GroupError)?;
 
         tracing::debug!("welcome sent successfully");
 
@@ -2366,17 +2385,12 @@ pub(crate) async fn wait_for_welcome(endpoint: &Endpoint) -> Result<Vec<u8>, Rep
 
     let conn = incoming
         .accept()
-        .map_err(|e| Report::new(GroupError).attach(format!("failed to accept connection: {e}")))?
+        .change_context(GroupError)?
         .await
-        .map_err(|e| {
-            Report::new(GroupError).attach(format!("connection establishment failed: {e}"))
-        })?;
+        .change_context(GroupError)?;
 
     // Accept a bidirectional stream
-    let (_send, recv) = conn
-        .accept_bi()
-        .await
-        .map_err(|e| Report::new(GroupError).attach(format!("failed to accept stream: {e}")))?;
+    let (_send, recv) = conn.accept_bi().await.change_context(GroupError)?;
 
     // Read the handshake
     let mut framed = FramedRead::new(recv, LengthDelimitedCodec::new());
@@ -2385,10 +2399,9 @@ pub(crate) async fn wait_for_welcome(endpoint: &Endpoint) -> Result<Vec<u8>, Rep
         .next()
         .await
         .ok_or_else(|| Report::new(GroupError).attach("no handshake received"))?
-        .map_err(|e| Report::new(GroupError).attach(format!("failed to read handshake: {e}")))?;
+        .change_context(GroupError)?;
 
-    let handshake: Handshake = postcard::from_bytes(&handshake_bytes)
-        .map_err(|e| Report::new(GroupError).attach(format!("invalid handshake: {e}")))?;
+    let handshake: Handshake = postcard::from_bytes(&handshake_bytes).change_context(GroupError)?;
 
     match handshake {
         Handshake::SendWelcome(welcome) => Ok(welcome),

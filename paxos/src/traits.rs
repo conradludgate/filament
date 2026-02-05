@@ -171,7 +171,10 @@ impl<P: Proposal> ProposalKey<P> {
 pub trait Learner: Send + Sync + 'static {
     type Proposal: Proposal + fmt::Debug + Send + Sync + 'static;
     type Message: Clone + fmt::Debug + Send + Sync + 'static;
-    type Error: core::error::Error + Send;
+    /// Error type for apply operations.
+    ///
+    /// Use `error_stack::Report<YourError>` for rich context.
+    type Error: fmt::Debug + Send + 'static;
 
     /// Type used to identify acceptors
     type AcceptorId: Copy + Ord + fmt::Debug + Hash + Send + Sync;

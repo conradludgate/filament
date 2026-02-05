@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use error_stack::{Report, ResultExt};
 use iroh::EndpointAddr;
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::{SignaturePublicKey, SignatureSecretKey};
@@ -13,49 +14,19 @@ use universal_sync_core::{
     UnsignedProposal,
 };
 
-/// Errors that can occur in `GroupLearner` operations
-#[derive(Debug)]
-pub enum LearnerError {
-    /// MLS processing error
-    Mls(mls_rs::error::MlsError),
-    /// Crypto error during signing/verification
-    Crypto(String),
-    /// IO error
-    Io(std::io::Error),
-    /// Unexpected message type
-    UnexpectedMessageType,
-}
+/// Error marker for `GroupLearner` operations.
+///
+/// Use `error_stack::Report<LearnerError>` with context attachments for detailed errors.
+#[derive(Debug, Default)]
+pub struct LearnerError;
 
 impl std::fmt::Display for LearnerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LearnerError::Mls(e) => write!(f, "MLS error: {e:?}"),
-            LearnerError::Crypto(e) => write!(f, "crypto error: {e}"),
-            LearnerError::Io(e) => write!(f, "IO error: {e}"),
-            LearnerError::UnexpectedMessageType => write!(f, "unexpected message type"),
-        }
+        f.write_str("learner operation failed")
     }
 }
 
 impl std::error::Error for LearnerError {}
-
-impl From<mls_rs::error::MlsError> for LearnerError {
-    fn from(e: mls_rs::error::MlsError) -> Self {
-        LearnerError::Mls(e)
-    }
-}
-
-impl From<crate::connector::ConnectorError> for LearnerError {
-    fn from(e: crate::connector::ConnectorError) -> Self {
-        LearnerError::Crypto(e.to_string())
-    }
-}
-
-impl From<std::io::Error> for LearnerError {
-    fn from(e: std::io::Error) -> Self {
-        LearnerError::Io(e)
-    }
-}
 
 /// A device that participates in the MLS group as a full member
 ///
@@ -122,7 +93,7 @@ where
     }
 
     /// Get the current set of acceptor IDs
-    pub(crate) fn acceptor_ids(&self) -> impl Iterator<Item = AcceptorId> + '_ {
+    pub(crate) fn acceptor_ids(&self) -> impl ExactSizeIterator<Item = AcceptorId> + '_ {
         self.acceptors.keys().copied()
     }
 
@@ -149,8 +120,11 @@ where
     ///
     /// # Errors
     /// Returns an error if applying the pending commit fails.
-    pub(crate) fn apply_pending_commit(&mut self) -> Result<(), LearnerError> {
-        let commit_output = self.group.apply_pending_commit()?;
+    pub(crate) fn apply_pending_commit(&mut self) -> Result<(), Report<LearnerError>> {
+        let commit_output = self
+            .group
+            .apply_pending_commit()
+            .change_context(LearnerError)?;
         self.process_commit_effect(&commit_output.effect);
         Ok(())
     }
@@ -215,10 +189,10 @@ where
         &mut self,
         message: &[u8],
         authenticated_data: Vec<u8>,
-    ) -> Result<mls_rs::MlsMessage, LearnerError> {
+    ) -> Result<mls_rs::MlsMessage, Report<LearnerError>> {
         self.group
             .encrypt_application_message(message, authenticated_data)
-            .map_err(LearnerError::Mls)
+            .change_context(LearnerError)
     }
 
     /// Check if a member ID is in the current roster
@@ -231,21 +205,27 @@ where
     }
 
     /// Sign data using this member's signing key
-    fn sign(&self, data: &[u8]) -> Result<Vec<u8>, LearnerError> {
+    fn sign(&self, data: &[u8]) -> Result<Vec<u8>, Report<LearnerError>> {
         self.cipher_suite
             .sign(&self.signer, data)
-            .map_err(|e| LearnerError::Crypto(format!("{e:?}")))
+            .map_err(|e| Report::new(LearnerError).attach(format!("signing failed: {e:?}")))
     }
 
     /// Sign an unsigned proposal
-    fn sign_proposal(&self, unsigned: UnsignedProposal) -> Result<GroupProposal, LearnerError> {
+    fn sign_proposal(
+        &self,
+        unsigned: UnsignedProposal,
+    ) -> Result<GroupProposal, Report<LearnerError>> {
         let data = unsigned.to_bytes();
         let signature = self.sign(&data)?;
         Ok(unsigned.with_signature(signature))
     }
 
     /// Create a signed sync proposal (zero message hash)
-    fn create_sync_proposal(&self, attempt: Attempt) -> Result<GroupProposal, LearnerError> {
+    fn create_sync_proposal(
+        &self,
+        attempt: Attempt,
+    ) -> Result<GroupProposal, Report<LearnerError>> {
         let unsigned = UnsignedProposal::for_sync(
             MemberId(self.group.current_member_index()),
             Epoch(self.group.context().epoch),
@@ -265,11 +245,11 @@ where
     }
 
     /// Verify a proposal's signature
-    fn verify_proposal(&self, proposal: &GroupProposal) -> Result<(), LearnerError> {
+    fn verify_proposal(&self, proposal: &GroupProposal) -> Result<(), Report<LearnerError>> {
         let public_key = self
             .get_member_public_key(proposal.member_id)
             .ok_or_else(|| {
-                LearnerError::Crypto(format!(
+                Report::new(LearnerError).attach(format!(
                     "member {:?} not found in roster",
                     proposal.member_id
                 ))
@@ -279,7 +259,9 @@ where
 
         self.cipher_suite
             .verify(&public_key, &proposal.signature, &data)
-            .map_err(|e| LearnerError::Crypto(format!("{e:?}")))?;
+            .map_err(|e| {
+                Report::new(LearnerError).attach(format!("signature verification failed: {e:?}"))
+            })?;
 
         Ok(())
     }
@@ -293,7 +275,7 @@ where
 {
     type Proposal = GroupProposal;
     type Message = GroupMessage;
-    type Error = LearnerError;
+    type Error = Report<LearnerError>;
     type AcceptorId = AcceptorId;
 
     fn node_id(&self) -> MemberId {
@@ -317,22 +299,17 @@ where
     fn validate(
         &self,
         proposal: &GroupProposal,
-    ) -> Result<
-        universal_sync_paxos::Validated,
-        error_stack::Report<universal_sync_paxos::ValidationError>,
-    > {
-        use error_stack::Report;
+    ) -> Result<universal_sync_paxos::Validated, Report<universal_sync_paxos::ValidationError>>
+    {
         use universal_sync_paxos::{Validated, ValidationError};
 
         // Check epoch matches current
         if proposal.epoch.0 != self.group.context().epoch {
-            return Err(Report::new(ValidationError).attach({
-                format!(
-                    "epoch mismatch: expected {}, got {}",
-                    self.group.context().epoch,
-                    proposal.epoch.0
-                )
-            }));
+            return Err(Report::new(ValidationError).attach(format!(
+                "epoch mismatch: expected {}, got {}",
+                self.group.context().epoch,
+                proposal.epoch.0
+            )));
         }
 
         // Check sender is a valid group member
@@ -352,7 +329,7 @@ where
         self.verify_proposal(proposal).map_err(|e| {
             Report::new(ValidationError)
                 .attach("signature verification failed")
-                .attach(e.to_string())
+                .attach(format!("{e:?}"))
         })?;
 
         Ok(Validated::assert_valid())
@@ -362,7 +339,7 @@ where
         &mut self,
         proposal: GroupProposal,
         message: GroupMessage,
-    ) -> Result<(), LearnerError> {
+    ) -> Result<(), Report<LearnerError>> {
         // Check if this is our own proposal
         let my_proposal = proposal.member_id == MemberId(self.group.current_member_index());
 
@@ -379,7 +356,10 @@ where
             }
 
             // Process the MLS message from GroupMessage
-            let result = self.group.process_incoming_message(message.mls_message)?;
+            let result = self
+                .group
+                .process_incoming_message(message.mls_message)
+                .change_context(LearnerError)?;
 
             // Handle the result and update acceptor set if needed
             match result {

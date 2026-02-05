@@ -19,7 +19,6 @@ pub(crate) mod server;
 pub(crate) mod state_store;
 
 pub use acceptor::{AcceptorError, GroupAcceptor};
-pub use connector::ConnectorError;
 pub use registry::AcceptorRegistry;
 pub use server::{IrohAcceptorConnection, accept_connection};
 pub use state_store::{GroupStateStore, SharedFjallStateStore};

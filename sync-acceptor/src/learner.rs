@@ -38,12 +38,13 @@ use std::collections::BTreeMap;
 use futures::{SinkExt, StreamExt};
 use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::{mpsc, watch};
-use universal_sync_core::{AcceptorId, Epoch, GroupId, GroupMessage, GroupProposal, PAXOS_ALPN};
+use universal_sync_core::{
+    AcceptorId, ConnectorError, Epoch, GroupId, GroupMessage, GroupProposal, PAXOS_ALPN,
+};
 use universal_sync_paxos::AcceptorStateStore;
 use universal_sync_paxos::proposer::QuorumTracker;
 
 use crate::acceptor::GroupAcceptor;
-use crate::connector::ConnectorError;
 use crate::state_store::GroupStateStore;
 
 /// Events sent from peer acceptor actors to the learning coordinator
@@ -261,8 +262,7 @@ async fn run_peer_actor(
 
     loop {
         // Try to run a connection
-        match run_peer_connection(&endpoint, &addr, group_id, acceptor_id, current_round, &tx)
-            .await
+        match run_peer_connection(&endpoint, &addr, group_id, acceptor_id, current_round, &tx).await
         {
             Ok(last_epoch) => {
                 // Connection closed gracefully, update round for next connection

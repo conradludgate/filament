@@ -39,18 +39,17 @@ use iroh::endpoint::{Incoming, RecvStream, SendStream};
 use mls_rs::CipherSuiteProvider;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId, MessageRequest,
-    MessageResponse, PAXOS_ALPN,
+    ConnectorError, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId,
+    MessageRequest, MessageResponse, PAXOS_ALPN,
 };
 use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor_with_epoch_waiter};
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Learner};
 
 use crate::acceptor::GroupAcceptor;
-use crate::connector::ConnectorError;
 use crate::registry::AcceptorRegistry;
 
 /// Server-side acceptor connection over iroh
@@ -123,6 +122,7 @@ pub(crate) fn new_message_connection(send: SendStream, recv: RecvStream) -> Iroh
 ///
 /// # Errors
 /// Returns an error if the connection fails or ALPN is wrong.
+#[instrument(skip_all, name = "accept_connection")]
 pub async fn accept_connection<C, CS>(
     incoming: Incoming,
     registry: AcceptorRegistry<C, CS>,
@@ -159,6 +159,7 @@ where
 }
 
 /// Handle a single multiplexed stream.
+#[instrument(skip_all, name = "stream")]
 async fn handle_stream<C, CS>(
     send: SendStream,
     recv: RecvStream,
@@ -212,6 +213,7 @@ where
 }
 
 /// Handle a proposal (Paxos) stream.
+#[instrument(skip_all, name = "proposal_stream", fields(?group_id))]
 async fn handle_proposal_stream<C, CS>(
     mut group_id: GroupId,
     create_group_info: Option<Vec<u8>>,
@@ -231,6 +233,7 @@ where
                 (acceptor, state)
             }
             Err(e) => {
+                warn!(%e, "failed to create group from GroupInfo");
                 let response = HandshakeResponse::InvalidGroupInfo(e.clone());
                 let response_bytes = postcard::to_allocvec(&response)
                     .map_err(|e| ConnectorError::Codec(e.to_string()))?;
@@ -246,6 +249,7 @@ where
     } else if let Some((acceptor, state)) = registry.get_group(&group_id) {
         (acceptor, state)
     } else {
+        warn!(?group_id, "group not found for proposal stream");
         let response = HandshakeResponse::GroupNotFound;
         let response_bytes =
             postcard::to_allocvec(&response).map_err(|e| ConnectorError::Codec(e.to_string()))?;
@@ -272,8 +276,10 @@ where
     let send = writer.into_inner();
 
     // Create the connection wrapper for Paxos protocol
-    let connection =
-        new_acceptor_connection::<GroupAcceptor<C, CS>, crate::acceptor::AcceptorError>(send, recv);
+    let connection = new_acceptor_connection::<
+        GroupAcceptor<C, CS>,
+        error_stack::Report<crate::acceptor::AcceptorError>,
+    >(send, recv);
 
     // Create the handler with shared state
     let handler = AcceptorHandler::new(acceptor, state);
@@ -293,6 +299,7 @@ where
 }
 
 /// Handle a message stream.
+#[instrument(skip_all, name = "message_stream", fields(?group_id))]
 async fn handle_message_stream<C, CS>(
     group_id: GroupId,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
@@ -305,6 +312,7 @@ where
 {
     // Check if group exists
     if registry.get_group(&group_id).is_none() {
+        warn!("group not found for message stream");
         let response = HandshakeResponse::GroupNotFound;
         let response_bytes =
             postcard::to_allocvec(&response).map_err(|e| ConnectorError::Codec(e.to_string()))?;
@@ -315,7 +323,7 @@ where
         return Err(ConnectorError::Connect("group not found".to_string()));
     }
 
-    debug!(?group_id, "message stream handshake complete");
+    debug!("message stream handshake complete");
 
     // Send success response
     let response = HandshakeResponse::Ok;

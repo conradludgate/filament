@@ -12,60 +12,14 @@ use std::sync::Arc;
 use futures::{SinkExt, StreamExt};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+// Re-export ConnectorError for public API
+pub use universal_sync_core::ConnectorError;
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
     AcceptorId, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, PAXOS_ALPN,
 };
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner};
-
-/// Error type for iroh connector operations
-#[derive(Debug)]
-pub enum ConnectorError {
-    /// Connection failed
-    Connect(String),
-    /// Serialization/deserialization error
-    Codec(String),
-    /// IO error
-    Io(std::io::Error),
-    /// Handshake failed
-    Handshake(String),
-}
-
-impl std::fmt::Display for ConnectorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConnectorError::Connect(e) => write!(f, "connection error: {e}"),
-            ConnectorError::Codec(e) => write!(f, "codec error: {e}"),
-            ConnectorError::Io(e) => write!(f, "io error: {e}"),
-            ConnectorError::Handshake(e) => write!(f, "handshake error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ConnectorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ConnectorError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for ConnectorError {
-    fn from(e: std::io::Error) -> Self {
-        ConnectorError::Io(e)
-    }
-}
-
-impl From<ConnectorError> for std::io::Error {
-    fn from(e: ConnectorError) -> Self {
-        match e {
-            ConnectorError::Io(io_err) => io_err,
-            other => std::io::Error::other(other),
-        }
-    }
-}
 
 /// Iroh-based connector for Paxos acceptors
 ///
@@ -103,7 +57,7 @@ impl<L> Clone for IrohConnector<L> {
 impl<L> Connector<L> for IrohConnector<L>
 where
     L: Learner<Proposal = GroupProposal, Message = GroupMessage, AcceptorId = AcceptorId>,
-    L::Error: From<ConnectorError> + From<std::io::Error>,
+    L::Error: From<ConnectorError> + universal_sync_core::FromIoError,
 {
     type Connection = IrohConnection<L, L::Error>;
     type Error = ConnectorError;

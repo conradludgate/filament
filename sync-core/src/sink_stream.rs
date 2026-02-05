@@ -8,8 +8,25 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use error_stack::Report;
 use futures::{Sink, Stream};
 use pin_project_lite::pin_project;
+
+/// Trait for converting `io::Error` to a target error type.
+///
+/// This is like `From<io::Error>` but can be implemented for foreign types
+/// like `Report<E>` without orphan rule issues.
+pub trait FromIoError {
+    /// Convert an IO error to this type.
+    fn from_io_error(err: io::Error) -> Self;
+}
+
+// Impl for Report<E> where E is any error context type
+impl<E: std::error::Error + Send + Sync + Default + 'static> FromIoError for Report<E> {
+    fn from_io_error(err: io::Error) -> Self {
+        Report::new(err).change_context(E::default())
+    }
+}
 
 pin_project! {
     /// A bidirectional connection combining a sink and stream
@@ -89,14 +106,14 @@ impl<S, E> Mapped<S, E> {
 impl<S, T, E> Stream for Mapped<S, E>
 where
     S: Stream<Item = Result<T, io::Error>>,
-    E: From<io::Error>,
+    E: FromIoError,
 {
     type Item = Result<T, E>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.project().inner.poll_next(cx) {
             Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(E::from_io_error(e)))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -106,23 +123,35 @@ where
 impl<S, I, E> Sink<I> for Mapped<S, E>
 where
     S: Sink<I, Error = io::Error>,
-    E: From<io::Error>,
+    E: FromIoError,
 {
     type Error = E;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_ready(cx).map_err(E::from)
+        self.project()
+            .inner
+            .poll_ready(cx)
+            .map_err(E::from_io_error)
     }
 
     fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
-        self.project().inner.start_send(item).map_err(E::from)
+        self.project()
+            .inner
+            .start_send(item)
+            .map_err(E::from_io_error)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_flush(cx).map_err(E::from)
+        self.project()
+            .inner
+            .poll_flush(cx)
+            .map_err(E::from_io_error)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_close(cx).map_err(E::from)
+        self.project()
+            .inner
+            .poll_close(cx)
+            .map_err(E::from_io_error)
     }
 }

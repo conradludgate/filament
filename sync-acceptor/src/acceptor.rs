@@ -31,6 +31,7 @@
 //! an acceptor that has accepted a value only needs 1 confirmation from
 //! another acceptor before applying.
 
+use error_stack::{Report, ResultExt};
 use iroh::{EndpointAddr, PublicKey, SecretKey, Signature};
 use mls_rs::CipherSuiteProvider;
 use mls_rs::crypto::SignaturePublicKey;
@@ -41,59 +42,19 @@ use universal_sync_core::{
     UnsignedProposal,
 };
 
-use crate::connector::ConnectorError;
-
-/// Errors that can occur in `GroupAcceptor` operations
-#[derive(Debug)]
-pub enum AcceptorError {
-    /// MLS processing error
-    Mls(mls_rs::error::MlsError),
-    /// Crypto error during verification
-    Crypto(String),
-    /// Validation failed
-    ValidationFailed,
-    /// Persistence error
-    Persistence(std::io::Error),
-}
+/// Error marker for `GroupAcceptor` operations.
+///
+/// Use `error_stack::Report<AcceptorError>` with context attachments for detailed errors.
+#[derive(Debug, Default)]
+pub struct AcceptorError;
 
 impl std::fmt::Display for AcceptorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AcceptorError::Mls(e) => write!(f, "MLS error: {e}"),
-            AcceptorError::Crypto(e) => write!(f, "crypto error: {e}"),
-            AcceptorError::ValidationFailed => write!(f, "validation failed"),
-            AcceptorError::Persistence(e) => write!(f, "persistence error: {e}"),
-        }
+        f.write_str("acceptor operation failed")
     }
 }
 
-impl std::error::Error for AcceptorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AcceptorError::Mls(e) => Some(e),
-            AcceptorError::Persistence(e) => Some(e),
-            AcceptorError::Crypto(_) | AcceptorError::ValidationFailed => None,
-        }
-    }
-}
-
-impl From<mls_rs::error::MlsError> for AcceptorError {
-    fn from(e: mls_rs::error::MlsError) -> Self {
-        AcceptorError::Mls(e)
-    }
-}
-
-impl From<ConnectorError> for AcceptorError {
-    fn from(e: ConnectorError) -> Self {
-        AcceptorError::Crypto(e.to_string())
-    }
-}
-
-impl From<std::io::Error> for AcceptorError {
-    fn from(e: std::io::Error) -> Self {
-        AcceptorError::Crypto(format!("IO error: {e}"))
-    }
-}
+impl std::error::Error for AcceptorError {}
 
 /// Event emitted when the acceptor set changes during apply
 #[derive(Debug, Clone)]
@@ -250,7 +211,7 @@ where
 {
     type Proposal = GroupProposal;
     type Message = GroupMessage;
-    type Error = AcceptorError;
+    type Error = Report<AcceptorError>;
     type AcceptorId = AcceptorId;
 
     fn node_id(&self) -> MemberId {
@@ -380,7 +341,7 @@ where
         &mut self,
         _proposal: GroupProposal,
         message: GroupMessage,
-    ) -> Result<(), AcceptorError> {
+    ) -> Result<(), Report<AcceptorError>> {
         // Apply a LEARNED value to the MLS state.
         //
         // This should only be called when the value has reached consensus
@@ -396,7 +357,8 @@ where
         // Process the MLS message from GroupMessage
         let result = self
             .external_group
-            .process_incoming_message(message.mls_message)?;
+            .process_incoming_message(message.mls_message)
+            .change_context(AcceptorError)?;
 
         // Log what we processed and store epoch roster for commits
         match result {
@@ -428,9 +390,9 @@ where
             }
         }
 
-        tracing::debug!(
-            members = ?self.external_group.roster().members_iter().map(|m| (m.index, m.signing_identity.signature_key)).collect::<Vec<_>>(),
-            "current members"
+        tracing::trace!(
+            members = ?self.external_group.roster().members_iter().map(|m| m.index).collect::<Vec<_>>(),
+            "current member indices"
         );
 
         Ok(())

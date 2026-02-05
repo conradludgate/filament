@@ -324,10 +324,7 @@ where
     /// Returns a watch receiver and a function to get the current epoch.
     /// The acceptor will wait for learning to catch up before processing
     /// proposals for future epochs.
-    pub fn get_epoch_watcher(
-        &self,
-        group_id: &GroupId,
-    ) -> Option<EpochWatcher> {
+    pub fn get_epoch_watcher(&self, group_id: &GroupId) -> Option<EpochWatcher> {
         let watchers = self.epoch_watchers.read().ok()?;
         let watcher = watchers.get(group_id)?.clone();
         let rx = watcher.rx.clone();

@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use tracing::trace;
+
 use crate::traits::{Learner, Proposal, ProposalKey};
 
 /// Key type for quorum tracking maps.
@@ -41,6 +43,7 @@ impl<L: Learner> QuorumTracker<L> {
             .entry(key)
             .or_insert_with(|| (0, proposal, message));
         entry.0 += 1;
+        trace!(round = ?key.0, count = entry.0, quorum = self.quorum, "tracking proposal");
         if entry.0 == self.quorum {
             Some((&entry.1, &entry.2))
         } else {

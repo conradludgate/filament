@@ -7,6 +7,7 @@
 
 pub mod codec;
 pub mod crdt;
+pub mod error;
 pub mod extension;
 pub mod handshake;
 pub mod message;
@@ -16,6 +17,9 @@ pub mod util;
 pub mod welcome;
 
 pub use crdt::{Crdt, CrdtError, CrdtFactory, NoCrdt, NoCrdtFactory};
+pub use error::{
+    AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
+};
 pub use extension::{
     AcceptorAdd, AcceptorRemove, AcceptorsExt, CrdtRegistrationExt, MemberAddrExt,
     SupportedCrdtsExt, ACCEPTORS_EXTENSION_TYPE, ACCEPTOR_ADD_EXTENSION_TYPE,
@@ -25,6 +29,7 @@ pub use extension::{
 pub use handshake::{GroupId, Handshake, HandshakeResponse, StreamType};
 pub use message::{EncryptedAppMessage, GroupMessage, MessageId, MessageRequest, MessageResponse};
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
+pub use sink_stream::FromIoError;
 pub use util::{load_secret_key, KeyLoadError};
 pub use welcome::{WelcomeBundle, WelcomeError};
 

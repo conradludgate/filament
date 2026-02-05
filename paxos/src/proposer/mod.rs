@@ -40,6 +40,7 @@ use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
 pub use quorum::QuorumTracker;
+use tracing::{debug, trace};
 
 use crate::core::{AcceptPhaseResult, PreparePhaseResult, ProposerCore};
 use crate::messages::{AcceptorMessage, AcceptorRequest};
@@ -128,22 +129,25 @@ impl<L: Learner> Proposer<L> {
         // Get acceptors from learner
         let acceptors_iter = learner.acceptors().into_iter();
         let num_acceptors = acceptors_iter.len();
-        let acceptors: BTreeSet<_> = acceptors_iter.collect();
 
         // Create the proposal
         let proposal = learner.propose(attempt);
         let key = proposal.key();
 
         // Handle empty acceptor set - immediately learned (local proposal)
-        if acceptors.is_empty() {
+        if num_acceptors == 0 {
+            debug!(round = ?key.0, ?attempt, "no acceptors, immediately learned");
             self.active = None;
             return ProposeResult::Learned { proposal, message };
         }
+
+        debug!(round = ?key.0, ?attempt, num_acceptors, "starting proposal");
 
         // Create core state machine
         let core = ProposerCore::new(key, message.clone(), num_acceptors);
 
         // Generate Prepare messages for all acceptors
+        let acceptors: BTreeSet<_> = acceptors_iter.collect();
         let messages: Vec<_> = acceptors
             .iter()
             .map(|id| (*id, AcceptorRequest::Prepare(proposal.clone())))
@@ -173,6 +177,7 @@ impl<L: Learner> Proposer<L> {
     ) -> ProposeResult<L> {
         let Some(state) = &mut self.active else {
             // No active proposal, ignore
+            trace!(?acceptor_id, "ignoring response, no active proposal");
             return ProposeResult::Continue(vec![]);
         };
 
@@ -181,6 +186,7 @@ impl<L: Learner> Proposer<L> {
 
         if state.core.is_preparing() {
             // Phase 1: collecting promises
+            trace!(?acceptor_id, promised = ?promised_key, "received promise");
             let accepted_for_core = accepted.as_ref().map(|(p, m)| (p.clone(), m.clone()));
 
             let result = state.core.handle_promise(
@@ -194,6 +200,7 @@ impl<L: Learner> Proposer<L> {
                 PreparePhaseResult::Pending => ProposeResult::Continue(vec![]),
                 PreparePhaseResult::Quorum { value } => {
                     // Got quorum of promises, send Accept to all acceptors
+                    debug!(round = ?state.proposal.round(), "prepare quorum reached, sending accepts");
                     let proposal = state.proposal.clone();
                     let messages: Vec<_> = state
                         .acceptors
@@ -211,12 +218,14 @@ impl<L: Learner> Proposer<L> {
                     superseded_by,
                     accepted: _,
                 } => {
+                    debug!(round = ?state.proposal.round(), ?superseded_by, "proposal rejected during prepare");
                     self.active = None;
                     ProposeResult::Rejected { superseded_by }
                 }
             }
         } else if state.core.is_accepting() {
             // Phase 2: collecting accepts
+            trace!(?acceptor_id, accepted = ?accepted.as_ref().map(|(p, _)| p.key()), "received accept response");
             let accepted_key = accepted.as_ref().map(|(p, _)| p.key());
             let proposal = state.proposal.clone();
 
@@ -227,6 +236,7 @@ impl<L: Learner> Proposer<L> {
             match result {
                 AcceptPhaseResult::Pending => ProposeResult::Continue(vec![]),
                 AcceptPhaseResult::Learned { proposal, value } => {
+                    debug!(round = ?proposal.round(), "accept quorum reached, value learned");
                     self.active = None;
                     ProposeResult::Learned {
                         proposal,
@@ -234,12 +244,14 @@ impl<L: Learner> Proposer<L> {
                     }
                 }
                 AcceptPhaseResult::Rejected { superseded_by } => {
+                    debug!(round = ?state.proposal.round(), ?superseded_by, "proposal rejected during accept");
                     self.active = None;
                     ProposeResult::Rejected { superseded_by }
                 }
             }
         } else {
             // Already learned or failed, no-op
+            trace!("ignoring response, proposal already completed");
             ProposeResult::Continue(vec![])
         }
     }

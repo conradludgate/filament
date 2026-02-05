@@ -22,7 +22,7 @@ tempfile = "3"
 iroh = "0.96"
 mls-rs-crypto-rustcrypto = { version = "0.20", default-features = false }
 mls-rs-core = "0.25"
-mls-rs = { version = "0.52", default-features = false }
+mls-rs = { version = "0.52", default-features = false, features = ["std"] }
 yrs = { version = "0.25" }
 zeroize = "1.8"
 
