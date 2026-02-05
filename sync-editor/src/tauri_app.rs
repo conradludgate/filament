@@ -148,6 +148,66 @@ fn spawn_sync_emitter(
     });
 }
 
+/// Start a group event listener that emits Tauri events when acceptors change.
+fn spawn_group_event_forwarder(
+    app_handle: tauri::AppHandle,
+    group_id_b58: String,
+    group_handle: std::sync::Arc<tokio::sync::Mutex<universal_sync_proposer::Group<AppMlsConfig, AppCipherSuite>>>,
+) {
+    use universal_sync_core::AcceptorId;
+    use universal_sync_proposer::GroupEvent;
+    
+    tokio::spawn(async move {
+        // Subscribe to group events
+        let mut events = {
+            let group = group_handle.lock().await;
+            group.subscribe()
+        };
+        
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    match event {
+                        GroupEvent::AcceptorAdded { .. } | GroupEvent::AcceptorRemoved { .. } => {
+                            tracing::debug!(group_id = %group_id_b58, "acceptor changed, fetching new list");
+                            
+                            // Fetch the current acceptor list
+                            let acceptors: Vec<String> = {
+                                let mut group = group_handle.lock().await;
+                                match group.context().await {
+                                    Ok(ctx) => ctx.acceptors.iter()
+                                        .map(|id: &AcceptorId| bs58::encode(id.as_bytes()).into_string())
+                                        .collect(),
+                                    Err(e) => {
+                                        tracing::warn!(?e, "failed to get context for acceptor update");
+                                        continue;
+                                    }
+                                }
+                            };
+                            
+                            // Emit to frontend
+                            if let Err(e) = app_handle.emit("acceptors-updated", json!({
+                                "group_id": group_id_b58,
+                                "acceptors": acceptors,
+                            })) {
+                                tracing::warn!(?e, "failed to emit acceptors-updated event");
+                            }
+                        }
+                        _ => {} // Ignore other events
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(n, "group event forwarder lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::debug!(group_id = %group_id_b58, "group event channel closed");
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn create_document(
     app_handle: tauri::AppHandle,
@@ -168,7 +228,10 @@ pub async fn create_document(
 
     // Start sync loop and emit events
     let rx = doc.start_sync_loop();
-    spawn_sync_emitter(app_handle, group_id_b58.clone(), rx);
+    spawn_sync_emitter(app_handle.clone(), group_id_b58.clone(), rx);
+    
+    // Start group event forwarder for acceptor changes
+    spawn_group_event_forwarder(app_handle, group_id_b58.clone(), doc.group_handle());
 
     app.insert_document(group_id, doc);
 
@@ -212,7 +275,10 @@ pub async fn join_document_bytes(
 
     // Start sync loop and emit events
     let rx = doc.start_sync_loop();
-    spawn_sync_emitter(app_handle, group_id_b58.clone(), rx);
+    spawn_sync_emitter(app_handle.clone(), group_id_b58.clone(), rx);
+    
+    // Start group event forwarder for acceptor changes
+    spawn_group_event_forwarder(app_handle, group_id_b58.clone(), doc.group_handle());
 
     app.insert_document(group_id, doc);
 
