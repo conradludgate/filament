@@ -25,6 +25,7 @@ pub trait Crdt: Send + Sync + 'static {
     fn type_id(&self) -> &str;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
     fn apply(&mut self, operation: &[u8]) -> Result<(), Report<CrdtError>>;
     fn merge(&mut self, snapshot: &[u8]) -> Result<(), Report<CrdtError>>;
     fn snapshot(&self) -> Result<Vec<u8>, Report<CrdtError>>;
@@ -97,6 +98,10 @@ impl Crdt for NoCrdt {
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
 

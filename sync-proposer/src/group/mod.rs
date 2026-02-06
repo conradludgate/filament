@@ -170,7 +170,7 @@ pub struct GroupContext {
 /// All mutations are sent to a background actor. Drop cancels actors without waiting;
 /// use [`shutdown()`](Self::shutdown) for graceful termination.
 #[allow(clippy::struct_field_names)]
-pub struct Group<C, CS>
+pub struct Group<C, CS, D: ?Sized + Crdt = dyn Crdt>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
@@ -179,19 +179,10 @@ where
     app_message_rx: mpsc::Receiver<Vec<u8>>,
     event_tx: broadcast::Sender<GroupEvent>,
     cancel_token: CancellationToken,
+    _cancel_guard: tokio_util::sync::DropGuard,
     actor_handle: Option<JoinHandle<()>>,
     group_id: GroupId,
-    crdt: Box<dyn Crdt>,
-}
-
-impl<C, CS> Drop for Group<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    fn drop(&mut self) {
-        self.cancel_token.cancel();
-    }
+    crdt: Box<D>,
 }
 
 /// `block_in_place` on multi-threaded runtimes, direct call on single-threaded.
@@ -216,6 +207,24 @@ where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
 {
+    /// Downcast the CRDT to a concrete type, consuming the group.
+    ///
+    /// Returns `None` if the CRDT is not of type `D`. The group is consumed
+    /// either way — callers should know the expected CRDT type.
+    pub fn downcast<D: Crdt>(self) -> Option<Group<C, CS, D>> {
+        let crdt = self.crdt.into_any().downcast::<D>().ok()?;
+        Some(Group {
+            request_tx: self.request_tx,
+            app_message_rx: self.app_message_rx,
+            event_tx: self.event_tx,
+            cancel_token: self.cancel_token,
+            _cancel_guard: self._cancel_guard,
+            actor_handle: self.actor_handle,
+            group_id: self.group_id,
+            crdt,
+        })
+    }
+
     pub(crate) async fn create(
         client: &Client<C>,
         signer: SignatureSecretKey,
@@ -415,17 +424,26 @@ where
 
         let actor_handle = tokio::spawn(actor.run());
 
+        let cancel_guard = cancel_token.clone().drop_guard();
+
         Self {
             request_tx,
             app_message_rx,
             event_tx,
             cancel_token,
+            _cancel_guard: cancel_guard,
             actor_handle: Some(actor_handle),
             group_id,
             crdt,
         }
     }
+}
 
+impl<C, CS, D: ?Sized + Crdt> Group<C, CS, D>
+where
+    C: MlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Send + Sync + 'static,
+{
     /// Add a member. Welcome is sent directly via the key package's `MemberAddrExt`.
     /// Blocks until consensus is reached.
     ///
@@ -492,13 +510,13 @@ where
     }
 
     #[must_use]
-    pub fn crdt(&self) -> &dyn Crdt {
-        &*self.crdt
+    pub fn crdt(&self) -> &D {
+        &self.crdt
     }
 
     /// After mutating, call [`send_update`](Self::send_update) to broadcast.
-    pub fn crdt_mut(&mut self) -> &mut dyn Crdt {
-        &mut *self.crdt
+    pub fn crdt_mut(&mut self) -> &mut D {
+        &mut self.crdt
     }
 
     /// Flush local CRDT changes and broadcast. No-op if no pending changes.

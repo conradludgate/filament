@@ -74,6 +74,10 @@ impl Crdt for YrsCrdt {
         self
     }
 
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+
     fn apply(&mut self, operation: &[u8]) -> Result<(), Report<CrdtError>> {
         let update = Update::decode_v1(operation).change_context(CrdtError)?;
 

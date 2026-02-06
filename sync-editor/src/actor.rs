@@ -153,12 +153,12 @@ where
         let group_id = group.group_id();
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
 
+        let group = group
+            .downcast::<universal_sync_testing::YrsCrdt>()
+            .ok_or("CRDT is not YrsCrdt")?;
+
         let text = {
-            let yrs = group
-                .crdt()
-                .as_any()
-                .downcast_ref::<universal_sync_testing::YrsCrdt>()
-                .ok_or("CRDT is not YrsCrdt")?;
+            let yrs = group.crdt();
             let text_ref = yrs.doc().get_or_insert_text("doc");
             let txn = yrs.doc().transact();
             yrs::GetString::get_string(&text_ref, &txn)

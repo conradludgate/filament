@@ -21,7 +21,7 @@ where
     CS: CipherSuiteProvider + Send + Sync + 'static,
     E: EventEmitter,
 {
-    group: Group<C, CS>,
+    group: Group<C, CS, YrsCrdt>,
     group_id_b58: String,
     request_rx: mpsc::Receiver<DocRequest>,
     event_rx: broadcast::Receiver<GroupEvent>,
@@ -35,7 +35,7 @@ where
     E: EventEmitter,
 {
     pub fn new(
-        group: Group<C, CS>,
+        group: Group<C, CS, YrsCrdt>,
         group_id: GroupId,
         request_rx: mpsc::Receiver<DocRequest>,
         emitter: E,
@@ -98,7 +98,7 @@ where
                 let _ = reply.send(result);
             }
             DocRequest::GetText { reply } => {
-                let _ = reply.send(self.get_text());
+                let _ = reply.send(Ok(self.get_text()));
             }
             DocRequest::AddMember {
                 key_package_b58,
@@ -150,32 +150,24 @@ where
         false
     }
 
-    fn yrs_crdt(&self) -> Result<&YrsCrdt, String> {
-        self.group
-            .crdt()
-            .as_any()
-            .downcast_ref::<YrsCrdt>()
-            .ok_or_else(|| "CRDT is not YrsCrdt".to_string())
+    fn yrs_crdt(&self) -> &YrsCrdt {
+        self.group.crdt()
     }
 
-    fn yrs_crdt_mut(&mut self) -> Result<&mut YrsCrdt, String> {
-        self.group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .ok_or_else(|| "CRDT is not YrsCrdt".to_string())
+    fn yrs_crdt_mut(&mut self) -> &mut YrsCrdt {
+        self.group.crdt_mut()
     }
 
-    fn get_text(&self) -> Result<String, String> {
-        let yrs = self.yrs_crdt()?;
+    fn get_text(&self) -> String {
+        let yrs = self.yrs_crdt();
         let text_ref = yrs.doc().get_or_insert_text("doc");
         let txn = yrs.doc().transact();
-        Ok(text_ref.get_string(&txn))
+        text_ref.get_string(&txn)
     }
 
     async fn apply_delta(&mut self, delta: Delta) -> Result<(), String> {
         {
-            let yrs = self.yrs_crdt_mut()?;
+            let yrs = self.yrs_crdt_mut();
             let text_ref = yrs.doc().get_or_insert_text("doc");
             let mut txn = yrs.doc().transact_mut();
 
@@ -339,13 +331,11 @@ where
     }
 
     fn emit_text_update(&self) {
-        if let Ok(text) = self.get_text() {
-            let payload = DocumentUpdatedPayload {
-                group_id: self.group_id_b58.clone(),
-                text,
-            };
-            self.emitter.emit_document_updated(&payload);
-        }
+        let payload = DocumentUpdatedPayload {
+            group_id: self.group_id_b58.clone(),
+            text: self.get_text(),
+        };
+        self.emitter.emit_document_updated(&payload);
     }
 
     async fn emit_group_state(&mut self) {

@@ -12,7 +12,9 @@ use sync_editor::types::{
 };
 use tokio::sync::{mpsc, oneshot};
 use universal_sync_core::GroupId;
-use universal_sync_testing::{init_tracing, spawn_acceptor, test_endpoint, test_yrs_group_client};
+use universal_sync_testing::{
+    YrsCrdt, init_tracing, spawn_acceptor, test_endpoint, test_yrs_group_client,
+};
 
 // =============================================================================
 // Mock event emitter
@@ -96,6 +98,7 @@ async fn spawn_doc_actor() -> (
         .expect("create group");
 
     let group_id = group.group_id();
+    let group = group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
     let (doc_tx, doc_rx) = mpsc::channel(64);
     let (emitter, event_rx) = mock_emitter();
 
@@ -237,6 +240,7 @@ async fn doc_actor_remote_update_triggers_event() {
 
     // Wrap Bob's group in a DocumentActor
     let (bob_doc_tx, mut bob_event_rx) = {
+        let bob_group = bob_group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
         let (tx, rx) = mpsc::channel(64);
         let (emitter, event_rx) = mock_emitter();
         let actor = DocumentActor::new(bob_group, group_id, rx, emitter);
@@ -246,6 +250,7 @@ async fn doc_actor_remote_update_triggers_event() {
 
     // Wrap Alice's group in a DocumentActor
     let (alice_doc_tx, _alice_event_rx) = {
+        let alice_group = alice_group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
         let (tx, rx) = mpsc::channel(64);
         let (emitter, _event_rx) = mock_emitter();
         let actor = DocumentActor::new(alice_group, group_id, rx, emitter);

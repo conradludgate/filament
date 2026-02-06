@@ -2112,10 +2112,7 @@ async fn test_compaction_no_acceptors() {
 
     let config = test_compaction_config(2);
     let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config);
-    let mut alice_group = alice
-        .create_group(&[], "yrs")
-        .await
-        .expect("create group");
+    let mut alice_group = alice.create_group(&[], "yrs").await.expect("create group");
 
     let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
