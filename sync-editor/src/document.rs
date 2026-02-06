@@ -145,20 +145,37 @@ where
             let yrs = self.yrs_crdt_mut()?;
             let text_ref = yrs.doc().get_or_insert_text("doc");
             let mut txn = yrs.doc().transact_mut();
+
+            // The current length of the CRDT text.  We clamp incoming
+            // positions / lengths so that stale or out-of-order deltas
+            // (e.g. from frontend debouncing or concurrent remote
+            // updates) never ask yrs to remove characters that don't
+            // exist — which would otherwise panic.
+            let doc_len = text_ref.len(&txn);
+
             match delta {
                 Delta::Insert { position, text } => {
-                    text_ref.insert(&mut txn, position, &text);
+                    let pos = position.min(doc_len);
+                    text_ref.insert(&mut txn, pos, &text);
                 }
                 Delta::Delete { position, length } => {
-                    text_ref.remove_range(&mut txn, position, length);
+                    let pos = position.min(doc_len);
+                    let len = length.min(doc_len - pos);
+                    if len > 0 {
+                        text_ref.remove_range(&mut txn, pos, len);
+                    }
                 }
                 Delta::Replace {
                     position,
                     length,
                     text,
                 } => {
-                    text_ref.remove_range(&mut txn, position, length);
-                    text_ref.insert(&mut txn, position, &text);
+                    let pos = position.min(doc_len);
+                    let len = length.min(doc_len - pos);
+                    if len > 0 {
+                        text_ref.remove_range(&mut txn, pos, len);
+                    }
+                    text_ref.insert(&mut txn, pos, &text);
                 }
             }
         }
