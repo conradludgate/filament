@@ -6108,6 +6108,7 @@ name = "sync-editor"
 version = "0.1.0"
 dependencies = [
  "bs58",
+ "hex",
  "iroh",
  "mls-rs",
  "mls-rs-crypto-rustcrypto",

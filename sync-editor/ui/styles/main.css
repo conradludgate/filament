@@ -245,7 +245,9 @@ body {
 .toolbar-center {
     flex: 1;
     display: flex;
+    align-items: center;
     justify-content: center;
+    gap: var(--space-sm);
 }
 
 .toolbar-right {
@@ -573,6 +575,50 @@ body {
 .btn-sm {
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.75rem;
+}
+
+/* Group state display in toolbar */
+.group-state {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: 0.6875rem;
+    color: var(--ink-muted);
+    background: var(--bg-elevated);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+}
+
+.group-state-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.group-state-label {
+    color: var(--ink-faint);
+    font-weight: 500;
+}
+
+.group-state-value {
+    color: var(--ink-secondary);
+}
+
+.group-state-hash {
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.group-state-hash:hover {
+    color: var(--accent);
+}
+
+.group-state-sep {
+    color: var(--ink-faint);
 }
 
 /* Peers modal */

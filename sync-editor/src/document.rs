@@ -10,13 +10,15 @@
 
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::{CipherSuiteProvider, MlsMessage};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use universal_sync_core::GroupId;
-use universal_sync_proposer::Group;
+use universal_sync_proposer::{Group, GroupEvent};
 use universal_sync_testing::YrsCrdt;
 use yrs::{GetString, Text, Transact};
 
-use crate::types::{Delta, DocRequest, DocumentUpdatedPayload, EventEmitter, PeerEntry};
+use crate::types::{
+    Delta, DocRequest, DocumentUpdatedPayload, EventEmitter, GroupStatePayload, PeerEntry,
+};
 
 /// Actor that manages a single open document / MLS group.
 pub struct DocumentActor<C, CS, E>
@@ -28,6 +30,7 @@ where
     group: Group<C, CS>,
     group_id_b58: String,
     request_rx: mpsc::Receiver<DocRequest>,
+    event_rx: broadcast::Receiver<GroupEvent>,
     emitter: E,
 }
 
@@ -45,16 +48,21 @@ where
         emitter: E,
     ) -> Self {
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
+        let event_rx = group.subscribe();
         Self {
             group,
             group_id_b58,
             request_rx,
+            event_rx,
             emitter,
         }
     }
 
     /// Run the actor loop. Returns when the actor is shut down.
     pub async fn run(mut self) {
+        // Emit initial group state so the frontend has it from the start
+        self.emit_group_state().await;
+
         loop {
             tokio::select! {
                 req = self.request_rx.recv() => {
@@ -71,6 +79,22 @@ where
                     match update {
                         Some(()) => self.emit_text_update(),
                         None => break, // group shut down
+                    }
+                }
+                event = self.event_rx.recv() => {
+                    match event {
+                        Ok(_group_event) => {
+                            // A group state change occurred (member added/removed,
+                            // epoch advanced, acceptor changed, etc.).
+                            // Notify the frontend.
+                            self.emit_group_state().await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::debug!(skipped = n, "group event receiver lagged");
+                            // Still emit the latest state
+                            self.emit_group_state().await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }
@@ -124,6 +148,14 @@ where
                 reply,
             } => {
                 let result = self.remove_acceptor(&acceptor_id_b58).await;
+                let _ = reply.send(result);
+            }
+            DocRequest::GetGroupState { reply } => {
+                let result = self.get_group_state().await;
+                let _ = reply.send(result);
+            }
+            DocRequest::UpdateKeys { reply } => {
+                let result = self.update_keys().await;
                 let _ = reply.send(result);
             }
             DocRequest::Shutdown => return true,
@@ -310,6 +342,27 @@ where
             .map_err(|e| format!("failed to remove acceptor: {e:?}"))
     }
 
+    async fn get_group_state(&mut self) -> Result<GroupStatePayload, String> {
+        let ctx = self
+            .group
+            .context()
+            .await
+            .map_err(|e| format!("failed to get context: {e:?}"))?;
+        Ok(GroupStatePayload {
+            group_id: self.group_id_b58.clone(),
+            epoch: ctx.epoch.0,
+            transcript_hash: hex::encode(&ctx.confirmed_transcript_hash),
+            member_count: ctx.member_count,
+        })
+    }
+
+    async fn update_keys(&mut self) -> Result<(), String> {
+        self.group
+            .update_keys()
+            .await
+            .map_err(|e| format!("failed to update keys: {e:?}"))
+    }
+
     fn emit_text_update(&self) {
         if let Ok(text) = self.get_text() {
             let payload = DocumentUpdatedPayload {
@@ -317,6 +370,13 @@ where
                 text,
             };
             self.emitter.emit_document_updated(&payload);
+        }
+    }
+
+    async fn emit_group_state(&mut self) {
+        match self.get_group_state().await {
+            Ok(payload) => self.emitter.emit_group_state_changed(&payload),
+            Err(e) => tracing::warn!(?e, "failed to emit group state"),
         }
     }
 }

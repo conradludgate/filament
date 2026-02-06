@@ -69,6 +69,16 @@ pub struct DocumentUpdatedPayload {
     pub text: String,
 }
 
+/// Payload emitted to the frontend when the group state changes
+/// (epoch advance, membership change, etc.).
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupStatePayload {
+    pub group_id: String,
+    pub epoch: u64,
+    pub transcript_hash: String,
+    pub member_count: usize,
+}
+
 // =============================================================================
 // Event emission abstraction (for testability)
 // =============================================================================
@@ -77,6 +87,8 @@ pub struct DocumentUpdatedPayload {
 pub trait EventEmitter: Clone + Send + 'static {
     /// Emit a document-updated event.
     fn emit_document_updated(&self, payload: &DocumentUpdatedPayload);
+    /// Emit a group-state-changed event (epoch, transcript hash, member count).
+    fn emit_group_state_changed(&self, payload: &GroupStatePayload);
 }
 
 /// Production implementation: emits Tauri events to all webviews.
@@ -84,6 +96,10 @@ impl EventEmitter for AppHandle {
     fn emit_document_updated(&self, payload: &DocumentUpdatedPayload) {
         use tauri::Emitter;
         let _ = self.emit("document-updated", payload);
+    }
+    fn emit_group_state_changed(&self, payload: &GroupStatePayload) {
+        use tauri::Emitter;
+        let _ = self.emit("group-state-changed", payload);
     }
 }
 
@@ -163,6 +179,14 @@ pub enum DocRequest {
     /// Remove an acceptor by its ID (base58).
     RemoveAcceptor {
         acceptor_id_b58: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Get the current group state (epoch, transcript hash, member count).
+    GetGroupState {
+        reply: oneshot::Sender<Result<GroupStatePayload, String>>,
+    },
+    /// Update this member's keys (forward secrecy / epoch advance).
+    UpdateKeys {
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Shut down the document actor.

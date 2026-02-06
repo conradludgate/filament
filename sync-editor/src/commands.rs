@@ -7,7 +7,9 @@
 use tokio::sync::oneshot;
 use universal_sync_core::GroupId;
 
-use crate::types::{AppState, CoordinatorRequest, Delta, DocRequest, DocumentInfo, PeerEntry};
+use crate::types::{
+    AppState, CoordinatorRequest, Delta, DocRequest, DocumentInfo, GroupStatePayload, PeerEntry,
+};
 
 /// Helper: send a coordinator request and await the reply.
 async fn coord_request<T>(
@@ -202,4 +204,23 @@ pub async fn remove_acceptor(
         reply,
     })
     .await
+}
+
+#[tauri::command]
+pub async fn get_group_state(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<GroupStatePayload, String> {
+    doc_request(&state, &group_id, |reply| DocRequest::GetGroupState {
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn update_keys(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<(), String> {
+    doc_request(&state, &group_id, |reply| DocRequest::UpdateKeys { reply }).await
 }

@@ -39,6 +39,13 @@ const elements = {
     collaborators: document.getElementById('collaborators'),
     toastContainer: document.getElementById('toast-container'),
     
+    // Group state display
+    groupState: document.getElementById('group-state'),
+    groupEpoch: document.getElementById('group-epoch'),
+    groupHash: document.getElementById('group-hash'),
+    groupMembers: document.getElementById('group-members'),
+    btnUpdateKeys: document.getElementById('btn-update-keys'),
+    
     // Buttons
     btnNewDoc: document.getElementById('btn-new-doc'),
     btnNewDocEmpty: document.getElementById('btn-new-doc-empty'),
@@ -255,6 +262,57 @@ async function removeAcceptor(acceptorIdB58) {
     }
 }
 
+// ============================================================================
+// Group State (epoch, transcript hash, member count)
+// ============================================================================
+
+function updateGroupStateDisplay(payload) {
+    elements.groupEpoch.textContent = payload.epoch;
+    elements.groupHash.textContent = payload.transcript_hash.slice(0, 16) + '…';
+    elements.groupHash.title = `Transcript hash: ${payload.transcript_hash}\n(click to copy)`;
+    elements.groupHash.dataset.fullHash = payload.transcript_hash;
+    elements.groupMembers.textContent = payload.member_count;
+}
+
+function resetGroupStateDisplay() {
+    elements.groupEpoch.textContent = '—';
+    elements.groupHash.textContent = '—';
+    elements.groupHash.title = 'Transcript hash';
+    elements.groupMembers.textContent = '—';
+}
+
+async function fetchGroupState() {
+    if (!state.currentDocument) return;
+    try {
+        const gs = await invoke('get_group_state', {
+            groupId: state.currentDocument.group_id,
+        });
+        updateGroupStateDisplay(gs);
+    } catch (error) {
+        console.error('Failed to fetch group state:', error);
+    }
+}
+
+async function updateKeys() {
+    if (!state.currentDocument) {
+        showToast('No document open', 'error');
+        return;
+    }
+    try {
+        elements.btnUpdateKeys.disabled = true;
+        elements.btnUpdateKeys.textContent = '⏳ Updating…';
+        await invoke('update_keys', {
+            groupId: state.currentDocument.group_id,
+        });
+        showToast('Keys updated! Epoch advanced.', 'success');
+    } catch (error) {
+        console.error('Failed to update keys:', error);
+        showToast(`Failed to update keys: ${error}`, 'error');
+    } finally {
+        elements.btnUpdateKeys.disabled = false;
+        elements.btnUpdateKeys.innerHTML = '🔑 Update Keys';
+    }
+}
 
 // ============================================================================
 // Invite Code (Key Package)
@@ -324,6 +382,7 @@ async function startWelcomeListener() {
             
             showEditor();
             updateSyncStatus('synced');
+            fetchGroupState();
             showToast('Joined document!', 'success');
             
             hideModal(elements.joinModal);
@@ -356,6 +415,7 @@ async function joinDocumentWithWelcome(welcomeBytes) {
         
         showEditor();
         updateSyncStatus('synced');
+        fetchGroupState();
         showToast('Joined document!', 'success');
         
     } catch (error) {
@@ -383,6 +443,7 @@ async function createDocument() {
         
         showEditor();
         updateSyncStatus('synced');
+        fetchGroupState();
         showToast('Document created!', 'success');
         
     } catch (error) {
@@ -541,6 +602,21 @@ function setupEventListeners() {
         }
     });
     
+    // Update Keys button
+    elements.btnUpdateKeys.addEventListener('click', updateKeys);
+    
+    // Copy transcript hash on click
+    elements.groupHash.addEventListener('click', async () => {
+        const hash = elements.groupHash.dataset.fullHash;
+        if (!hash) return;
+        try {
+            await navigator.clipboard.writeText(hash);
+            showToast('Transcript hash copied!', 'success');
+        } catch (error) {
+            showToast('Failed to copy hash', 'error');
+        }
+    });
+
     // Peers modal
     elements.btnPeers.addEventListener('click', () => {
         if (!state.currentDocument) {
@@ -630,6 +706,18 @@ async function setupTauriEvents() {
         }
     });
     
+    // Listen for group state changes (epoch, membership, etc.)
+    await listen('group-state-changed', (event) => {
+        const payload = event.payload;
+        if (state.currentDocument && state.currentDocument.group_id === payload.group_id) {
+            updateGroupStateDisplay(payload);
+            // Also refresh the peers modal if it's currently open
+            if (!elements.peersModal.classList.contains('hidden')) {
+                fetchPeers();
+            }
+        }
+    });
+
     // Refresh the peers modal if it's open when acceptors change
     await listen('acceptors-updated', (event) => {
         const { group_id } = event.payload;

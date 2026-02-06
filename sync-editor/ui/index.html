@@ -52,14 +52,30 @@
                         </button>
                     </div>
                     <div class="toolbar-center">
+                        <div class="group-state" id="group-state">
+                            <span class="group-state-item" title="MLS epoch">
+                                <span class="group-state-label">epoch</span>
+                                <span class="group-state-value" id="group-epoch">—</span>
+                            </span>
+                            <span class="group-state-sep">·</span>
+                            <span class="group-state-item" title="Transcript hash (click to copy)">
+                                <span class="group-state-label">hash</span>
+                                <span class="group-state-value group-state-hash" id="group-hash">—</span>
+                            </span>
+                            <span class="group-state-sep">·</span>
+                            <span class="group-state-item">
+                                <span class="group-state-label">members</span>
+                                <span class="group-state-value" id="group-members">—</span>
+                            </span>
+                        </div>
+                        <button id="btn-update-keys" class="btn btn-secondary btn-sm" title="Advance epoch / rotate keys">
+                            🔑 Update Keys
+                        </button>
                         <button id="btn-peers" class="btn btn-secondary btn-sm" title="Manage members and acceptors">
                             👥 Peers
                         </button>
                     </div>
                     <div class="toolbar-right">
-                        <div class="collaborators" id="collaborators">
-                            <div class="collaborator" style="--color: #ff6b6b" title="You">Y</div>
-                        </div>
                         <div class="sync-status" id="sync-status">
                             <span class="sync-indicator synced"></span>
                             Synced

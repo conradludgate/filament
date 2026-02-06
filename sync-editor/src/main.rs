@@ -72,6 +72,8 @@ fn main() {
             commands::add_peer,
             commands::remove_member,
             commands::remove_acceptor,
+            commands::get_group_state,
+            commands::update_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
