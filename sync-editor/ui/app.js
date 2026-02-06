@@ -254,26 +254,35 @@ async function startWelcomeListener() {
     welcomeListenerActive = true;
     
     try {
-        // Poll for welcome message (backend will receive it via p2p)
-        const welcome = await invoke('recv_welcome');
+        // recv_welcome blocks until a welcome arrives, then auto-joins
+        // and returns DocumentInfo directly.
+        const doc = await invoke('recv_welcome');
         
-        if (welcome && welcomeListenerActive) {
-            // Update status
+        if (doc && welcomeListenerActive) {
             elements.joinStatus.innerHTML = `
                 <span class="join-status-icon">✓</span>
-                <span class="join-status-text">Added! Joining document...</span>
+                <span class="join-status-text">Joined!</span>
             `;
             elements.joinStatus.classList.add('success');
             
-            // Join the document
-            await joinDocumentWithWelcome(welcome);
+            // Apply the returned document info
+            state.currentDocument = doc;
+            elements.docId.textContent = doc.group_id.slice(0, 12) + '...';
+            elements.docId.title = doc.group_id;
+            elements.editor.value = doc.text;
+            lastText = doc.text;
             
-            // Close modal
+            showEditor();
+            await fetchDocAcceptors();
+            updateSyncStatus('synced');
+            showToast('Joined document!', 'success');
+            
             hideModal(elements.joinModal);
         }
     } catch (error) {
         if (welcomeListenerActive) {
             console.error('Welcome listener error:', error);
+            showToast(`Failed to join: ${error}`, 'error');
         }
     } finally {
         welcomeListenerActive = false;
@@ -416,9 +425,9 @@ function computeDelta(oldText, newText) {
         return null; // No change
     }
     
-    // Return as a sequence of operations
-    // For simplicity, we'll return the most significant operation
-    if (deleteLen > 0) {
+    if (deleteLen > 0 && insertText.length > 0) {
+        return { type: 'Replace', position: prefixLen, length: deleteLen, text: insertText };
+    } else if (deleteLen > 0) {
         return { type: 'Delete', position: prefixLen, length: deleteLen };
     } else if (insertText.length > 0) {
         return { type: 'Insert', position: prefixLen, text: insertText };
@@ -576,6 +585,9 @@ async function setupTauriEvents() {
         const { group_id, text } = event.payload;
         
         if (state.currentDocument && state.currentDocument.group_id === group_id) {
+            // Skip no-op updates (e.g. echo of own edits)
+            if (text === lastText) return;
+            
             // Update the editor if it's the current document
             const cursorPos = elements.editor.selectionStart;
             elements.editor.value = text;

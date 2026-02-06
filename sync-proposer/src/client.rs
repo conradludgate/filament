@@ -270,6 +270,16 @@ where
     pub fn try_recv_welcome(&mut self) -> Option<Vec<u8>> {
         self.welcome_rx.try_recv().ok()
     }
+
+    /// Take the welcome receiver out of the client.
+    ///
+    /// After this call, [`recv_welcome`](Self::recv_welcome) and
+    /// [`try_recv_welcome`](Self::try_recv_welcome) will always return `None`.
+    /// The returned receiver can be polled separately (e.g. in a `select!` loop).
+    pub fn take_welcome_rx(&mut self) -> mpsc::Receiver<Vec<u8>> {
+        let (_, empty_rx) = mpsc::channel(1);
+        std::mem::replace(&mut self.welcome_rx, empty_rx)
+    }
 }
 
 // Note: GroupClient is intentionally NOT Clone because the welcome_rx channel

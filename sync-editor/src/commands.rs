@@ -1,0 +1,158 @@
+//! Tauri command handlers.
+//!
+//! Each command is a thin async function that sends a request to the
+//! [`CoordinatorActor`](crate::actor::CoordinatorActor) and awaits the reply.
+//! No business logic lives here.
+
+use tokio::sync::oneshot;
+use universal_sync_core::GroupId;
+
+use crate::types::{AppState, CoordinatorRequest, Delta, DocRequest, DocumentInfo};
+
+/// Helper: send a coordinator request and await the reply.
+async fn coord_request<T>(
+    state: &AppState,
+    make_request: impl FnOnce(oneshot::Sender<Result<T, String>>) -> CoordinatorRequest,
+) -> Result<T, String> {
+    let (tx, rx) = oneshot::channel();
+    state
+        .coordinator_tx
+        .send(make_request(tx))
+        .await
+        .map_err(|_| "coordinator actor closed".to_string())?;
+    rx.await
+        .map_err(|_| "coordinator dropped reply".to_string())?
+}
+
+/// Helper: send a doc-level request via the coordinator and await the reply.
+async fn doc_request<T>(
+    state: &AppState,
+    group_id_b58: &str,
+    make_request: impl FnOnce(oneshot::Sender<Result<T, String>>) -> DocRequest,
+) -> Result<T, String> {
+    let group_id = parse_group_id(group_id_b58)?;
+    let (tx, rx) = oneshot::channel();
+    state
+        .coordinator_tx
+        .send(CoordinatorRequest::ForDoc {
+            group_id,
+            request: make_request(tx),
+        })
+        .await
+        .map_err(|_| "coordinator actor closed".to_string())?;
+    rx.await
+        .map_err(|_| "document not found or actor closed".to_string())?
+}
+
+fn parse_group_id(b58: &str) -> Result<GroupId, String> {
+    let bytes = bs58::decode(b58)
+        .into_vec()
+        .map_err(|e| format!("invalid group ID: {e}"))?;
+    Ok(GroupId::from_slice(&bytes))
+}
+
+// =============================================================================
+// Coordinator-level commands
+// =============================================================================
+
+#[tauri::command]
+pub async fn create_document(
+    state: tauri::State<'_, AppState>,
+) -> Result<DocumentInfo, String> {
+    coord_request(&state, |reply| CoordinatorRequest::CreateDocument {
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_key_package(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    coord_request(&state, |reply| CoordinatorRequest::GetKeyPackage {
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn recv_welcome(
+    state: tauri::State<'_, AppState>,
+) -> Result<DocumentInfo, String> {
+    coord_request(&state, |reply| CoordinatorRequest::RecvWelcome {
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn join_document_bytes(
+    state: tauri::State<'_, AppState>,
+    welcome_b58: String,
+) -> Result<DocumentInfo, String> {
+    coord_request(&state, |reply| CoordinatorRequest::JoinDocumentBytes {
+        welcome_b58,
+        reply,
+    })
+    .await
+}
+
+// =============================================================================
+// Document-level commands
+// =============================================================================
+
+#[tauri::command]
+pub async fn apply_delta(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+    delta: Delta,
+) -> Result<(), String> {
+    doc_request(&state, &group_id, |reply| DocRequest::ApplyDelta {
+        delta,
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_document_text(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<String, String> {
+    doc_request(&state, &group_id, |reply| DocRequest::GetText { reply }).await
+}
+
+#[tauri::command]
+pub async fn add_member(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+    key_package_b58: String,
+) -> Result<(), String> {
+    doc_request(&state, &group_id, |reply| DocRequest::AddMember {
+        key_package_b58,
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn add_acceptor(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+    addr_b58: String,
+) -> Result<(), String> {
+    doc_request(&state, &group_id, |reply| DocRequest::AddAcceptor {
+        addr_b58,
+        reply,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_acceptors(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<Vec<String>, String> {
+    doc_request(&state, &group_id, |reply| DocRequest::ListAcceptors {
+        reply,
+    })
+    .await
+}

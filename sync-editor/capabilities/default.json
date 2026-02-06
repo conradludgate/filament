@@ -7,7 +7,6 @@
     "core:default",
     "core:event:default",
     "core:event:allow-listen",
-    "core:event:allow-emit",
-    "shell:allow-open"
+    "core:event:allow-emit"
   ]
 }
