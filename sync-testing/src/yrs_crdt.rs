@@ -10,32 +10,12 @@
 //! - XML structures
 //!
 //! This implementation wraps a `yrs::Doc` and exposes it through the [`Crdt`] trait.
-//!
-//! # Client ID Derivation
-//!
-//! For collaborative editing, each client needs a stable, unique ID. We derive this
-//! from the MLS signing public key using SHA256, taking the first 8 bytes as a u64.
-//! This ensures the client ID remains stable across group membership changes (unlike
-//! MLS member indexes which can shift when members are removed).
 
-use std::any::Any;
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
 use universal_sync_core::{Crdt, CrdtError, CrdtFactory};
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, GetString, ReadTxn, StateVector, Transact, Update};
-
-/// Derive a stable yrs client ID from an MLS signing public key.
-///
-/// Uses SHA256 and takes the first 8 bytes as a big-endian u64.
-/// This provides a stable identity that doesn't change when MLS
-/// member indexes shift due to membership changes.
-#[must_use]
-pub fn client_id_from_signing_key(signing_key: &[u8]) -> u64 {
-    let hash = Sha256::digest(signing_key);
-    u64::from_be_bytes(hash[..8].try_into().expect("sha256 produces 32 bytes"))
-}
+use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 /// A CRDT implementation backed by a Yrs document.
 ///
@@ -112,19 +92,10 @@ impl Crdt for YrsCrdt {
         let update = Update::decode_v1(operation)
             .map_err(|e| CrdtError::new(format!("decode error: {e}")))?;
 
-        let my_client_id = self.doc.client_id();
-        tracing::info!(my_client_id, operation_len = operation.len(), "YrsCrdt::apply");
-
         self.doc
             .transact_mut()
             .apply_update(update)
             .map_err(|e| CrdtError::new(format!("apply error: {e}")))?;
-
-        // Log the resulting text for debugging
-        let text = self.doc.get_or_insert_text("content");
-        let txn = self.doc.transact();
-        let content = text.get_string(&txn);
-        tracing::info!(my_client_id, text_len = content.len(), text_after_apply = %content, "YrsCrdt::apply result");
 
         Ok(())
     }
@@ -139,14 +110,6 @@ impl Crdt for YrsCrdt {
         let txn = self.doc.transact();
         // Encode all state as an update from empty state vector
         Ok(txn.encode_state_as_update_v1(&StateVector::default()))
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -171,17 +134,6 @@ impl YrsCrdtFactory {
     #[must_use]
     pub fn new() -> Self {
         Self { client_id: None }
-    }
-
-    /// Create a factory with a client ID derived from an MLS signing public key.
-    ///
-    /// This is the recommended constructor for collaborative editing, as it
-    /// produces a stable client ID that doesn't change when MLS member indexes
-    /// shift due to membership changes.
-    #[must_use]
-    pub fn with_signing_key(signing_key: &[u8]) -> Self {
-        let client_id = client_id_from_signing_key(signing_key);
-        Self::with_fixed_client_id(client_id)
     }
 
     /// Create a factory with a fixed client ID.
@@ -343,36 +295,6 @@ mod tests {
 
         let crdt = factory.create();
         assert_eq!(crdt.type_id(), "yrs");
-    }
-
-    #[test]
-    fn test_client_id_from_signing_key() {
-        // Test that the same key produces the same client ID
-        let key1 = b"test-signing-key-1";
-        let key2 = b"test-signing-key-2";
-
-        let id1a = super::client_id_from_signing_key(key1);
-        let id1b = super::client_id_from_signing_key(key1);
-        let id2 = super::client_id_from_signing_key(key2);
-
-        assert_eq!(id1a, id1b, "Same key should produce same ID");
-        assert_ne!(id1a, id2, "Different keys should produce different IDs");
-    }
-
-    #[test]
-    fn test_yrs_factory_with_signing_key() {
-        let key = b"test-mls-signing-key";
-        let factory = YrsCrdtFactory::with_signing_key(key);
-
-        let crdt = factory.create();
-        assert_eq!(crdt.type_id(), "yrs");
-
-        // Verify the client ID is derived from the key
-        let expected_id = super::client_id_from_signing_key(key);
-        let factory2 = YrsCrdtFactory::with_fixed_client_id(expected_id);
-        let _crdt2 = factory2.create();
-        // Both should work (we can't easily verify the internal client ID,
-        // but this confirms the factory construction works)
     }
 
     #[test]

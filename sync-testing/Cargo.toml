@@ -18,4 +18,3 @@ tracing-subscriber.workspace = true
 yrs.workspace = true
 bs58.workspace = true
 postcard.workspace = true
-sha2.workspace = true

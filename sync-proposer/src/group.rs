@@ -40,7 +40,6 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
@@ -259,9 +258,6 @@ where
 
     /// Cached group ID (immutable after creation)
     group_id: GroupId,
-
-    /// Shared CRDT for application state synchronization
-    crdt: Arc<Mutex<Box<dyn Crdt>>>,
 }
 
 impl<C, CS> Drop for Group<C, CS>
@@ -398,7 +394,6 @@ where
 
         // Create CRDT from factory
         let crdt = crdt_factory.create();
-        tracing::debug!(crdt_type = %crdt.type_id(), "Created CRDT for new group");
 
         Ok(Self::spawn_actors(
             learner,
@@ -443,7 +438,7 @@ where
         })?;
 
         // Join the group (blocking I/O via storage)
-        let (learner, group_id) = blocking(|| {
+        let (learner, group_id, crdt_type_id) = blocking(|| {
             // Parse the MLS Welcome message from the bundle
             let welcome = MlsMessage::from_bytes(&welcome_bundle.mls_welcome).map_err(|e| {
                 Report::new(GroupError)
@@ -462,22 +457,6 @@ where
             let mls_group_id = group.context().group_id.clone();
             let group_id = GroupId::from_slice(&mls_group_id);
 
-            // Debug: log all extensions in group context
-            let ctx_ext_types: Vec<_> = group
-                .context()
-                .extensions
-                .iter()
-                .map(|e| format!("0x{:04X}", e.extension_type.raw_value()))
-                .collect();
-            tracing::debug!(?ctx_ext_types, "Group context extension types");
-
-            // Try to read CRDT registration extension
-            let crdt_ext = group
-                .context()
-                .extensions
-                .get_as::<CrdtRegistrationExt>();
-            tracing::debug!(?crdt_ext, "CRDT registration extension from group context");
-
             // Read acceptors from GroupInfo extensions
             let acceptors = info
                 .group_info_extensions
@@ -490,15 +469,23 @@ where
                 .map(|ext| ext.0)
                 .unwrap_or_default();
 
+            // Read CRDT type from group context extensions
+            let crdt_type_id = group
+                .context()
+                .extensions
+                .get_as::<CrdtRegistrationExt>()
+                .map_err(|e| {
+                    Report::new(GroupError)
+                        .attach(OperationContext::JOINING_GROUP)
+                        .attach(format!("failed to read CRDT extension: {e:?}"))
+                })?
+                .map_or_else(|| "none".to_owned(), |ext| ext.type_id);
+
             // Create the learner
             let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
 
-            Ok::<_, Report<GroupError>>((learner, group_id))
+            Ok::<_, Report<GroupError>>((learner, group_id, crdt_type_id))
         })?;
-
-        // Get CRDT type from welcome bundle (more reliable than group context extension)
-        let crdt_type_id = welcome_bundle.crdt_type_id().to_owned();
-        tracing::debug!(%crdt_type_id, "Got CRDT type ID from welcome bundle");
 
         // Look up the CRDT factory
         let crdt_factory = crdt_factories.get(&crdt_type_id).ok_or_else(|| {
@@ -514,7 +501,6 @@ where
 
         // Create CRDT from snapshot if present, otherwise create empty
         let crdt = if welcome_bundle.has_crdt() {
-            tracing::debug!(snapshot_len = welcome_bundle.crdt_snapshot.len(), "Creating CRDT from snapshot");
             crdt_factory
                 .from_snapshot(&welcome_bundle.crdt_snapshot)
                 .map_err(|e| {
@@ -522,10 +508,8 @@ where
                         .attach(format!("failed to create CRDT from snapshot: {e:?}"))
                 })?
         } else {
-            tracing::debug!("Creating empty CRDT (no snapshot in welcome)");
             crdt_factory.create()
         };
-        tracing::debug!(crdt_type = %crdt.type_id(), "Created CRDT for joined group");
 
         Ok(Self::spawn_actors(
             learner,
@@ -549,9 +533,6 @@ where
         let (request_tx, request_rx) = mpsc::channel(64);
         let (app_message_tx, app_message_rx) = mpsc::channel(256);
 
-        // Wrap CRDT in Arc<Mutex<>> for shared access
-        let crdt = Arc::new(Mutex::new(crdt));
-
         // Spawn the group actor
         let actor = GroupActor::new(
             learner,
@@ -562,7 +543,7 @@ where
             app_message_tx,
             event_tx.clone(),
             cancel_token.clone(),
-            crdt.clone(),
+            crdt,
         );
 
         let actor_handle = tokio::spawn(actor.run());
@@ -574,7 +555,6 @@ where
             cancel_token,
             actor_handle: Some(actor_handle),
             group_id,
-            crdt,
         }
     }
 
@@ -708,26 +688,6 @@ where
     /// Returns `None` if the channel is closed (group shutting down).
     pub async fn recv_message(&mut self) -> Option<ReceivedAppMessage> {
         self.app_message_rx.recv().await
-    }
-
-    /// Get the shared CRDT for application state synchronization.
-    ///
-    /// The CRDT is automatically kept in sync when messages are sent/received.
-    /// Use this to access the current state or perform type-specific operations.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let crdt = group.crdt();
-    /// let guard = crdt.lock().unwrap();
-    /// if let Some(yrs_crdt) = guard.as_any().downcast_ref::<YrsCrdt>() {
-    ///     let doc = yrs_crdt.doc();
-    ///     // ... use yrs-specific APIs
-    /// }
-    /// ```
-    #[must_use]
-    pub fn crdt(&self) -> &Arc<Mutex<Box<dyn Crdt>>> {
-        &self.crdt
     }
 
     /// Add an acceptor to the federation.
@@ -901,8 +861,8 @@ where
     /// Active proposal state (waiting for quorum)
     active_proposal: Option<ActiveProposal>,
 
-    /// CRDT for application state synchronization (shared with Group handle)
-    crdt: Arc<Mutex<Box<dyn Crdt>>>,
+    /// CRDT for application state synchronization
+    crdt: Box<dyn Crdt>,
 }
 
 /// State for an active proposal waiting for quorum
@@ -959,7 +919,7 @@ where
         app_message_tx: mpsc::Sender<ReceivedAppMessage>,
         event_tx: broadcast::Sender<GroupEvent>,
         cancel_token: CancellationToken,
-        crdt: Arc<Mutex<Box<dyn Crdt>>>,
+        crdt: Box<dyn Crdt>,
     ) -> Self {
         let num_acceptors = learner.acceptor_ids().count();
         let message_epoch = learner.mls_epoch();
@@ -1214,7 +1174,7 @@ where
         }
 
         // Capture CRDT snapshot before building commit (snapshot of current state)
-        let crdt_snapshot = self.crdt.lock().ok().and_then(|c| c.snapshot().ok());
+        let crdt_snapshot = self.crdt.snapshot().ok();
 
         // Build the commit
         let result = blocking(|| {
@@ -1245,16 +1205,9 @@ where
 
         match result {
             Ok((commit_output, mls_welcome)) => {
-                // Get CRDT type ID
-                let crdt_type_id = self
-                    .crdt
-                    .lock()
-                    .map(|c| c.type_id().to_owned())
-                    .unwrap_or_else(|_| "none".to_owned());
-
-                // Create welcome bundle with CRDT info
+                // Create welcome bundle with CRDT snapshot if present
                 let welcome_bundle = match crdt_snapshot {
-                    Some(snapshot) => WelcomeBundle::with_crdt(mls_welcome, crdt_type_id, snapshot),
+                    Some(snapshot) => WelcomeBundle::with_crdt(mls_welcome, snapshot),
                     None => WelcomeBundle::new(mls_welcome),
                 };
 
@@ -1331,10 +1284,6 @@ where
         data: &[u8],
         reply: oneshot::Sender<Result<EncryptedAppMessage, Report<GroupError>>>,
     ) {
-        // NOTE: We don't merge here because the caller (SyncedDocument) has already
-        // modified the shared CRDT before encoding the update. Merging again would
-        // cause duplicate operations even though yrs should deduplicate them.
-
         // Get current epoch and check if we need to reset the message counter
         let current_epoch = self.learner.mls_epoch();
         if current_epoch != self.message_epoch {
@@ -1788,21 +1737,9 @@ where
         send.finish().change_context(GroupError)?;
 
         // Wait for the stream to be fully closed (data acknowledged)
-        // Error code 0 means graceful close - the peer received the data
-        match send.stopped().await {
-            Ok(_) => tracing::debug!("welcome sent successfully"),
-            Err(e) => {
-                // Check if it's a graceful close (error code 0)
-                let is_graceful = e
-                    .to_string()
-                    .contains("closed by peer: 0");
-                if is_graceful {
-                    tracing::debug!("welcome sent successfully (peer closed gracefully)");
-                } else {
-                    return Err(e).change_context(GroupError);
-                }
-            }
-        }
+        send.stopped().await.change_context(GroupError)?;
+
+        tracing::debug!("welcome sent successfully");
 
         Ok(())
     }
@@ -2211,33 +2148,11 @@ where
         }
         self.seen_messages.insert(key);
 
-        let data = app_msg.data().to_vec();
-
-        // Update the internal CRDT to keep it in sync for snapshots
-        let crdt_ptr = std::sync::Arc::as_ptr(&self.crdt);
-        tracing::debug!(data_len = data.len(), ?crdt_ptr, "merging remote update into CRDT");
-        match self.crdt.lock() {
-            Ok(mut crdt) => {
-                let crdt_type = crdt.type_id().to_owned();
-                tracing::debug!(%crdt_type, "acquired CRDT lock for merge");
-                let snapshot_before = crdt.snapshot().ok().map(|s| s.len()).unwrap_or(0);
-                if let Err(e) = crdt.merge(&data) {
-                    tracing::warn!(?e, "failed to merge remote update into CRDT snapshot");
-                } else {
-                    let snapshot_after = crdt.snapshot().ok().map(|s| s.len()).unwrap_or(0);
-                    tracing::debug!(snapshot_before, snapshot_after, "CRDT merge successful");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(?e, "failed to acquire CRDT lock for merge");
-            }
-        }
-
         let received_msg = ReceivedAppMessage {
             sender,
             epoch,
             index,
-            data,
+            data: app_msg.data().to_vec(),
         };
 
         let _ = self.app_message_tx.try_send(received_msg);
