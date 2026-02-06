@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorAdd, AcceptorId, AcceptorRemove, CrdtRegistrationExt, EncryptedAppMessage, Epoch,
     GroupId, GroupMessage, GroupProposal, Handshake, MemberId, MemberFingerprint, MessageId,
-    PAXOS_ALPN,
+    StateVector, PAXOS_ALPN,
 };
 use universal_sync_paxos::proposer::{ProposeResult, Proposer, QuorumTracker};
 use universal_sync_paxos::{AcceptorMessage, Learner, Proposal};
@@ -49,6 +49,7 @@ where
     acceptor_handles: HashMap<AcceptorId, JoinHandle<()>>,
     own_fingerprint: MemberFingerprint,
     message_seq: u64,
+    state_vector: StateVector,
     seen_messages: HashSet<(MemberFingerprint, u64)>,
     pending_messages: Vec<PendingMessage>,
     join_epoch: Epoch,
@@ -121,6 +122,7 @@ where
             acceptor_handles: HashMap::new(),
             own_fingerprint,
             message_seq: 0,
+            state_vector: StateVector::new(),
             seen_messages: HashSet::new(),
             pending_messages: Vec::new(),
             join_epoch,
@@ -443,6 +445,7 @@ where
     ) {
         let seq = self.message_seq;
         self.message_seq += 1;
+        self.state_vector.insert(self.own_fingerprint, seq);
 
         let authenticated_data = seq.to_be_bytes().to_vec();
 
@@ -1227,6 +1230,11 @@ where
             return;
         }
         self.seen_messages.insert(key);
+
+        let hw = self.state_vector.entry(sender_fp).or_insert(0);
+        if seq > *hw {
+            *hw = seq;
+        }
 
         let _ = self.app_message_tx.try_send(app_msg.data().to_vec());
     }

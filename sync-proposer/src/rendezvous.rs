@@ -63,6 +63,23 @@ pub(crate) fn delivery_count(num_acceptors: usize) -> usize {
     sqrt.max(1)
 }
 
+/// Delivery count for a specific compaction level.
+/// `replication_factor` of 0 means all acceptors.
+#[must_use]
+pub(crate) fn delivery_count_for_level(
+    num_acceptors: usize,
+    replication_factor: u8,
+) -> usize {
+    if num_acceptors == 0 {
+        return 0;
+    }
+    if replication_factor == 0 {
+        num_acceptors
+    } else {
+        (replication_factor as usize).min(num_acceptors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use universal_sync_core::{GroupId, MemberFingerprint};
