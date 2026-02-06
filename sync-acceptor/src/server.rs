@@ -54,6 +54,9 @@ pub(crate) fn new_message_connection(send: SendStream, recv: RecvStream) -> Iroh
     )
 }
 
+/// # Errors
+///
+/// Returns [`ConnectorError`] if the connection or protocol exchange fails.
 #[instrument(skip_all, name = "accept_connection")]
 pub async fn accept_connection<C, CS>(
     incoming: Incoming,

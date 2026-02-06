@@ -26,10 +26,27 @@ pub trait Crdt: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
+
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if the operation bytes cannot be decoded or applied.
     fn apply(&mut self, operation: &[u8]) -> Result<(), Report<CrdtError>>;
+
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if the snapshot bytes cannot be decoded or merged.
     fn merge(&mut self, snapshot: &[u8]) -> Result<(), Report<CrdtError>>;
+
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if encoding the current state fails.
     fn snapshot(&self) -> Result<Vec<u8>, Report<CrdtError>>;
+
     /// Returns `None` if there are no changes since the last flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if encoding the diff fails.
     fn flush_update(&mut self) -> Result<Option<Vec<u8>>, Report<CrdtError>>;
 }
 
@@ -38,9 +55,16 @@ pub trait Crdt: Send + Sync + 'static {
 pub trait CrdtFactory: Send + Sync {
     fn type_id(&self) -> &str;
     fn create(&self) -> Box<dyn Crdt>;
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if the snapshot bytes cannot be decoded.
     fn from_snapshot(&self, snapshot: &[u8]) -> Result<Box<dyn Crdt>, Report<CrdtError>>;
 
     /// Merge an optional base snapshot with a series of updates into a single snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if any snapshot/update cannot be decoded or applied.
     fn compact(
         &self,
         base: Option<&[u8]>,

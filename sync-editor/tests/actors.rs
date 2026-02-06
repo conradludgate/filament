@@ -292,8 +292,8 @@ async fn doc_actor_remote_update_triggers_event() {
 /// Returns the request sender and the event receiver.
 fn spawn_coordinator(
     client: universal_sync_proposer::GroupClient<
-        impl mls_rs::client_builder::MlsConfig + Clone + Send + Sync + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + Send + Sync + 'static,
+        impl mls_rs::client_builder::MlsConfig + 'static,
+        impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
 ) -> (
     mpsc::Sender<CoordinatorRequest>,

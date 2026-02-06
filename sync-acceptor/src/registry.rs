@@ -161,6 +161,10 @@ where
     }
 
     /// Creates a new group from serialized `GroupInfo`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] if parsing, observing, or persisting the group fails.
     pub fn create_group(
         &self,
         group_info_bytes: &[u8],
@@ -210,6 +214,9 @@ where
         Ok((group_id, acceptor, state))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] if writing to the state store fails.
     pub fn store_message(
         &self,
         group_id: &GroupId,

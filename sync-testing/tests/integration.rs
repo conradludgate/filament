@@ -1375,8 +1375,8 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
 /// Helper: insert text into a Yrs CRDT group and send the update.
 async fn yrs_insert_and_send(
     group: &mut universal_sync_proposer::Group<
-        impl mls_rs::client_builder::MlsConfig + Clone + Send + Sync + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + Send + Sync + 'static,
+        impl mls_rs::client_builder::MlsConfig + 'static,
+        impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
     position: u32,
     text: &str,
@@ -1398,8 +1398,8 @@ async fn yrs_insert_and_send(
 /// Helper: read text from a Yrs CRDT group.
 fn yrs_get_text(
     group: &universal_sync_proposer::Group<
-        impl mls_rs::client_builder::MlsConfig + Clone + Send + Sync + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + Send + Sync + 'static,
+        impl mls_rs::client_builder::MlsConfig + 'static,
+        impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
 ) -> String {
     use yrs::{GetString, Transact};
@@ -1437,8 +1437,8 @@ async fn wait_for_event(
 /// Helper: poll until a joiner's CRDT text matches the expected value.
 async fn wait_for_sync(
     group: &mut universal_sync_proposer::Group<
-        impl mls_rs::client_builder::MlsConfig + Clone + Send + Sync + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + Send + Sync + 'static,
+        impl mls_rs::client_builder::MlsConfig + 'static,
+        impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
     expected: &str,
     timeout_secs: u64,

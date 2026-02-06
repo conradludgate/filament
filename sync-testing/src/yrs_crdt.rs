@@ -304,7 +304,6 @@ mod tests {
             let mut txn = yrs.doc().transact_mut();
             t.insert(&mut txn, pos, text);
             drop(txn);
-            drop(t);
             crdt.flush_update().unwrap().unwrap()
         };
 

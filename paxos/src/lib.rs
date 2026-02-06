@@ -134,6 +134,9 @@ pub trait Learner: Send + Sync + 'static {
     fn current_round(&self) -> <Self::Proposal as Proposal>::RoundId;
     fn acceptors(&self) -> impl IntoIterator<Item = Self::AcceptorId, IntoIter: ExactSizeIterator>;
     fn propose(&self, attempt: <Self::Proposal as Proposal>::AttemptId) -> Self::Proposal;
+    /// # Errors
+    ///
+    /// Returns [`ValidationError`] if the proposal is invalid for the current state.
     fn validate(&self, proposal: &Self::Proposal) -> Result<Validated, Report<ValidationError>>;
     async fn apply(
         &mut self,

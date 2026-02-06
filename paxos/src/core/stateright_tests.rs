@@ -273,6 +273,98 @@ fn paxos_model(
     paxos_model_with_config(num_proposers, num_acceptors, values, 3)
 }
 
+fn check_agreement(state: &stateright::actor::ActorModelState<PaxosActor>) -> bool {
+    let done_values: Vec<(u64, Value)> = state
+        .actor_states
+        .iter()
+        .filter_map(|s: &Arc<PaxosActorState>| {
+            if let PaxosActorState::Proposer(ps) = s.as_ref() {
+                ps.learned
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (round, value) in &done_values {
+        for (r2, v2) in &done_values {
+            if round == r2 && value != v2 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn check_promise_integrity(state: &stateright::actor::ActorModelState<PaxosActor>) -> bool {
+    for s in &state.actor_states {
+        if let PaxosActorState::Acceptor(acc) = s.as_ref() {
+            for (round, (acc_prop, _)) in &acc.accepted {
+                if let Some(promised) = acc.promised.get(round) {
+                    if promised < acc_prop {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn check_consistency(state: &stateright::actor::ActorModelState<PaxosActor>) -> bool {
+    let acceptors: Vec<&AcceptorState> = state
+        .actor_states
+        .iter()
+        .filter_map(|s| {
+            if let PaxosActorState::Acceptor(acc) = s.as_ref() {
+                Some(acc)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let n = acceptors.len();
+    let quorum_size = n / 2 + 1;
+    let quorums: Vec<Vec<usize>> = (0..n).combinations(quorum_size).collect();
+
+    let mut rounds: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for acc in &acceptors {
+        for round in acc.accepted.keys() {
+            rounds.insert(*round);
+        }
+    }
+
+    for round in rounds {
+        let mut quorum_accepted: Vec<(ProposalKey, Value)> = Vec::new();
+
+        for quorum in &quorums {
+            let accepted_in_quorum: Vec<_> = quorum
+                .iter()
+                .map(|&i| acceptors[i].accepted.get(&round))
+                .collect();
+
+            if accepted_in_quorum.iter().all(Option::is_some) {
+                let first = accepted_in_quorum[0].unwrap();
+                if accepted_in_quorum.iter().all(|a| a.unwrap() == first) {
+                    quorum_accepted.push(*first);
+                }
+            }
+        }
+
+        for (p1, v1) in &quorum_accepted {
+            for (p2, v2) in &quorum_accepted {
+                if p2 > p1 && v1 != v2 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn paxos_model_with_config(
     num_proposers: usize,
     num_acceptors: usize,
@@ -305,109 +397,20 @@ fn paxos_model_with_config(
         });
     }
 
-    // Agreement: all learned values for the same round must match
     model = model.property(stateright::Expectation::Always, "Agreement", |_, state| {
-        let done_values: Vec<(u64, Value)> = state
-            .actor_states
-            .iter()
-            .filter_map(|s: &Arc<PaxosActorState>| {
-                if let PaxosActorState::Proposer(ps) = s.as_ref() {
-                    ps.learned
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (round, value) in &done_values {
-            for (r2, v2) in &done_values {
-                if round == r2 && value != v2 {
-                    return false;
-                }
-            }
-        }
-        true
+        check_agreement(state)
     });
 
-    // PromiseIntegrity: promise >= accepted for every round (TLA+ lines 261-264)
     model = model.property(
         stateright::Expectation::Always,
         "PromiseIntegrity",
-        |_, state| {
-            for s in &state.actor_states {
-                if let PaxosActorState::Acceptor(acc) = s.as_ref() {
-                    for (round, (acc_prop, _)) in &acc.accepted {
-                        if let Some(promised) = acc.promised.get(round) {
-                            if promised < acc_prop {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-                }
-            }
-            true
-        },
+        |_, state| check_promise_integrity(state),
     );
 
-    // Consistency: if two quorums accepted different proposals for the same round,
-    // the values must still agree (TLA+ lines 250-258)
     model = model.property(
         stateright::Expectation::Always,
         "Consistency",
-        |_cfg, state| {
-            let acceptors: Vec<&AcceptorState> = state
-                .actor_states
-                .iter()
-                .filter_map(|s| {
-                    if let PaxosActorState::Acceptor(acc) = s.as_ref() {
-                        Some(acc)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let n = acceptors.len();
-            let quorum_size = n / 2 + 1;
-
-            let quorums: Vec<Vec<usize>> = (0..n).combinations(quorum_size).collect();
-
-            let mut rounds: std::collections::HashSet<u64> = std::collections::HashSet::new();
-            for acc in &acceptors {
-                for round in acc.accepted.keys() {
-                    rounds.insert(*round);
-                }
-            }
-
-            for round in rounds {
-                let mut quorum_accepted: Vec<(ProposalKey, Value)> = Vec::new();
-
-                for quorum in &quorums {
-                    let accepted_in_quorum: Vec<_> = quorum
-                        .iter()
-                        .map(|&i| acceptors[i].accepted.get(&round))
-                        .collect();
-
-                    if accepted_in_quorum.iter().all(Option::is_some) {
-                        let first = accepted_in_quorum[0].unwrap();
-                        if accepted_in_quorum.iter().all(|a| a.unwrap() == first) {
-                            quorum_accepted.push(*first);
-                        }
-                    }
-                }
-
-                for (p1, v1) in &quorum_accepted {
-                    for (p2, v2) in &quorum_accepted {
-                        if p2 > p1 && v1 != v2 {
-                            return false;
-                        }
-                    }
-                }
-            }
-            true
-        },
+        |_, state| check_consistency(state),
     );
 
     model

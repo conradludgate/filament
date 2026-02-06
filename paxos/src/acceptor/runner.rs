@@ -21,6 +21,10 @@ use crate::{Learner, Proposal};
 /// Immediately subscribes to learned values so that passive learners (clients
 /// that never propose) can advance their epoch by receiving commits from other
 /// proposers.
+///
+/// # Errors
+///
+/// Returns the learner's error type on I/O or protocol failures.
 #[allow(clippy::too_many_lines)]
 #[instrument(skip_all, name = "acceptor_epoch_aware", fields(node_id = ?handler.node_id(), proposer = ?proposer_id))]
 pub async fn run_acceptor_with_epoch_waiter<A, S, C>(

@@ -2,7 +2,6 @@
 //!
 //! This module provides an interactive REPL for managing MLS groups with Paxos consensus.
 
-#![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -69,7 +68,11 @@ where
         joined_groups
     }
 
-    /// Execute a REPL command
+    /// Execute a REPL command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the command fails.
     pub async fn execute(&mut self, line: &str) -> Result<String, String> {
         // First, process any pending welcomes
         let joined = self.process_pending_welcomes().await;

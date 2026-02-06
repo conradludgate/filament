@@ -250,7 +250,7 @@ mod tests {
         assert!(matches!(decoded, MessageRequest::Send { .. }));
 
         let backfill = MessageRequest::Backfill {
-            state_vector: Default::default(),
+            state_vector: BTreeMap::default(),
             limit: 100,
         };
         let bytes = postcard::to_allocvec(&backfill).unwrap();

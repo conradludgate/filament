@@ -43,6 +43,11 @@ impl std::fmt::Display for KeyLoadError {
 impl std::error::Error for KeyLoadError {}
 
 /// Load a 32-byte secret key from a file (raw bytes or base58).
+///
+/// # Errors
+///
+/// Returns [`KeyLoadError`] if the file cannot be read or does not contain
+/// a valid 32-byte key (raw or base58-encoded).
 pub fn load_secret_key(path: impl AsRef<Path>) -> Result<[u8; 32], Report<KeyLoadError>> {
     let path = path.as_ref();
     let contents = std::fs::read(path)

@@ -66,6 +66,9 @@ impl UnsignedProposal {
         Self::new(member_id, epoch, attempt, [0u8; 32])
     }
 
+    /// # Panics
+    ///
+    /// Panics if postcard serialization fails (should not happen for this type).
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         postcard::to_allocvec(self).expect("serialization should not fail")
@@ -85,7 +88,7 @@ impl UnsignedProposal {
 
 /// Signed proposal — the Paxos ordering key.
 ///
-/// Ordered by (epoch, attempt, member_id). Signed with the member's MLS key.
+/// Ordered by (epoch, attempt, `member_id`). Signed with the member's MLS key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupProposal {
     pub member_id: MemberId,

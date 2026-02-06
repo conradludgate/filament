@@ -55,6 +55,7 @@ impl EpochRoster {
 }
 
 type GroupBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>;
+type MessageBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>;
 
 pub(crate) struct FjallStateStore {
     db: Database,
@@ -64,8 +65,7 @@ pub(crate) struct FjallStateStore {
     messages: Keyspace,
     epoch_rosters: Keyspace,
     broadcasts: GroupBroadcasts,
-    message_broadcasts:
-        RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>,
+    message_broadcasts: MessageBroadcasts,
 }
 
 impl FjallStateStore {
@@ -473,6 +473,9 @@ pub struct SharedFjallStateStore {
 }
 
 impl SharedFjallStateStore {
+    /// # Errors
+    ///
+    /// Returns [`fjall::Error`] if opening the database fails.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, fjall::Error> {
         let store = FjallStateStore::open(path).await?;
         Ok(Self {
@@ -488,6 +491,9 @@ impl SharedFjallStateStore {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`fjall::Error`] if writing to the database fails.
     pub fn store_group(&self, group_id: &GroupId, group_info: &[u8]) -> Result<(), fjall::Error> {
         self.inner.store_group_sync(group_id, group_info)
     }
@@ -502,6 +508,9 @@ impl SharedFjallStateStore {
         self.inner.list_groups_sync()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`fjall::Error`] if deleting from the database fails.
     pub fn remove_group(&self, group_id: &GroupId) -> Result<(), fjall::Error> {
         self.inner.remove_group_sync(group_id)
     }

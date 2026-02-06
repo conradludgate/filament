@@ -187,7 +187,7 @@ where
     app_message_rx: mpsc::Receiver<Vec<u8>>,
     event_tx: broadcast::Sender<GroupEvent>,
     cancel_token: CancellationToken,
-    _cancel_guard: tokio_util::sync::DropGuard,
+    cancel_guard: tokio_util::sync::DropGuard,
     actor_handle: Option<JoinHandle<()>>,
     group_id: GroupId,
     crdt: Box<D>,
@@ -219,6 +219,7 @@ where
     ///
     /// Returns `None` if the CRDT is not of type `D`. The group is consumed
     /// either way — callers should know the expected CRDT type.
+    #[must_use]
     pub fn downcast<D: Crdt>(self) -> Option<Group<C, CS, D>> {
         let crdt = self.crdt.into_any().downcast::<D>().ok()?;
         Some(Group {
@@ -226,7 +227,7 @@ where
             app_message_rx: self.app_message_rx,
             event_tx: self.event_tx,
             cancel_token: self.cancel_token,
-            _cancel_guard: self._cancel_guard,
+            cancel_guard: self.cancel_guard,
             actor_handle: self.actor_handle,
             group_id: self.group_id,
             crdt,
@@ -427,7 +428,7 @@ where
             app_message_rx,
             event_tx,
             cancel_token,
-            _cancel_guard: cancel_guard,
+            cancel_guard,
             actor_handle: Some(actor_handle),
             group_id,
             crdt,
@@ -445,6 +446,10 @@ where
     ///
     /// The new member starts with an empty CRDT and catches up via compaction
     /// and backfill from acceptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the key package is invalid or consensus fails.
     pub async fn add_member(&mut self, key_package: MlsMessage) -> Result<(), Report<GroupError>> {
         let member_addr = key_package
             .as_key_package()
@@ -473,7 +478,11 @@ where
             .map_err(|_| Report::new(GroupError).attach("group actor dropped reply"))?
     }
 
-    /// Blocks until consensus is reached.
+    /// Remove a member by index. Blocks until consensus is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the group actor is closed or consensus fails.
     pub async fn remove_member(&mut self, member_index: u32) -> Result<(), Report<GroupError>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
@@ -489,7 +498,11 @@ where
             .map_err(|_| Report::new(GroupError).attach("group actor dropped reply"))?
     }
 
-    /// Blocks until consensus is reached.
+    /// Update the MLS key material. Blocks until consensus is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the group actor is closed or consensus fails.
     pub async fn update_keys(&mut self) -> Result<(), Report<GroupError>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
@@ -513,6 +526,10 @@ where
     }
 
     /// Flush local CRDT changes and broadcast. No-op if no pending changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if flushing the CRDT or sending the message fails.
     pub async fn send_update(&mut self) -> Result<(), Report<GroupError>> {
         let update = self.crdt.flush_update().change_context(GroupError)?;
 
@@ -558,6 +575,10 @@ where
     }
 
     /// Proposes adding an acceptor via consensus, then registers the group with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the group actor is closed or consensus fails.
     pub async fn add_acceptor(&mut self, addr: EndpointAddr) -> Result<(), Report<GroupError>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
@@ -573,6 +594,9 @@ where
             .map_err(|_| Report::new(GroupError).attach("group actor dropped reply"))?
     }
 
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the group actor is closed or consensus fails.
     pub async fn remove_acceptor(
         &mut self,
         acceptor_id: AcceptorId,
@@ -597,6 +621,9 @@ where
         self.event_tx.subscribe()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if the group actor is closed.
     pub async fn context(&mut self) -> Result<GroupContext, Report<GroupError>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
