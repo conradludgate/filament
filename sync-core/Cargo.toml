@@ -9,7 +9,8 @@ yrs = ["dep:yrs"]
 
 [dependencies]
 universal-sync-paxos = { path = "../paxos" }
-mls-rs = { version = "0.52", default-features = false }
+mls-rs.workspace = true
+mls-rs-core.workspace = true
 serde.workspace = true
 postcard.workspace = true
 iroh.workspace = true

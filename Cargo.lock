@@ -7056,6 +7056,7 @@ dependencies = [
  "futures",
  "iroh",
  "mls-rs",
+ "mls-rs-core",
  "pin-project-lite",
  "postcard",
  "serde",

@@ -18,10 +18,12 @@ pub use error::{
     AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
 };
 pub use extension::{
-    AcceptorAdd, AcceptorRemove, AcceptorsExt, CrdtRegistrationExt, CrdtSnapshotExt, MemberAddrExt,
-    SupportedCrdtsExt, ACCEPTORS_EXTENSION_TYPE, ACCEPTOR_ADD_EXTENSION_TYPE,
-    ACCEPTOR_REMOVE_EXTENSION_TYPE, CRDT_REGISTRATION_EXTENSION_TYPE, CRDT_SNAPSHOT_EXTENSION_TYPE,
-    MEMBER_ADDR_EXTENSION_TYPE, SUPPORTED_CRDTS_EXTENSION_TYPE,
+    AcceptorAdd, AcceptorRemove, AcceptorsExt, CompactionClaim, CompactionComplete,
+    CrdtRegistrationExt, CrdtSnapshotExt, MemberAddrExt, SupportedCrdtsExt,
+    ACCEPTORS_EXTENSION_TYPE, ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE,
+    COMPACTION_CLAIM_PROPOSAL_TYPE, COMPACTION_COMPLETE_PROPOSAL_TYPE,
+    CRDT_REGISTRATION_EXTENSION_TYPE, CRDT_SNAPSHOT_EXTENSION_TYPE, MEMBER_ADDR_EXTENSION_TYPE,
+    SUPPORTED_CRDTS_EXTENSION_TYPE,
 };
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 pub use protocol::{

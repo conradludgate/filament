@@ -1,12 +1,17 @@
 //! Custom MLS group context and key package extensions for the sync protocol.
 
+use std::collections::BTreeMap;
+
 use iroh::EndpointAddr;
 use mls_rs::extension::{ExtensionType, MlsCodecExtension};
+use mls_rs::group::proposal::MlsCustomProposal;
 use mls_rs::mls_rs_codec::{self as mls_rs_codec, MlsDecode, MlsEncode, MlsSize};
+use mls_rs_core::group::ProposalType;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::proposal::AcceptorId;
+use crate::protocol::MemberFingerprint;
 
 /// Extension type for the full acceptor list (group context extension)
 pub const ACCEPTORS_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF795);
@@ -28,6 +33,12 @@ pub const SUPPORTED_CRDTS_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF
 
 /// Extension type for CRDT snapshot (group info extension, sent in welcome)
 pub const CRDT_SNAPSHOT_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF79B);
+
+/// Proposal type for compaction claim (private use range)
+pub const COMPACTION_CLAIM_PROPOSAL_TYPE: ProposalType = ProposalType::new(0xF7A0);
+
+/// Proposal type for compaction completion (private use range)
+pub const COMPACTION_COMPLETE_PROPOSAL_TYPE: ProposalType = ProposalType::new(0xF7A1);
 
 const POSTCARD_ERROR: u8 = 1;
 
@@ -397,6 +408,83 @@ impl MlsCodecExtension for CrdtSnapshotExt {
     }
 }
 
+/// Compaction claim proposal (MLS custom proposal, unencrypted but signed).
+///
+/// A member broadcasts this to claim ownership of a compaction range. If the
+/// commit is accepted, other members back off. The claimer must complete
+/// within `deadline` (unix seconds) or the claim expires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionClaim {
+    pub level: u8,
+    pub watermark: BTreeMap<MemberFingerprint, u64>,
+    pub deadline: u64,
+}
+
+impl MlsSize for CompactionClaim {
+    fn mls_encoded_len(&self) -> usize {
+        postcard_encoded_len(&(self.level, &self.watermark, self.deadline))
+    }
+}
+
+impl MlsEncode for CompactionClaim {
+    fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
+        postcard_encode(&(self.level, &self.watermark, self.deadline), writer)
+    }
+}
+
+impl MlsDecode for CompactionClaim {
+    fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
+        let (level, watermark, deadline): (u8, BTreeMap<MemberFingerprint, u64>, u64) =
+            postcard_decode(reader)?;
+        Ok(Self {
+            level,
+            watermark,
+            deadline,
+        })
+    }
+}
+
+impl MlsCustomProposal for CompactionClaim {
+    fn proposal_type() -> ProposalType {
+        COMPACTION_CLAIM_PROPOSAL_TYPE
+    }
+}
+
+/// Compaction completion proposal (MLS custom proposal, unencrypted but signed).
+///
+/// Signals that the claimer has stored the compacted entry. Acceptors use
+/// the watermark to delete messages covered by the compaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionComplete {
+    pub level: u8,
+    pub watermark: BTreeMap<MemberFingerprint, u64>,
+}
+
+impl MlsSize for CompactionComplete {
+    fn mls_encoded_len(&self) -> usize {
+        postcard_encoded_len(&(self.level, &self.watermark))
+    }
+}
+
+impl MlsEncode for CompactionComplete {
+    fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
+        postcard_encode(&(self.level, &self.watermark), writer)
+    }
+}
+
+impl MlsDecode for CompactionComplete {
+    fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
+        let (level, watermark): (u8, BTreeMap<MemberFingerprint, u64>) = postcard_decode(reader)?;
+        Ok(Self { level, watermark })
+    }
+}
+
+impl MlsCustomProposal for CompactionComplete {
+    fn proposal_type() -> ProposalType {
+        COMPACTION_COMPLETE_PROPOSAL_TYPE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -546,6 +634,47 @@ mod tests {
         let decoded = CrdtRegistrationExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
         assert_eq!(decoded.type_id(), "");
+    }
+
+    #[test]
+    fn test_compaction_claim_roundtrip() {
+        let mut watermark = BTreeMap::new();
+        watermark.insert(MemberFingerprint([1u8; 32]), 42);
+        watermark.insert(MemberFingerprint([2u8; 32]), 100);
+        let claim = CompactionClaim {
+            level: 1,
+            watermark: watermark.clone(),
+            deadline: 1_700_000_000,
+        };
+
+        let custom = claim.to_custom_proposal().unwrap();
+        assert_eq!(custom.proposal_type(), COMPACTION_CLAIM_PROPOSAL_TYPE);
+
+        let decoded = CompactionClaim::from_custom_proposal(&custom).unwrap();
+        assert_eq!(decoded, claim);
+    }
+
+    #[test]
+    fn test_compaction_complete_roundtrip() {
+        let mut watermark = BTreeMap::new();
+        watermark.insert(MemberFingerprint([3u8; 32]), 99);
+        let complete = CompactionComplete {
+            level: 2,
+            watermark,
+        };
+
+        let custom = complete.to_custom_proposal().unwrap();
+        assert_eq!(custom.proposal_type(), COMPACTION_COMPLETE_PROPOSAL_TYPE);
+
+        let decoded = CompactionComplete::from_custom_proposal(&custom).unwrap();
+        assert_eq!(decoded, complete);
+    }
+
+    #[test]
+    fn test_compaction_proposal_types_in_private_range() {
+        assert!(COMPACTION_CLAIM_PROPOSAL_TYPE.raw_value() >= 0xF000);
+        assert!(COMPACTION_COMPLETE_PROPOSAL_TYPE.raw_value() >= 0xF000);
+        assert_ne!(COMPACTION_CLAIM_PROPOSAL_TYPE, COMPACTION_COMPLETE_PROPOSAL_TYPE);
     }
 
     #[test]
