@@ -8,10 +8,11 @@ use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::{SignaturePublicKey, SignatureSecretKey};
 use mls_rs::group::proposal::{MlsCustomProposal, Proposal as MlsProposal};
 use mls_rs::group::{CommitEffect, ReceivedMessage};
+use universal_sync_core::SyncProposal;
 use mls_rs::{CipherSuiteProvider, Group};
 use universal_sync_core::{
-    AcceptorAdd, AcceptorId, AcceptorRemove, Attempt, Epoch, GroupMessage, GroupProposal,
-    MemberFingerprint, MemberId, UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupMessage, GroupProposal, MemberFingerprint, MemberId,
+    UnsignedProposal,
 };
 
 /// Error marker for `GroupLearner` operations.
@@ -161,8 +162,7 @@ where
 
     /// Process a commit effect to update the acceptor set
     ///
-    /// Checks for `AcceptorAdd` and `AcceptorRemove` custom proposals that
-    /// were applied.
+    /// Checks for `AcceptorAdd` and `AcceptorRemove` sync proposals.
     fn process_commit_effect(&mut self, effect: &CommitEffect) {
         let applied_proposals = match effect {
             CommitEffect::NewEpoch(new_epoch) | CommitEffect::Removed { new_epoch, .. } => {
@@ -172,15 +172,20 @@ where
         };
 
         for proposal_info in applied_proposals {
-            if let MlsProposal::Custom(custom) = &proposal_info.proposal {
-                if let Ok(add) = AcceptorAdd::from_custom_proposal(custom) {
-                    tracing::debug!(acceptor_id = ?add.acceptor_id(), "adding acceptor");
-                    self.add_acceptor_addr(add.0.clone());
-                }
-
-                if let Ok(remove) = AcceptorRemove::from_custom_proposal(custom) {
-                    tracing::debug!(acceptor_id = ?remove.acceptor_id(), "removing acceptor");
-                    self.remove_acceptor_id(&remove.acceptor_id());
+            if let MlsProposal::Custom(custom) = &proposal_info.proposal
+                && let Ok(proposal) = SyncProposal::from_custom_proposal(custom)
+            {
+                match proposal {
+                    SyncProposal::AcceptorAdd(addr) => {
+                        let id = AcceptorId::from_bytes(*addr.id.as_bytes());
+                        tracing::debug!(?id, "adding acceptor");
+                        self.add_acceptor_addr(addr);
+                    }
+                    SyncProposal::AcceptorRemove(id) => {
+                        tracing::debug!(?id, "removing acceptor");
+                        self.remove_acceptor_id(&id);
+                    }
+                    _ => {}
                 }
             }
         }

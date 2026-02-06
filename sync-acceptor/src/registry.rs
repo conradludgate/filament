@@ -10,7 +10,7 @@ use mls_rs::external_client::{ExternalClient, ExternalGroup};
 use mls_rs::mls_rs_codec::MlsDecode;
 use mls_rs::{CipherSuiteProvider, ExtensionList, MlsMessage};
 use tokio::sync::watch;
-use universal_sync_core::{ACCEPTORS_EXTENSION_TYPE, AcceptorId, AcceptorsExt, Epoch, GroupId};
+use universal_sync_core::{AcceptorId, Epoch, GroupId, SYNC_EXTENSION_TYPE, SyncExt};
 use universal_sync_paxos::Learner;
 
 #[derive(Debug)]
@@ -88,11 +88,12 @@ where
 
     fn extract_acceptors_from_extensions(extensions: &ExtensionList) -> Vec<EndpointAddr> {
         for ext in extensions.iter() {
-            if ext.extension_type == ACCEPTORS_EXTENSION_TYPE
-                && let Ok(acceptors_ext) =
-                    AcceptorsExt::mls_decode(&mut ext.extension_data.as_slice())
+            if ext.extension_type == SYNC_EXTENSION_TYPE
+                && let Ok(sync_ext) =
+                    SyncExt::mls_decode(&mut ext.extension_data.as_slice())
+                && let Some(acceptors) = sync_ext.acceptors()
             {
-                return acceptors_ext.acceptors().to_vec();
+                return acceptors.to_vec();
             }
         }
         vec![]

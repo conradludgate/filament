@@ -17,14 +17,7 @@ pub use crdt::{CompactionConfig, Crdt, CrdtError, CrdtFactory, NoCrdt, NoCrdtFac
 pub use error::{
     AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
 };
-pub use extension::{
-    AcceptorAdd, AcceptorRemove, AcceptorsExt, CompactionClaim, CompactionComplete,
-    CrdtRegistrationExt, CrdtSnapshotExt, MemberAddrExt, SupportedCrdtsExt,
-    ACCEPTORS_EXTENSION_TYPE, ACCEPTOR_ADD_PROPOSAL_TYPE, ACCEPTOR_REMOVE_PROPOSAL_TYPE,
-    COMPACTION_CLAIM_PROPOSAL_TYPE, COMPACTION_COMPLETE_PROPOSAL_TYPE,
-    CRDT_REGISTRATION_EXTENSION_TYPE, CRDT_SNAPSHOT_EXTENSION_TYPE, MEMBER_ADDR_EXTENSION_TYPE,
-    SUPPORTED_CRDTS_EXTENSION_TYPE,
-};
+pub use extension::{SyncExt, SyncProposal, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 pub use protocol::{
     EncryptedAppMessage, GroupId, GroupMessage, Handshake, HandshakeResponse, MemberFingerprint,

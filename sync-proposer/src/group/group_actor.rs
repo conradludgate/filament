@@ -11,9 +11,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
-    AcceptorAdd, AcceptorId, AcceptorRemove, CompactionClaim, CompactionComplete, CompactionConfig,
-    CrdtFactory, EncryptedAppMessage, Epoch, GroupId, GroupMessage,
-    GroupProposal, Handshake, MemberFingerprint, MemberId, MessageId, PAXOS_ALPN, StateVector,
+    AcceptorId, CompactionConfig, CrdtFactory, EncryptedAppMessage, Epoch, GroupId, GroupMessage,
+    GroupProposal, Handshake, MemberFingerprint, MemberId, MessageId, SyncProposal, PAXOS_ALPN,
+    StateVector,
 };
 use universal_sync_paxos::proposer::{ProposeResult, Proposer, QuorumTracker};
 use universal_sync_paxos::{AcceptorMessage, Learner, Proposal};
@@ -590,8 +590,8 @@ where
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
         let result = blocking(|| {
-            let add = AcceptorAdd::new(addr.clone());
-            let custom = add.to_custom_proposal().change_context(GroupError)?;
+            let proposal = SyncProposal::acceptor_add(addr.clone());
+            let custom = proposal.to_custom_proposal().change_context(GroupError)?;
 
             self.learner
                 .group_mut()
@@ -618,8 +618,8 @@ where
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
         let result = blocking(|| {
-            let remove = AcceptorRemove::new(acceptor_id);
-            let custom = remove.to_custom_proposal().change_context(GroupError)?;
+            let proposal = SyncProposal::acceptor_remove(acceptor_id);
+            let custom = proposal.to_custom_proposal().change_context(GroupError)?;
 
             self.learner
                 .group_mut()
@@ -1228,75 +1228,79 @@ where
         committer_fingerprint: Option<MemberFingerprint>,
         new_acceptors: &mut Vec<(AcceptorId, EndpointAddr)>,
     ) -> GroupEvent {
-        if let Ok(add) = AcceptorAdd::from_custom_proposal(custom) {
-            let id = add.acceptor_id();
-            let addr = add.0.clone();
-            self.learner.add_acceptor_addr(addr.clone());
-            new_acceptors.push((id, addr));
-            return GroupEvent::AcceptorAdded { id };
-        }
+        let Ok(proposal) = SyncProposal::from_custom_proposal(custom) else {
+            return GroupEvent::Unknown;
+        };
 
-        if let Ok(remove) = AcceptorRemove::from_custom_proposal(custom) {
-            let id = remove.acceptor_id();
-            self.learner.remove_acceptor_id(&id);
-            if let Some(handle) = self.acceptor_handles.remove(&id) {
-                handle.abort();
+        match proposal {
+            SyncProposal::AcceptorAdd(addr) => {
+                let id = AcceptorId::from_bytes(*addr.id.as_bytes());
+                self.learner.add_acceptor_addr(addr.clone());
+                new_acceptors.push((id, addr));
+                GroupEvent::AcceptorAdded { id }
             }
-            self.acceptor_txs.remove(&id);
-            return GroupEvent::AcceptorRemoved { id };
-        }
-
-        if let Ok(claim) = CompactionClaim::from_custom_proposal(custom) {
-            tracing::info!(
-                level = claim.level,
-                deadline = claim.deadline,
-                watermark_entries = claim.watermark.len(),
-                "received CompactionClaim"
-            );
-
-            let is_ours = committer_fingerprint.is_some_and(|fp| fp == self.own_fingerprint);
-
-            let active_claim = ActiveCompactionClaim {
-                claimer: committer_fingerprint.unwrap_or(self.own_fingerprint),
-                level: claim.level,
-                watermark: claim.watermark.clone(),
-                deadline: claim.deadline,
-                is_ours,
-            };
-
-            self.compaction_state
-                .active_claims
-                .insert(claim.level, active_claim);
-
-            GroupEvent::CompactionClaimed { level: claim.level }
-        } else if let Ok(complete) = CompactionComplete::from_custom_proposal(custom) {
-            tracing::info!(
-                level = complete.level,
-                watermark_entries = complete.watermark.len(),
-                "received CompactionComplete"
-            );
-
-            self.compaction_state.active_claims.remove(&complete.level);
-
-            for (fp, &seq) in &complete.watermark {
-                let hw = self
-                    .compaction_state
-                    .last_compacted_watermark
-                    .entry(*fp)
-                    .or_insert(0);
-                if seq > *hw {
-                    *hw = seq;
+            SyncProposal::AcceptorRemove(id) => {
+                self.learner.remove_acceptor_id(&id);
+                if let Some(handle) = self.acceptor_handles.remove(&id) {
+                    handle.abort();
                 }
+                self.acceptor_txs.remove(&id);
+                GroupEvent::AcceptorRemoved { id }
             }
+            SyncProposal::CompactionClaim {
+                level,
+                watermark,
+                deadline,
+            } => {
+                tracing::info!(
+                    level,
+                    deadline,
+                    watermark_entries = watermark.len(),
+                    "received CompactionClaim"
+                );
 
-            self.compaction_state.l0_count_since_compaction = 0;
-            self.update_buffer.clear();
+                let is_ours =
+                    committer_fingerprint.is_some_and(|fp| fp == self.own_fingerprint);
 
-            GroupEvent::CompactionCompleted {
-                level: complete.level,
+                let active_claim = ActiveCompactionClaim {
+                    claimer: committer_fingerprint.unwrap_or(self.own_fingerprint),
+                    level,
+                    watermark: watermark.clone(),
+                    deadline,
+                    is_ours,
+                };
+
+                self.compaction_state
+                    .active_claims
+                    .insert(level, active_claim);
+
+                GroupEvent::CompactionClaimed { level }
             }
-        } else {
-            GroupEvent::Unknown
+            SyncProposal::CompactionComplete { level, watermark } => {
+                tracing::info!(
+                    level,
+                    watermark_entries = watermark.len(),
+                    "received CompactionComplete"
+                );
+
+                self.compaction_state.active_claims.remove(&level);
+
+                for (fp, &seq) in &watermark {
+                    let hw = self
+                        .compaction_state
+                        .last_compacted_watermark
+                        .entry(*fp)
+                        .or_insert(0);
+                    if seq > *hw {
+                        *hw = seq;
+                    }
+                }
+
+                self.compaction_state.l0_count_since_compaction = 0;
+                self.update_buffer.clear();
+
+                GroupEvent::CompactionCompleted { level }
+            }
         }
     }
 
@@ -1604,9 +1608,9 @@ where
 
     /// Build and submit a `CompactionComplete` commit through Paxos consensus.
     async fn submit_compaction_complete(&mut self, level: u8, watermark: StateVector) {
-        let complete = CompactionComplete { level, watermark };
+        let proposal = SyncProposal::compaction_complete(level, watermark);
 
-        let custom_proposal = match complete.to_custom_proposal() {
+        let custom_proposal = match proposal.to_custom_proposal() {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(?e, "failed to encode CompactionComplete proposal");
@@ -1655,13 +1659,9 @@ where
             .as_secs()
             + COMPACTION_DEADLINE_SECS;
 
-        let claim = CompactionClaim {
-            level,
-            watermark,
-            deadline,
-        };
+        let proposal = SyncProposal::compaction_claim(level, watermark, deadline);
 
-        let custom_proposal = match claim.to_custom_proposal() {
+        let custom_proposal = match proposal.to_custom_proposal() {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(?e, "failed to encode CompactionClaim proposal");

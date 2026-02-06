@@ -9,7 +9,7 @@ use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tokio::sync::mpsc;
-use universal_sync_core::{CrdtFactory, MemberAddrExt, SupportedCrdtsExt};
+use universal_sync_core::{CrdtFactory, SyncExt};
 
 use crate::connection::ConnectionManager;
 use crate::group::{Group, GroupError};
@@ -83,15 +83,13 @@ where
     /// # Errors
     /// Returns an error if key package generation fails.
     pub fn generate_key_package(&self) -> Result<MlsMessage, Report<GroupError>> {
-        let member_addr_ext = MemberAddrExt::new(self.connection_manager.endpoint().addr());
+        let kp_ext = SyncExt::key_package(
+            self.connection_manager.endpoint().addr(),
+            self.crdt_factories.keys().cloned(),
+        );
         let mut kp_extensions = ExtensionList::default();
         kp_extensions
-            .set_from(member_addr_ext)
-            .change_context(GroupError)?;
-
-        let supported_crdts = SupportedCrdtsExt::new(self.crdt_factories.keys().cloned());
-        kp_extensions
-            .set_from(supported_crdts)
+            .set_from(kp_ext)
             .change_context(GroupError)?;
 
         self.client

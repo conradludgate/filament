@@ -10,8 +10,8 @@ use mls_rs::crypto::SignaturePublicKey;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalGroup, ExternalReceivedMessage};
 use universal_sync_core::{
-    AcceptorAdd, AcceptorId, AcceptorRemove, Attempt, CompactionComplete, Epoch, GroupMessage,
-    GroupProposal, MemberId, UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupMessage, GroupProposal, MemberId, SyncProposal,
+    UnsignedProposal,
 };
 
 /// Error marker for `GroupAcceptor` operations.
@@ -295,7 +295,7 @@ where
     C: ExternalMlsConfig + Clone,
     CS: CipherSuiteProvider,
 {
-    /// Extracts `AcceptorAdd`/`AcceptorRemove` and `CompactionComplete` from applied proposals.
+    /// Extracts sync protocol custom proposals from applied proposals.
     fn process_commit_acceptor_changes(
         &mut self,
         commit_desc: &mls_rs::group::CommitMessageDescription,
@@ -313,49 +313,51 @@ where
         };
 
         for proposal_info in applied_proposals {
-            match &proposal_info.proposal {
-                MlsProposal::Custom(custom) => {
-                    if let Ok(add) = AcceptorAdd::from_custom_proposal(custom) {
-                        let id = add.acceptor_id();
-                        let addr = add.0.clone();
-                        self.acceptors.insert(id, addr.clone());
+            if let MlsProposal::Custom(custom) = &proposal_info.proposal
+                && let Ok(proposal) = SyncProposal::from_custom_proposal(custom)
+            {
+                match proposal {
+                    SyncProposal::AcceptorAdd(addr) => {
+                        let id = AcceptorId::from_bytes(*addr.id.as_bytes());
+                        self.acceptors.insert(id, addr);
                         changes.push(AcceptorChangeEvent::Added { id });
-                    } else if let Ok(remove) = AcceptorRemove::from_custom_proposal(custom) {
-                        let id = remove.acceptor_id();
+                    }
+                    SyncProposal::AcceptorRemove(id) => {
                         self.acceptors.remove(&id);
                         changes.push(AcceptorChangeEvent::Removed { id });
-                    } else if let Ok(complete) = CompactionComplete::from_custom_proposal(custom) {
+                    }
+                    SyncProposal::CompactionComplete { level, watermark } => {
                         tracing::info!(
-                            level = complete.level,
-                            watermark_entries = complete.watermark.len(),
+                            level,
+                            watermark_entries = watermark.len(),
                             "processing CompactionComplete proposal"
                         );
 
                         if let Some(ref store) = self.state_store {
-                            match store.delete_before_watermark(&complete.watermark) {
+                            match store.delete_before_watermark(&watermark) {
                                 Ok(deleted) => {
                                     tracing::info!(
                                         deleted,
-                                        level = complete.level,
+                                        level,
                                         "deleted messages for compaction"
                                     );
                                     changes.push(AcceptorChangeEvent::CompactionCompleted {
-                                        level: complete.level,
+                                        level,
                                         deleted,
                                     });
                                 }
                                 Err(e) => {
                                     tracing::warn!(
                                         ?e,
-                                        level = complete.level,
+                                        level,
                                         "failed to delete messages for compaction"
                                     );
                                 }
                             }
                         }
                     }
+                    SyncProposal::CompactionClaim { .. } => {}
                 }
-                _ => {}
             }
         }
 
