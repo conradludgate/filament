@@ -263,7 +263,8 @@ where
                         }
                         AcceptorChangeEvent::CompactionCompleted { level, deleted } => {
                             tracing::info!(
-                                level, deleted,
+                                level,
+                                deleted,
                                 "compaction completed — messages deleted"
                             );
                         }

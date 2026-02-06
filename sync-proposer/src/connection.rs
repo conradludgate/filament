@@ -54,10 +54,10 @@ impl ConnectionManager {
     async fn get_connection(&self, acceptor_id: &AcceptorId) -> Result<Connection, ConnectorError> {
         {
             let connections = self.connections.read().await;
-            if let Some(conn) = connections.get(acceptor_id) {
-                if conn.closed().now_or_never().is_none() {
-                    return Ok(conn.clone());
-                }
+            if let Some(conn) = connections.get(acceptor_id)
+                && conn.closed().now_or_never().is_none()
+            {
+                return Ok(conn.clone());
             }
         }
 

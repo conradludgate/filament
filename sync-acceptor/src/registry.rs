@@ -212,16 +212,23 @@ where
         &self,
         group_id: &GroupId,
         state_vector: &universal_sync_core::StateVector,
-    ) -> Result<Vec<(universal_sync_core::MessageId, universal_sync_core::EncryptedAppMessage)>, String>
-    {
+    ) -> Result<
+        Vec<(
+            universal_sync_core::MessageId,
+            universal_sync_core::EncryptedAppMessage,
+        )>,
+        String,
+    > {
         Ok(self.state_store.get_messages_after(group_id, state_vector))
     }
 
     pub fn subscribe_messages(
         &self,
         group_id: &GroupId,
-    ) -> tokio::sync::broadcast::Receiver<(universal_sync_core::MessageId, universal_sync_core::EncryptedAppMessage)>
-    {
+    ) -> tokio::sync::broadcast::Receiver<(
+        universal_sync_core::MessageId,
+        universal_sync_core::EncryptedAppMessage,
+    )> {
         self.state_store.subscribe_messages(group_id)
     }
 

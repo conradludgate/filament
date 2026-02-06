@@ -13,6 +13,7 @@ mod acceptor_actor;
 mod group_actor;
 
 use std::fmt;
+use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
@@ -22,8 +23,6 @@ use mls_rs::{CipherSuiteProvider, Client, MlsMessage};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use std::sync::Arc;
-
 use universal_sync_core::{
     AcceptorId, AcceptorsExt, CompactionConfig, Crdt, CrdtFactory, CrdtRegistrationExt,
     CrdtSnapshotExt, EncryptedAppMessage, Epoch, GroupId, Handshake, MessageId,
@@ -46,7 +45,7 @@ impl fmt::Display for GroupError {
 
 impl std::error::Error for GroupError {}
 
-/// Build GroupInfo extensions for a welcome message (acceptor addresses).
+/// Build `GroupInfo` extensions for a welcome message (acceptor addresses).
 ///
 /// Note: CRDT snapshot is no longer included in the welcome. New members
 /// start with an empty CRDT and catch up via compaction + backfill from
@@ -123,8 +122,13 @@ const MAX_MESSAGE_ATTEMPTS: u32 = 10;
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
 enum AcceptorOutbound {
-    ProposalRequest { request: ProposalRequest },
-    AppMessage { id: MessageId, msg: EncryptedAppMessage },
+    ProposalRequest {
+        request: ProposalRequest,
+    },
+    AppMessage {
+        id: MessageId,
+        msg: EncryptedAppMessage,
+    },
 }
 
 /// Informational events emitted by a Group. Applications don't need to handle these.

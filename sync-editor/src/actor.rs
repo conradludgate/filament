@@ -180,10 +180,10 @@ where
     }
 
     async fn route_to_doc(&self, group_id: GroupId, request: DocRequest) {
-        if let Some(tx) = self.doc_actors.get(&group_id) {
-            if tx.send(request).await.is_err() {
-                warn!("document actor closed for group");
-            }
+        if let Some(tx) = self.doc_actors.get(&group_id)
+            && tx.send(request).await.is_err()
+        {
+            warn!("document actor closed for group");
         }
         // If not found, the oneshot inside `request` is dropped → caller sees RecvError
     }

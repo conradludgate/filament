@@ -66,10 +66,7 @@ pub(crate) fn delivery_count(num_acceptors: usize) -> usize {
 /// Delivery count for a specific compaction level.
 /// `replication_factor` of 0 means all acceptors.
 #[must_use]
-pub(crate) fn delivery_count_for_level(
-    num_acceptors: usize,
-    replication_factor: u8,
-) -> usize {
+pub(crate) fn delivery_count_for_level(num_acceptors: usize, replication_factor: u8) -> usize {
     if num_acceptors == 0 {
         return 0;
     }

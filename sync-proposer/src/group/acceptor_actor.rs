@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use universal_sync_core::{AcceptorId, GroupId, MessageRequest, MessageResponse};
+use universal_sync_core::{AcceptorId, GroupId, MessageRequest, MessageResponse, StateVector};
 
 use super::{AcceptorInbound, AcceptorOutbound};
 use crate::connection::ConnectionManager;
@@ -110,7 +110,7 @@ impl AcceptorActor {
                 // means "give me everything"). New messages will arrive via the
                 // broadcast subscription which is always active on the server side.
                 let backfill_request = MessageRequest::Backfill {
-                    state_vector: Default::default(),
+                    state_vector: StateVector::default(),
                     limit: u32::MAX,
                 };
                 if let Ok(request_bytes) = postcard::to_allocvec(&backfill_request) {
@@ -187,12 +187,9 @@ impl AcceptorActor {
                                     msg: message,
                                 }).await;
                             }
-                            Ok(MessageResponse::BackfillComplete { .. }) => {
-                                // Backfill complete — new messages arrive via broadcast
-                            }
-                            Ok(MessageResponse::Stored) => {
-                                // Acknowledgment for a stored message
-                            }
+                            Ok(MessageResponse::BackfillComplete { .. }
+                                | MessageResponse::Stored) => {}
+
                             Ok(MessageResponse::Error(e)) => {
                                 tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "message stream error from acceptor");
                             }

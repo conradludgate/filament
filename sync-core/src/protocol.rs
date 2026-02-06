@@ -255,7 +255,10 @@ mod tests {
         };
         let bytes = postcard::to_allocvec(&backfill).unwrap();
         let decoded: MessageRequest = postcard::from_bytes(&bytes).unwrap();
-        assert!(matches!(decoded, MessageRequest::Backfill { limit: 100, .. }));
+        assert!(matches!(
+            decoded,
+            MessageRequest::Backfill { limit: 100, .. }
+        ));
     }
 }
 

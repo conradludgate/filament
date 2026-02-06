@@ -183,9 +183,7 @@ impl CrdtFactory for YrsCrdtFactory {
     }
 
     fn compaction_config(&self) -> CompactionConfig {
-        self.compaction_config
-            .clone()
-            .unwrap_or_default()
+        self.compaction_config.clone().unwrap_or_default()
     }
 }
 

@@ -282,10 +282,10 @@ where
             .map_err(|e| format!("invalid base58: {e}"))?;
 
         // Try KeyPackage first, then EndpointAddr
-        if let Ok(msg) = MlsMessage::from_bytes(&bytes) {
-            if msg.as_key_package().is_some() {
-                return self.add_member(input_b58).await;
-            }
+        if let Ok(msg) = MlsMessage::from_bytes(&bytes)
+            && msg.as_key_package().is_some()
+        {
+            return self.add_member(input_b58).await;
         }
 
         if postcard::from_bytes::<iroh::EndpointAddr>(&bytes).is_ok() {

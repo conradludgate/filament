@@ -64,7 +64,8 @@ pub(crate) struct FjallStateStore {
     messages: Keyspace,
     epoch_rosters: Keyspace,
     broadcasts: GroupBroadcasts,
-    message_broadcasts: RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>,
+    message_broadcasts:
+        RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>,
 }
 
 impl FjallStateStore {
@@ -131,7 +132,7 @@ impl FjallStateStore {
         postcard::from_bytes(bytes).ok()
     }
 
-    /// Message key: group_id (32) || sender_fingerprint (32) || seq (8) = 72 bytes.
+    /// Message key: `group_id` (32) || `sender_fingerprint` (32) || `seq` (8) = 72 bytes.
     fn build_message_key(group_id: &GroupId, sender: &MemberFingerprint, seq: u64) -> [u8; 72] {
         let mut key = [0u8; 72];
         key[..32].copy_from_slice(group_id.as_bytes());
@@ -206,10 +207,8 @@ impl FjallStateStore {
                 let covered = state_vector
                     .get(&msg_id.sender)
                     .is_some_and(|&hw| msg_id.seq <= hw);
-                if !covered {
-                    if let Some(msg) = Self::deserialize_app_message(&value) {
-                        messages.push((msg_id, msg));
-                    }
+                if !covered && let Some(msg) = Self::deserialize_app_message(&value) {
+                    messages.push((msg_id, msg));
                 }
             }
         }
@@ -234,14 +233,13 @@ impl FjallStateStore {
                 break;
             }
 
-            if let Some(msg_id) = Self::message_id_from_key(group_id, &key) {
-                if watermark
+            if let Some(msg_id) = Self::message_id_from_key(group_id, &key)
+                && watermark
                     .get(&msg_id.sender)
                     .is_some_and(|&hw| msg_id.seq <= hw)
-                {
-                    self.messages.remove(&*key)?;
-                    deleted += 1;
-                }
+            {
+                self.messages.remove(&*key)?;
+                deleted += 1;
             }
         }
 
@@ -526,6 +524,7 @@ impl SharedFjallStateStore {
         self.inner.get_messages_after(group_id, state_vector)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn delete_before_watermark(
         &self,
         group_id: &GroupId,
@@ -763,9 +762,19 @@ mod tests {
         let gid = GroupId::new([1u8; 32]);
         let sender = MemberFingerprint([2u8; 32]);
 
-        let id1 = MessageId { group_id: gid, sender, seq: 1 };
-        let id2 = MessageId { group_id: gid, sender, seq: 2 };
-        let msg = EncryptedAppMessage { ciphertext: vec![10, 20] };
+        let id1 = MessageId {
+            group_id: gid,
+            sender,
+            seq: 1,
+        };
+        let id2 = MessageId {
+            group_id: gid,
+            sender,
+            seq: 2,
+        };
+        let msg = EncryptedAppMessage {
+            ciphertext: vec![10, 20],
+        };
 
         store.store_app_message(&gid, &id1, &msg).unwrap();
         store.store_app_message(&gid, &id2, &msg).unwrap();
@@ -790,15 +799,25 @@ mod tests {
 
         let sender_a = MemberFingerprint([10u8; 32]);
         let sender_b = MemberFingerprint([20u8; 32]);
-        let msg = EncryptedAppMessage { ciphertext: vec![1] };
+        let msg = EncryptedAppMessage {
+            ciphertext: vec![1],
+        };
 
         // Store messages from two senders
         for seq in 1..=5 {
-            let id = MessageId { group_id: gid, sender: sender_a, seq };
+            let id = MessageId {
+                group_id: gid,
+                sender: sender_a,
+                seq,
+            };
             store.store_app_message(&gid, &id, &msg).unwrap();
         }
         for seq in 1..=3 {
-            let id = MessageId { group_id: gid, sender: sender_b, seq };
+            let id = MessageId {
+                group_id: gid,
+                sender: sender_b,
+                seq,
+            };
             store.store_app_message(&gid, &id, &msg).unwrap();
         }
 
@@ -820,7 +839,9 @@ mod tests {
         let store = FjallStateStore::open_sync(dir.path()).unwrap();
         let gid = GroupId::new([4u8; 32]);
 
-        let deleted = store.delete_before_watermark(&gid, &StateVector::default()).unwrap();
+        let deleted = store
+            .delete_before_watermark(&gid, &StateVector::default())
+            .unwrap();
         assert_eq!(deleted, 0);
     }
 

@@ -1,11 +1,9 @@
 //! Acceptor run loop.
 
-use std::pin::{Pin, pin};
-use std::task::{Context, Poll};
+use std::pin::pin;
 
 use futures::stream::FusedStream;
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use pin_project_lite::pin_project;
 use tokio::select;
 use tokio::sync::watch;
 use tracing::{debug, instrument, trace, warn};
@@ -13,59 +11,6 @@ use tracing::{debug, instrument, trace, warn};
 use super::handler::{AcceptOutcome, AcceptorHandler, InvalidProposal, PromiseOutcome};
 use super::{AcceptorMessage, AcceptorRequest, AcceptorStateStore};
 use crate::{Learner, Proposal};
-
-pin_project! {
-    #[derive(Debug)]
-    #[must_use = "streams do nothing unless polled"]
-    struct Fuse<S> {
-        #[pin]
-        stream: Option<S>,
-    }
-}
-
-impl<S> Fuse<S> {
-    fn new(stream: S) -> Self {
-        Self {
-            stream: Some(stream),
-        }
-    }
-
-    fn terminated() -> Self {
-        Self { stream: None }
-    }
-}
-
-impl<S: Stream> Stream for Fuse<S> {
-    type Item = S::Item;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        let Some(stream) = this.stream.as_mut().as_pin_mut() else {
-            return Poll::Ready(None);
-        };
-
-        match stream.poll_next(cx) {
-            Poll::Ready(None) => {
-                this.stream.set(None);
-                Poll::Ready(None)
-            }
-            other => other,
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match &self.stream {
-            Some(s) => s.size_hint(),
-            None => (0, Some(0)),
-        }
-    }
-}
-
-impl<S: Stream> FusedStream for Fuse<S> {
-    fn is_terminated(&self) -> bool {
-        self.stream.is_none()
-    }
-}
 
 /// Run the acceptor loop with epoch-aware waiting.
 ///
@@ -95,11 +40,8 @@ where
 
     // Subscribe to learned values immediately so passive learners can
     // advance their epoch by receiving commits from other proposers.
-    let initial_subscription = handler
-        .state()
-        .subscribe_from(Default::default())
-        .await;
-    let mut sync = pin!(Fuse::new(initial_subscription));
+    let initial_subscription = handler.state().subscribe_from(Default::default()).await;
+    let mut sync = pin!(initial_subscription.fuse());
     let mut conn = pin!(conn);
 
     loop {
@@ -156,9 +98,7 @@ where
                     Ok(PromiseOutcome::Promised(msg)) => {
                         debug!(?proposal_round, "promised");
                         if sync.is_terminated() {
-                            sync.set(Fuse::new(
-                                handler.state().subscribe_from(proposal_round).await,
-                            ));
+                            sync.set(handler.state().subscribe_from(proposal_round).await.fuse());
                             debug!("subscribed to state");
                         }
                         msg
@@ -167,9 +107,7 @@ where
                         trace!("promise rejected - outdated");
                         // Still subscribe so the learner can sync
                         if sync.is_terminated() {
-                            sync.set(Fuse::new(
-                                handler.state().subscribe_from(proposal_round).await,
-                            ));
+                            sync.set(handler.state().subscribe_from(proposal_round).await.fuse());
                             debug!("subscribed to state");
                         }
                         if msg.promised.round() != proposal_round {

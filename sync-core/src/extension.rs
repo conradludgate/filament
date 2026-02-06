@@ -674,7 +674,10 @@ mod tests {
     fn test_compaction_proposal_types_in_private_range() {
         assert!(COMPACTION_CLAIM_PROPOSAL_TYPE.raw_value() >= 0xF000);
         assert!(COMPACTION_COMPLETE_PROPOSAL_TYPE.raw_value() >= 0xF000);
-        assert_ne!(COMPACTION_CLAIM_PROPOSAL_TYPE, COMPACTION_COMPLETE_PROPOSAL_TYPE);
+        assert_ne!(
+            COMPACTION_CLAIM_PROPOSAL_TYPE,
+            COMPACTION_COMPLETE_PROPOSAL_TYPE
+        );
     }
 
     #[test]

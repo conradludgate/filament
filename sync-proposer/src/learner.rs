@@ -10,8 +10,8 @@ use mls_rs::group::proposal::Proposal as MlsProposal;
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::{CipherSuiteProvider, Group};
 use universal_sync_core::{
-    AcceptorAdd, AcceptorId, AcceptorRemove, Attempt, Epoch, GroupMessage, GroupProposal, MemberId,
-    MemberFingerprint, UnsignedProposal,
+    AcceptorAdd, AcceptorId, AcceptorRemove, Attempt, Epoch, GroupMessage, GroupProposal,
+    MemberFingerprint, MemberId, UnsignedProposal,
 };
 
 /// Error marker for `GroupLearner` operations.
