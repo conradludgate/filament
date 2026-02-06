@@ -370,8 +370,9 @@ async function refreshText() {
 // Text Editing
 // ============================================================================
 
-// `lastSentText` tracks the text that the backend CRDT is known to have.
-// We only update it after a successful send or when a remote update arrives.
+// `lastSentText` tracks the text we have already computed a delta for.
+// Updated *before* the async send so that overlapping debounce callbacks
+// always diff against the most recently captured state.
 let lastSentText = '';
 let lastText = '';
 let debounceTimer = null;
@@ -382,21 +383,25 @@ async function handleEditorInput() {
     lastText = elements.editor.value;
 
     // Debounce rapid changes.  When the timer fires we compute the
-    // delta against `lastSentText` (the last state the backend knows
-    // about), so the diff captures ALL intermediate keystrokes — not
-    // just the most recent one.
+    // delta against `lastSentText` (the last state we sent / accounted
+    // for), so the diff captures ALL intermediate keystrokes.
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(async () => {
         const currentText = elements.editor.value;
         const delta = computeDelta(lastSentText, currentText);
         if (!delta) return;
 
+        // Update baseline BEFORE the async call.  This ensures that if
+        // the user keeps editing while `invoke` is in flight, the next
+        // debounced delta will diff against `currentText` — not the old
+        // baseline — so no changes are silently dropped.
+        lastSentText = currentText;
+
         try {
             await invoke('apply_delta', {
                 groupId: state.currentDocument.group_id,
                 delta: delta,
             });
-            lastSentText = currentText;
             updateSyncStatus('synced');
         } catch (error) {
             console.error('Failed to apply delta:', error);
