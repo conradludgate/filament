@@ -14,7 +14,6 @@ use std::collections::HashMap;
 
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::CipherSuiteProvider;
-use tauri::AppHandle;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use universal_sync_core::GroupId;
@@ -23,14 +22,15 @@ use universal_sync_proposer::{Group, GroupClient};
 use yrs::Transact;
 
 use crate::document::DocumentActor;
-use crate::types::{CoordinatorRequest, DocRequest, DocumentInfo};
+use crate::types::{CoordinatorRequest, DocRequest, DocumentInfo, EventEmitter};
 
 /// Central coordinator that owns the `GroupClient` and routes requests to
 /// per-document actors.
-pub struct CoordinatorActor<C, CS>
+pub struct CoordinatorActor<C, CS, E>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
+    E: EventEmitter,
 {
     /// The high-level group client (MLS + networking + CRDT factories).
     group_client: GroupClient<C, CS>,
@@ -47,20 +47,21 @@ where
     /// Pending reply for a `RecvWelcome` request (at most one at a time).
     pending_welcome_reply: Option<oneshot::Sender<Result<DocumentInfo, String>>>,
 
-    /// Tauri app handle for spawning document actors.
-    app_handle: AppHandle,
+    /// Event emitter (cloned for each document actor).
+    emitter: E,
 }
 
-impl<C, CS> CoordinatorActor<C, CS>
+impl<C, CS, E> CoordinatorActor<C, CS, E>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
+    E: EventEmitter,
 {
     /// Create a new coordinator actor.
     pub fn new(
         mut group_client: GroupClient<C, CS>,
         request_rx: mpsc::Receiver<CoordinatorRequest>,
-        app_handle: AppHandle,
+        emitter: E,
     ) -> Self {
         let welcome_rx = group_client.take_welcome_rx();
         Self {
@@ -69,7 +70,7 @@ where
             doc_actors: HashMap::new(),
             request_rx,
             pending_welcome_reply: None,
-            app_handle,
+            emitter,
         }
     }
 
@@ -202,7 +203,7 @@ where
         };
 
         let (doc_tx, doc_rx) = mpsc::channel(64);
-        let actor = DocumentActor::new(group, group_id, doc_rx, self.app_handle.clone());
+        let actor = DocumentActor::new(group, group_id, doc_rx, self.emitter.clone());
         tokio::spawn(actor.run());
 
         self.doc_actors.insert(group_id, doc_tx);

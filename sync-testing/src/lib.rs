@@ -4,15 +4,23 @@
 //! proposer and acceptor functionality for integration testing.
 
 pub mod yrs_crdt;
+
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+use iroh::{Endpoint, EndpointAddr, RelayMode};
 use mls_rs::crypto::SignatureSecretKey;
+use mls_rs::external_client::ExternalClient;
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
 use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
+use tempfile::TempDir;
+use tracing_subscriber::{EnvFilter, fmt};
+use universal_sync_acceptor::{AcceptorRegistry, SharedFjallStateStore, accept_connection};
 use universal_sync_core::{
     ACCEPTOR_ADD_EXTENSION_TYPE, ACCEPTOR_REMOVE_EXTENSION_TYPE, ACCEPTORS_EXTENSION_TYPE,
     CRDT_REGISTRATION_EXTENSION_TYPE, CRDT_SNAPSHOT_EXTENSION_TYPE, MEMBER_ADDR_EXTENSION_TYPE,
-    NoCrdtFactory, SUPPORTED_CRDTS_EXTENSION_TYPE,
+    NoCrdtFactory, PAXOS_ALPN, SUPPORTED_CRDTS_EXTENSION_TYPE,
 };
 use universal_sync_proposer::{GroupClient, ReplContext};
 pub use yrs_crdt::{YrsCrdt, YrsCrdtFactory};
@@ -147,4 +155,93 @@ pub fn test_repl_context(
 ) -> ReplContext<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
     let client = test_group_client(name, endpoint);
     ReplContext::new(client)
+}
+
+/// Create a test [`GroupClient`] with `YrsCrdtFactory` registered.
+///
+/// This is a convenience wrapper around [`test_group_client`] that also
+/// registers the Yrs CRDT factory.
+#[must_use]
+pub fn test_yrs_group_client(
+    name: &'static str,
+    endpoint: Endpoint,
+) -> GroupClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
+    let mut client = test_group_client(name, endpoint);
+    client.register_crdt_factory(YrsCrdtFactory::new());
+    client
+}
+
+// =============================================================================
+// Test infrastructure helpers
+// =============================================================================
+
+/// Initialize tracing for tests. Safe to call multiple times.
+pub fn init_tracing() {
+    let _ = fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("universal_sync=debug")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
+/// Create an iroh endpoint for testing.
+///
+/// Uses an empty builder with relays disabled and binds only to localhost
+/// for faster local-only connections.
+///
+/// # Panics
+/// Panics if the endpoint fails to bind.
+pub async fn test_endpoint() -> Endpoint {
+    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+    Endpoint::empty_builder(RelayMode::Disabled)
+        .alpns(vec![PAXOS_ALPN.to_vec()])
+        .bind_addr(bind_addr)
+        .expect("valid bind address")
+        .bind()
+        .await
+        .expect("failed to create endpoint")
+}
+
+/// Spawn a test acceptor. Returns the task handle, the acceptor's address,
+/// and the temp directory (must be kept alive for the acceptor's state store).
+///
+/// # Panics
+/// Panics if the acceptor fails to start.
+pub async fn spawn_acceptor() -> (tokio::task::JoinHandle<()>, EndpointAddr, TempDir) {
+    let temp_dir = TempDir::new().unwrap();
+    let endpoint = test_endpoint().await;
+    let addr = endpoint.addr();
+
+    let crypto = test_crypto_provider();
+    let cipher_suite = test_cipher_suite(&crypto);
+
+    let state_store = SharedFjallStateStore::open(temp_dir.path())
+        .await
+        .expect("open state store");
+
+    let external_client = ExternalClient::builder()
+        .crypto_provider(crypto)
+        .identity_provider(test_identity_provider())
+        .build();
+
+    let registry =
+        AcceptorRegistry::new(external_client, cipher_suite, state_store, endpoint.clone());
+
+    let task = tokio::spawn({
+        let endpoint = endpoint.clone();
+        async move {
+            loop {
+                if let Some(incoming) = endpoint.accept().await {
+                    let registry = registry.clone();
+                    tokio::spawn(async move {
+                        let _ = accept_connection(incoming, registry).await;
+                    });
+                }
+            }
+        }
+    });
+
+    (task, addr, temp_dir)
 }

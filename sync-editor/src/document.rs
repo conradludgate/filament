@@ -10,46 +10,46 @@
 
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::{CipherSuiteProvider, MlsMessage};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
-use tracing::warn;
 use universal_sync_core::GroupId;
 use universal_sync_proposer::Group;
 use universal_sync_testing::YrsCrdt;
 use yrs::{GetString, Text, Transact};
 
-use crate::types::{Delta, DocRequest, DocumentUpdatedPayload};
+use crate::types::{Delta, DocRequest, DocumentUpdatedPayload, EventEmitter};
 
 /// Actor that manages a single open document / MLS group.
-pub struct DocumentActor<C, CS>
+pub struct DocumentActor<C, CS, E>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
+    E: EventEmitter,
 {
     group: Group<C, CS>,
     group_id_b58: String,
     request_rx: mpsc::Receiver<DocRequest>,
-    app_handle: AppHandle,
+    emitter: E,
 }
 
-impl<C, CS> DocumentActor<C, CS>
+impl<C, CS, E> DocumentActor<C, CS, E>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
+    E: EventEmitter,
 {
     /// Create a new document actor.
     pub fn new(
         group: Group<C, CS>,
         group_id: GroupId,
         request_rx: mpsc::Receiver<DocRequest>,
-        app_handle: AppHandle,
+        emitter: E,
     ) -> Self {
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
         Self {
             group,
             group_id_b58,
             request_rx,
-            app_handle,
+            emitter,
         }
     }
 
@@ -211,9 +211,7 @@ where
                 group_id: self.group_id_b58.clone(),
                 text,
             };
-            if let Err(e) = self.app_handle.emit("document-updated", &payload) {
-                warn!(?e, "failed to emit document-updated event");
-            }
+            self.emitter.emit_document_updated(&payload);
         }
     }
 }

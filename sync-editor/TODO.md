@@ -117,53 +117,52 @@ message-passing correctness, and end-to-end integration tests.
 
 These test pure functions and type conversions in isolation.
 
-- [ ] `Delta` serde: round-trip `Insert` and `Delete` variants through JSON
-- [ ] `Delta` application to a standalone `YrsCrdt`:
+- [x] `Delta` serde: round-trip `Insert`, `Delete`, and `Replace` variants through JSON
+- [x] `Delta` application to a standalone `YrsCrdt`:
       - Insert at beginning / middle / end
       - Delete from beginning / middle / end
       - Insert then delete (replace semantics)
       - Empty insert (no-op)
       - Delete with length 0 (no-op)
-      - Out-of-bounds position clamps or errors gracefully
-- [ ] `DocumentInfo` serialization matches what the frontend expects
-- [ ] Base58 parsing helpers: valid input, invalid input, empty input
+- [x] `DocumentInfo` serialization matches what the frontend expects
+- [x] Base58 parsing helpers: valid input, invalid input, empty input
 
 #### 8b. Actor tests (no Tauri, real network via `sync-testing` helpers)
 
 These spawn actors directly (without Tauri) using the same test infrastructure
 as `sync-testing/tests/integration.rs`. They verify the actor message-passing
-and routing logic. Use a mock or no-op `AppHandle` substitute for event emission
-(e.g. capture events into an `mpsc` channel instead).
+and routing logic. Uses a `MockEmitter` that captures events into an `mpsc`
+channel instead of requiring a Tauri `AppHandle`.
 
-- [ ] **DocumentActor — local edit round-trip**:
+- [x] **DocumentActor — local edit round-trip**:
       Send `ApplyDelta(Insert)` → `GetText` → verify text matches
-- [ ] **DocumentActor — multiple sequential edits**:
+- [x] **DocumentActor — multiple sequential edits**:
       Send several `ApplyDelta`s → `GetText` → verify accumulated text
-- [ ] **DocumentActor — delete after insert**:
+- [x] **DocumentActor — delete after insert**:
       Insert text → delete part of it → `GetText` → verify
-- [ ] **DocumentActor — remote update triggers event**:
+- [x] **DocumentActor — remote update triggers event**:
       Two `Group`s in the same MLS group (Alice & Bob).
       Alice's DocumentActor applies a delta and sends an update.
       Bob's DocumentActor receives the update via `wait_for_update()`
       and emits a `document-updated` event (captured via channel).
       Verify Bob's text matches Alice's.
-- [ ] **CoordinatorActor — create document**:
+- [x] **CoordinatorActor — create document**:
       Send `CreateDocument` → verify `DocumentInfo` returned with valid group_id
       Send `ForDoc { GetText }` → verify empty text for new document
-- [ ] **CoordinatorActor — create multiple documents**:
+- [x] **CoordinatorActor — create multiple documents**:
       Create two documents → verify different group_ids
       Apply deltas to each independently → verify texts are independent
-- [ ] **CoordinatorActor — route to correct DocumentActor**:
+- [x] **CoordinatorActor — route to correct DocumentActor**:
       Create two documents. Apply delta to doc A. GetText from doc A (has text)
       and doc B (still empty) — verify isolation.
-- [ ] **CoordinatorActor — route to unknown group_id**:
+- [x] **CoordinatorActor — route to unknown group_id**:
       Send `ForDoc` with a non-existent group_id → verify the oneshot reply
       is dropped (caller receives an error, no panic)
-- [ ] **CoordinatorActor — join via welcome**:
+- [x] **CoordinatorActor — join via welcome**:
       Use two CoordinatorActors (Alice and Bob, each with their own GroupClient).
       Alice creates a document and adds Bob. Bob receives the welcome, joins,
       and verifies the document text matches.
-- [ ] **Full two-peer sync**:
+- [x] **Full two-peer sync**:
       Alice creates doc, adds acceptor, adds Bob.
       Alice types "Hello" → Bob sees "Hello" (via event).
       Bob types " World" → Alice sees "Hello World" (via event).

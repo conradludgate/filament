@@ -3,47 +3,16 @@
 //! These tests verify the networking layer and MLS integration.
 //! All tests have timeouts to prevent hanging.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use iroh::{Endpoint, RelayMode};
 use mls_rs::external_client::ExternalClient;
 use tempfile::TempDir;
-use tracing_subscriber::{EnvFilter, fmt};
 use universal_sync_acceptor::{AcceptorRegistry, SharedFjallStateStore, accept_connection};
-use universal_sync_core::{AcceptorId, GroupId, PAXOS_ALPN};
-use universal_sync_proposer::GroupClient;
+use universal_sync_core::{AcceptorId, GroupId};
 use universal_sync_testing::{
-    TestCipherSuiteProvider, YrsCrdt, YrsCrdtFactory, test_cipher_suite, test_crypto_provider,
-    test_group_client, test_identity_provider,
+    YrsCrdt, init_tracing, spawn_acceptor, test_cipher_suite, test_crypto_provider, test_endpoint,
+    test_group_client, test_identity_provider, test_yrs_group_client,
 };
-
-/// Initialize tracing for tests
-fn init_tracing() {
-    let _ = fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("universal_sync=debug")),
-        )
-        .with_test_writer()
-        .try_init();
-}
-
-/// Create an iroh endpoint for testing.
-///
-/// Uses an empty builder with relays disabled and binds only to localhost
-/// for faster local-only connections.
-async fn test_endpoint() -> Endpoint {
-    // Bind to localhost with a random port for faster local-only connections
-    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
-    Endpoint::empty_builder(RelayMode::Disabled)
-        .alpns(vec![PAXOS_ALPN.to_vec()])
-        .bind_addr(bind_addr)
-        .expect("valid bind address")
-        .bind()
-        .await
-        .expect("failed to create endpoint")
-}
 
 #[tokio::test]
 async fn test_state_store_group_persistence() {
@@ -374,44 +343,6 @@ async fn test_acceptor_add_remove() {
 // =============================================================================
 // New Tests
 // =============================================================================
-
-/// Helper to create an acceptor server and return the task handle and address
-async fn spawn_acceptor() -> (tokio::task::JoinHandle<()>, iroh::EndpointAddr, TempDir) {
-    let temp_dir = TempDir::new().unwrap();
-    let endpoint = test_endpoint().await;
-    let addr = endpoint.addr();
-
-    let crypto = test_crypto_provider();
-    let cipher_suite = test_cipher_suite(&crypto);
-
-    let state_store = SharedFjallStateStore::open(temp_dir.path())
-        .await
-        .expect("open state store");
-
-    let external_client = ExternalClient::builder()
-        .crypto_provider(crypto)
-        .identity_provider(test_identity_provider())
-        .build();
-
-    let registry =
-        AcceptorRegistry::new(external_client, cipher_suite, state_store, endpoint.clone());
-
-    let task = tokio::spawn({
-        let endpoint = endpoint.clone();
-        async move {
-            loop {
-                if let Some(incoming) = endpoint.accept().await {
-                    let registry = registry.clone();
-                    tokio::spawn(async move {
-                        let _ = accept_connection(incoming, registry).await;
-                    });
-                }
-            }
-        }
-    });
-
-    (task, addr, temp_dir)
-}
 
 #[tokio::test]
 async fn test_group_without_acceptors() {
@@ -1091,16 +1022,6 @@ async fn test_repl_full_workflow() {
 // =============================================================================
 // CRDT Tests
 // =============================================================================
-
-/// Create a GroupClient with YrsCrdtFactory registered (in addition to NoCrdtFactory).
-fn test_yrs_group_client(
-    name: &'static str,
-    endpoint: Endpoint,
-) -> GroupClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
-    let mut client = test_group_client(name, endpoint);
-    client.register_crdt_factory(YrsCrdtFactory::new());
-    client
-}
 
 /// Test creating a group with a Yrs CRDT and adding a member.
 ///

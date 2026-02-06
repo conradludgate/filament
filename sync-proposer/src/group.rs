@@ -1366,19 +1366,29 @@ where
         let _ = reply.send(Ok(()));
     }
 
+    /// Return only persistent group context extensions (e.g. `CrdtRegistrationExt`),
+    /// stripping transient signals like `AcceptorAdd` and `AcceptorRemove`.
+    fn persistent_context_extensions(&self) -> mls_rs::ExtensionList {
+        let current = &self.learner.group().context().extensions;
+        let mut persistent = mls_rs::ExtensionList::default();
+        if let Ok(Some(crdt_reg)) = current.get_as::<CrdtRegistrationExt>() {
+            let _ = persistent.set_from(crdt_reg);
+        }
+        persistent
+    }
+
     /// Handle add acceptor request
     async fn handle_add_acceptor(
         &mut self,
         addr: EndpointAddr,
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
-        use mls_rs::ExtensionList;
         use universal_sync_core::AcceptorAdd;
 
-        // Build commit with AcceptorAdd extension
+        // Build commit with AcceptorAdd extension, preserving only persistent extensions
         let result = blocking(|| {
             let add_ext = AcceptorAdd::new(addr.clone());
-            let mut extensions = ExtensionList::default();
+            let mut extensions = self.persistent_context_extensions();
             extensions.set_from(add_ext).change_context(GroupError)?;
 
             self.learner
@@ -1409,7 +1419,6 @@ where
         acceptor_id: AcceptorId,
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     ) {
-        use mls_rs::ExtensionList;
         use universal_sync_core::AcceptorRemove;
 
         // Safety check: cannot remove the last acceptor if the group has multiple members
@@ -1426,7 +1435,7 @@ where
 
         let result = blocking(|| {
             let remove_ext = AcceptorRemove::new(acceptor_id);
-            let mut extensions = ExtensionList::default();
+            let mut extensions = self.persistent_context_extensions();
             extensions.set_from(remove_ext).change_context(GroupError)?;
 
             self.learner

@@ -93,8 +93,9 @@ async fn setup_coordinator(
         .signature_key_generate()
         .expect("key generation should succeed");
 
-    // Create identity
-    let credential = BasicCredential::new(b"sync-editor".to_vec());
+    // Create identity — must be unique per instance so multiple peers can join the same group.
+    // Use the iroh public key as the identity since it's already unique per instance.
+    let credential = BasicCredential::new(iroh_key.public().as_bytes().to_vec());
     let signing_identity = SigningIdentity::new(credential.into_credential(), public_key);
 
     // Create MLS client with all extension types
