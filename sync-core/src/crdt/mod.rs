@@ -6,6 +6,8 @@
 use std::any::Any;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug)]
 pub struct CrdtError {
     message: String,
@@ -46,6 +48,45 @@ pub trait CrdtFactory: Send + Sync {
     fn type_id(&self) -> &str;
     fn create(&self) -> Box<dyn Crdt>;
     fn from_snapshot(&self, snapshot: &[u8]) -> Result<Box<dyn Crdt>, CrdtError>;
+
+    /// Merge an optional base snapshot with a series of updates into a single snapshot.
+    fn compact(&self, base: Option<&[u8]>, updates: &[&[u8]]) -> Result<Vec<u8>, CrdtError> {
+        let mut crdt = match base {
+            Some(b) => self.from_snapshot(b)?,
+            None => self.create(),
+        };
+        for update in updates {
+            crdt.apply(update)?;
+        }
+        crdt.snapshot()
+    }
+
+    fn compaction_config(&self) -> CompactionConfig {
+        CompactionConfig::default()
+    }
+}
+
+/// Per-CRDT configuration for hierarchical compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    /// Number of compaction levels (minimum 2: L0 individual + L(max) full snapshot).
+    pub levels: u8,
+    /// Per-level threshold: compact when this many entries accumulate at level N.
+    /// Length must be `levels - 1` (no threshold for the top level).
+    pub thresholds: Vec<u32>,
+    /// Per-level replication factor. 0 means replicate to all acceptors.
+    /// Length must be `levels`.
+    pub replication: Vec<u8>,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            levels: 3,
+            thresholds: vec![10, 5],
+            replication: vec![1, 2, 0],
+        }
+    }
 }
 
 /// No-op CRDT for groups without CRDT support.

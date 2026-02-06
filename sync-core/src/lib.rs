@@ -13,7 +13,7 @@ pub mod extension;
 pub mod proposal;
 pub mod protocol;
 pub mod sink_stream;
-pub use crdt::{Crdt, CrdtError, CrdtFactory, NoCrdt, NoCrdtFactory};
+pub use crdt::{CompactionConfig, Crdt, CrdtError, CrdtFactory, NoCrdt, NoCrdtFactory};
 pub use error::{
     AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
 };
