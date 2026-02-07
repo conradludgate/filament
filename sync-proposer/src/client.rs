@@ -9,7 +9,7 @@ use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tokio::sync::mpsc;
-use universal_sync_core::{CrdtFactory, KeyPackageExt};
+use universal_sync_core::{CompactionConfig, CrdtFactory, KeyPackageExt, default_compaction_config};
 
 use crate::connection::ConnectionManager;
 use crate::group::{Group, GroupError};
@@ -97,12 +97,28 @@ where
 
     /// Create a new group, optionally registering with acceptors.
     ///
+    /// Create a group with the default compaction config.
+    ///
     /// # Errors
     /// Returns an error if `crdt_type_id` is not registered, or if group creation fails.
     pub async fn create_group(
         &self,
         acceptors: &[EndpointAddr],
         crdt_type_id: &str,
+    ) -> Result<Group<C, CS>, Report<GroupError>> {
+        self.create_group_with_config(acceptors, crdt_type_id, default_compaction_config())
+            .await
+    }
+
+    /// Create a group with a custom compaction config.
+    ///
+    /// # Errors
+    /// Returns an error if `crdt_type_id` is not registered, or if group creation fails.
+    pub async fn create_group_with_config(
+        &self,
+        acceptors: &[EndpointAddr],
+        crdt_type_id: &str,
+        compaction_config: CompactionConfig,
     ) -> Result<Group<C, CS>, Report<GroupError>> {
         let crdt_factory = self.crdt_factories.get(crdt_type_id).ok_or_else(|| {
             Report::new(GroupError).attach(format!(
@@ -117,6 +133,7 @@ where
             &self.connection_manager,
             acceptors,
             crdt_factory.clone(),
+            compaction_config,
         )
         .await
     }

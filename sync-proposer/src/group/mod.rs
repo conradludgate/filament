@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorId, CompactionConfig, Crdt, CrdtFactory, EncryptedAppMessage, Epoch, GroupContextExt,
-    GroupId, GroupInfoExt, Handshake, KeyPackageExt, MessageId,
+    GroupId, GroupInfoExt, Handshake, KeyPackageExt, MessageId, default_compaction_config,
 };
 
 use crate::connection::ConnectionManager;
@@ -241,6 +241,7 @@ where
         connection_manager: &ConnectionManager,
         acceptors: &[EndpointAddr],
         crdt_factory: Arc<dyn CrdtFactory>,
+        compaction_config: CompactionConfig,
     ) -> Result<Self, Report<GroupError>>
     where
         CS: Clone,
@@ -252,7 +253,7 @@ where
         let (learner, group_id, group_info_bytes) = blocking(|| {
             let mut group_context_extensions = mls_rs::ExtensionList::default();
             group_context_extensions
-                .set_from(GroupContextExt::new(&crdt_type_id))
+                .set_from(GroupContextExt::new(&crdt_type_id, compaction_config.clone()))
                 .change_context(GroupError)
                 .attach(OperationContext::CREATING_GROUP)?;
 
@@ -295,7 +296,6 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
-        let compaction_config = crdt_factory.compaction_config();
         let crdt = crdt_factory.create();
 
         Ok(Self::spawn_actors(
@@ -321,44 +321,57 @@ where
     where
         CS: Clone,
     {
-        let (learner, group_id, crdt_type_id, crdt_snapshot_opt) = blocking(|| {
-            let welcome = MlsMessage::from_bytes(welcome_bytes)
-                .change_context(GroupError)
-                .attach(OperationContext::JOINING_GROUP)?;
+        let (learner, group_id, crdt_type_id, compaction_config, crdt_snapshot_opt) =
+            blocking(|| {
+                let welcome = MlsMessage::from_bytes(welcome_bytes)
+                    .change_context(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)?;
 
-            let (group, info) = client
-                .join_group(None, &welcome, None)
-                .change_context(GroupError)
-                .attach(OperationContext::JOINING_GROUP)?;
+                let (group, info) = client
+                    .join_group(None, &welcome, None)
+                    .change_context(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)?;
 
-            let mls_group_id = group.context().group_id.clone();
-            let group_id = GroupId::from_slice(&mls_group_id);
+                let mls_group_id = group.context().group_id.clone();
+                let group_id = GroupId::from_slice(&mls_group_id);
 
-            let group_info_ext = info
-                .group_info_extensions
-                .get_as::<GroupInfoExt>()
-                .change_context(GroupError)
-                .attach(OperationContext::JOINING_GROUP)?;
+                let group_info_ext = info
+                    .group_info_extensions
+                    .get_as::<GroupInfoExt>()
+                    .change_context(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)?;
 
-            let acceptors = group_info_ext
-                .as_ref()
-                .map(|e| e.acceptors.clone())
-                .unwrap_or_default();
+                let acceptors = group_info_ext
+                    .as_ref()
+                    .map(|e| e.acceptors.clone())
+                    .unwrap_or_default();
 
-            let crdt_snapshot_opt = group_info_ext.map(|e| e.snapshot);
+                let crdt_snapshot_opt = group_info_ext.map(|e| e.snapshot);
 
-            let crdt_type_id = group
-                .context()
-                .extensions
-                .get_as::<GroupContextExt>()
-                .change_context(GroupError)
-                .attach(OperationContext::JOINING_GROUP)?
-                .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id);
+                let group_ctx = group
+                    .context()
+                    .extensions
+                    .get_as::<GroupContextExt>()
+                    .change_context(GroupError)
+                    .attach(OperationContext::JOINING_GROUP)?;
 
-            let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
+                let crdt_type_id = group_ctx
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id.clone());
 
-            Ok::<_, Report<GroupError>>((learner, group_id, crdt_type_id, crdt_snapshot_opt))
-        })?;
+                let compaction_config = group_ctx
+                    .map_or_else(default_compaction_config, |e| e.compaction_config);
+
+                let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
+
+                Ok::<_, Report<GroupError>>((
+                    learner,
+                    group_id,
+                    crdt_type_id,
+                    compaction_config,
+                    crdt_snapshot_opt,
+                ))
+            })?;
 
         let crdt_factory = crdt_factories.get(&crdt_type_id).ok_or_else(|| {
             Report::new(GroupError).attach(format!(
@@ -370,7 +383,6 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
-        let compaction_config = crdt_factory.compaction_config();
         let crdt = match crdt_snapshot_opt {
             Some(snapshot) if !snapshot.is_empty() => crdt_factory
                 .from_snapshot(&snapshot)

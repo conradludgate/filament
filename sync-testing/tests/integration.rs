@@ -13,7 +13,6 @@ use universal_sync_proposer::GroupEvent;
 use universal_sync_testing::{
     YrsCrdt, init_tracing, spawn_acceptor, test_cipher_suite, test_crypto_provider, test_endpoint,
     test_group_client, test_identity_provider, test_yrs_group_client,
-    test_yrs_group_client_with_config,
 };
 
 #[tokio::test]
@@ -1551,9 +1550,9 @@ async fn test_welcome_after_threshold_compaction() {
 
     // Use low threshold (3 L0s → L(max))
     let config = test_compaction_config(3);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config);
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config)
         .await
         .expect("create group");
 
@@ -1582,8 +1581,7 @@ async fn test_welcome_after_threshold_compaction() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Now Bob joins — old L0s should be deleted, compacted snapshot remains
-    let mut bob =
-        test_yrs_group_client_with_config("bob", test_endpoint().await, test_compaction_config(3));
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -1611,9 +1609,9 @@ async fn test_welcome_reencryption_sequential_joiners() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(100); // High threshold — only force_compaction fires
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -1624,7 +1622,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins — triggers force_compaction (L(max))
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config.clone());
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -1638,7 +1636,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Carol joins — another force_compaction re-encrypts at Carol's epoch
-    let mut carol = test_yrs_group_client_with_config("carol", test_endpoint().await, config);
+    let mut carol = test_yrs_group_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
@@ -1667,9 +1665,9 @@ async fn test_post_compaction_bidirectional() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(100); // Only force_compaction
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -1680,7 +1678,7 @@ async fn test_post_compaction_bidirectional() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins — triggers compaction, clears update_buffer
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config);
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -1776,9 +1774,9 @@ async fn test_compaction_threshold_boundary() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(3);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config);
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config)
         .await
         .expect("create group");
 
@@ -1841,9 +1839,9 @@ async fn test_multiple_compaction_rounds() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(3);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -1883,7 +1881,7 @@ async fn test_multiple_compaction_rounds() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // New joiner should get the fully merged state
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config);
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -1911,9 +1909,9 @@ async fn test_compaction_deletion_late_joiner() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(3);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -1938,7 +1936,7 @@ async fn test_compaction_deletion_late_joiner() {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     // Late joiner should get the complete state
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config);
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -1966,16 +1964,16 @@ async fn test_concurrent_writers_compaction() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(3);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config.clone());
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -2029,7 +2027,7 @@ async fn test_concurrent_writers_compaction() {
     );
 
     // Carol joins — should get complete state from both writers
-    let mut carol = test_yrs_group_client_with_config("carol", test_endpoint().await, config);
+    let mut carol = test_yrs_group_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
@@ -2057,9 +2055,9 @@ async fn test_key_update_then_compaction() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(4);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -2089,7 +2087,7 @@ async fn test_key_update_then_compaction() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Bob joins — should get all text across the key rotation
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config);
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -2117,8 +2115,8 @@ async fn test_compaction_no_acceptors() {
     init_tracing();
 
     let config = test_compaction_config(2);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config);
-    let mut alice_group = alice.create_group(&[], "yrs").await.expect("create group");
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
+    let mut alice_group = alice.create_group_with_config(&[], "yrs", config).await.expect("create group");
 
     let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2165,16 +2163,16 @@ async fn test_compaction_after_member_removal() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(4);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
+        .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config.clone());
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
@@ -2214,7 +2212,7 @@ async fn test_compaction_after_member_removal() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Carol joins — should get all text
-    let mut carol = test_yrs_group_client_with_config("carol", test_endpoint().await, config);
+    let mut carol = test_yrs_group_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
@@ -2319,9 +2317,9 @@ async fn test_multi_acceptor_message_delivery() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = test_compaction_config(4);
-    let alice = test_yrs_group_client_with_config("alice", test_endpoint().await, config.clone());
+    let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group(&[acceptor1_addr.clone(), acceptor2_addr.clone()], "yrs")
+        .create_group_with_config(&[acceptor1_addr.clone(), acceptor2_addr.clone()], "yrs", config.clone())
         .await
         .expect("create group");
 
@@ -2333,7 +2331,7 @@ async fn test_multi_acceptor_message_delivery() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Bob joins and should sync the data via backfill from acceptors
-    let mut bob = test_yrs_group_client_with_config("bob", test_endpoint().await, config);
+    let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 

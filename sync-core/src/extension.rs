@@ -18,6 +18,7 @@ use mls_rs::mls_rs_codec::{self as mls_rs_codec, MlsDecode, MlsEncode, MlsSize};
 use mls_rs_core::group::ProposalType;
 use serde::{Deserialize, Serialize};
 
+use crate::crdt::CompactionConfig;
 use crate::proposal::AcceptorId;
 use crate::protocol::MemberFingerprint;
 
@@ -31,19 +32,25 @@ pub const SYNC_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF796);
 /// Single proposal type for all sync protocol custom proposals (private use range).
 pub const SYNC_PROPOSAL_TYPE: ProposalType = ProposalType::new(0xF796);
 
-/// CRDT type registration (group context extension).
+/// CRDT type and compaction config (group context extension).
 ///
-/// Set at group creation. Joiners check this to select the right CRDT factory.
+/// Set at group creation. Joiners use `crdt_type_id` to select the right CRDT
+/// factory and `compaction_config` to drive hierarchical compaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupContextExt {
     pub crdt_type_id: String,
+    pub compaction_config: CompactionConfig,
 }
 
 impl GroupContextExt {
     #[must_use]
-    pub fn new(crdt_type_id: impl Into<String>) -> Self {
+    pub fn new(
+        crdt_type_id: impl Into<String>,
+        compaction_config: CompactionConfig,
+    ) -> Self {
         Self {
             crdt_type_id: crdt_type_id.into(),
+            compaction_config,
         }
     }
 }
@@ -300,6 +307,7 @@ mod tests {
     use iroh::SecretKey;
 
     use super::*;
+    use crate::CompactionLevel;
 
     fn test_addr(seed: u8) -> EndpointAddr {
         let secret = SecretKey::from_bytes(&[seed; 32]);
@@ -308,12 +316,23 @@ mod tests {
 
     #[test]
     fn group_context_ext_roundtrip() {
-        let ext = GroupContextExt::new("yjs");
+        let config = vec![
+            CompactionLevel {
+                threshold: 0,
+                replication: 1,
+            },
+            CompactionLevel {
+                threshold: 5,
+                replication: 0,
+            },
+        ];
+        let ext = GroupContextExt::new("yjs", config.clone());
 
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupContextExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
         assert_eq!(decoded.crdt_type_id, "yjs");
+        assert_eq!(decoded.compaction_config, config);
     }
 
     #[test]

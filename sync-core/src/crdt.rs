@@ -81,9 +81,6 @@ pub trait CrdtFactory: Send + Sync {
         crdt.snapshot()
     }
 
-    fn compaction_config(&self) -> CompactionConfig {
-        default_compaction_config()
-    }
 }
 
 /// Configuration for a single compaction level.

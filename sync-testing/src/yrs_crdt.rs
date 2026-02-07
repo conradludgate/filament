@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
-use universal_sync_core::{CompactionConfig, Crdt, CrdtError, CrdtFactory};
+use universal_sync_core::{Crdt, CrdtError, CrdtFactory};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
@@ -114,7 +114,6 @@ impl Crdt for YrsCrdt {
 #[derive(Default, Clone)]
 pub struct YrsCrdtFactory {
     client_id: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
-    compaction_config: Option<CompactionConfig>,
 }
 
 impl std::fmt::Debug for YrsCrdtFactory {
@@ -128,17 +127,13 @@ impl std::fmt::Debug for YrsCrdtFactory {
 impl YrsCrdtFactory {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            client_id: None,
-            compaction_config: None,
-        }
+        Self { client_id: None }
     }
 
     #[must_use]
     pub fn with_fixed_client_id(client_id: u64) -> Self {
         Self {
             client_id: Some(Arc::new(move || client_id)),
-            compaction_config: None,
         }
     }
 
@@ -149,15 +144,7 @@ impl YrsCrdtFactory {
     {
         Self {
             client_id: Some(Arc::new(generator)),
-            compaction_config: None,
         }
-    }
-
-    /// Override the default compaction config (useful for tests with lower thresholds).
-    #[must_use]
-    pub fn with_compaction_config(mut self, config: CompactionConfig) -> Self {
-        self.compaction_config = Some(config);
-        self
     }
 }
 
@@ -183,12 +170,6 @@ impl CrdtFactory for YrsCrdtFactory {
         };
         crdt.merge(snapshot)?;
         Ok(Box::new(crdt))
-    }
-
-    fn compaction_config(&self) -> CompactionConfig {
-        self.compaction_config
-            .clone()
-            .unwrap_or_else(universal_sync_core::default_compaction_config)
     }
 }
 
