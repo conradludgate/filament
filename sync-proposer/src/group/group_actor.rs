@@ -205,7 +205,7 @@ impl CompactionState {
     }
 }
 
-const MAX_PROPOSAL_RETRIES: u32 = 3;
+const MAX_PROPOSAL_RETRIES: u32 = 6;
 const PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Default deadline for compaction claims (seconds from now).
 // Deadline for optimistic compaction claims (kept for future use)
@@ -213,6 +213,15 @@ const PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30)
 const COMPACTION_DEADLINE_SECS: u64 = 120;
 /// How often to check whether compaction should be triggered (seconds).
 const COMPACTION_CHECK_INTERVAL_SECS: u64 = 2;
+
+fn exponential_backoff_duration(retries: u32) -> std::time::Duration {
+    const BASE_MS: u64 = 10;
+    const MAX_EXPONENT: u32 = 6;
+    const MAX_DELAY_MS: u64 = 1000;
+    let delay_ms = BASE_MS.saturating_mul(1u64 << retries.min(MAX_EXPONENT));
+    let jitter = rand::random::<u64>() % (delay_ms / 2 + 1);
+    std::time::Duration::from_millis((delay_ms + jitter).min(MAX_DELAY_MS))
+}
 
 impl<C, CS> GroupActor<C, CS>
 where
@@ -824,10 +833,7 @@ where
             ProposeResult::Rejected { superseded_by } => {
                 self.attempt = GroupProposal::next_attempt(superseded_by.attempt());
                 self.learner.clear_pending_commit();
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    10 * (u64::from(retries) + 1),
-                ))
-                .await;
+                tokio::time::sleep(exponential_backoff_duration(retries)).await;
                 Box::pin(self.retry_proposal_simple(message, reply, retries + 1)).await;
             }
         }
@@ -879,10 +885,7 @@ where
             ProposeResult::Rejected { superseded_by } => {
                 self.attempt = GroupProposal::next_attempt(superseded_by.attempt());
                 self.learner.clear_pending_commit();
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    10 * (u64::from(retries) + 1),
-                ))
-                .await;
+                tokio::time::sleep(exponential_backoff_duration(retries)).await;
                 Box::pin(self.retry_proposal_with_welcome(
                     message,
                     member_addr,
@@ -1087,10 +1090,7 @@ where
                             Self::complete_proposal_error(active, "max proposal retries exceeded");
                         } else {
                             tracing::debug!(retries, "proposal rejected, retrying");
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                10 * u64::from(retries),
-                            ))
-                            .await;
+                            tokio::time::sleep(exponential_backoff_duration(retries)).await;
                             self.retry_active_proposal(active, retries).await;
                         }
                     }
@@ -1130,10 +1130,7 @@ where
                 if retries + 1 > MAX_PROPOSAL_RETRIES {
                     Self::complete_proposal_error(active, "max proposal retries exceeded");
                 } else {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        10 * u64::from(retries + 1),
-                    ))
-                    .await;
+                    tokio::time::sleep(exponential_backoff_duration(retries)).await;
                     Box::pin(self.retry_active_proposal(active, retries + 1)).await;
                 }
             }
@@ -1961,5 +1958,33 @@ mod tests {
             state.record_entry(0);
         }
         assert_eq!(state.cascade_target(&config), Some(1));
+    }
+
+    #[test]
+    fn exponential_backoff_bounds() {
+        for _ in 0..100 {
+            let d0 = exponential_backoff_duration(0);
+            assert!(d0.as_millis() >= 10, "retry 0 base is 10ms");
+            assert!(d0.as_millis() <= 15, "retry 0 max is 10 + 5 jitter");
+
+            let d3 = exponential_backoff_duration(3);
+            assert!(d3.as_millis() >= 80);
+            assert!(d3.as_millis() <= 120);
+
+            let d6 = exponential_backoff_duration(6);
+            assert!(d6.as_millis() >= 640);
+            assert!(d6.as_millis() <= 1000, "capped at MAX_DELAY_MS");
+
+            let d10 = exponential_backoff_duration(10);
+            assert!(d10.as_millis() <= 1000);
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_growth() {
+        let base = |r: u32| 10u128 * (1u128 << r.min(6));
+        for r in 0..6 {
+            assert_eq!(base(r + 1), base(r) * 2);
+        }
     }
 }
