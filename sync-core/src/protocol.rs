@@ -60,7 +60,10 @@ pub enum Handshake {
     /// Register a new group with serialized `GroupInfo` bytes.
     CreateGroup(Vec<u8>),
     /// Join an existing group's message stream.
-    JoinMessages(GroupId),
+    ///
+    /// Includes the subscriber's fingerprint so the acceptor can filter out
+    /// messages originally sent by this member.
+    JoinMessages(GroupId, MemberFingerprint),
     /// Deliver a serialized MLS `Welcome` message.
     SendWelcome(Vec<u8>),
 }

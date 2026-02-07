@@ -378,6 +378,7 @@ where
         let actor = AcceptorActor {
             acceptor_id,
             group_id: self.group_id,
+            own_fingerprint: self.own_fingerprint,
             connection_manager: self.connection_manager.clone(),
             outbound_rx,
             inbound_tx: self.acceptor_inbound_tx.clone(),

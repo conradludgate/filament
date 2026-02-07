@@ -1,6 +1,8 @@
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use universal_sync_core::{AcceptorId, GroupId, MessageRequest, MessageResponse, StateVector};
+use universal_sync_core::{
+    AcceptorId, GroupId, MemberFingerprint, MessageRequest, MessageResponse, StateVector,
+};
 
 use super::{AcceptorInbound, AcceptorOutbound};
 use crate::connection::ConnectionManager;
@@ -8,6 +10,7 @@ use crate::connection::ConnectionManager;
 pub(super) struct AcceptorActor {
     pub(super) acceptor_id: AcceptorId,
     pub(super) group_id: GroupId,
+    pub(super) own_fingerprint: MemberFingerprint,
     pub(super) connection_manager: ConnectionManager,
     pub(super) outbound_rx: mpsc::Receiver<AcceptorOutbound>,
     pub(super) inbound_tx: mpsc::Sender<AcceptorInbound>,
@@ -93,7 +96,7 @@ impl AcceptorActor {
         let message_streams = tokio::time::timeout(
             std::time::Duration::from_millis(500),
             self.connection_manager
-                .open_message_stream(&self.acceptor_id, self.group_id),
+                .open_message_stream(&self.acceptor_id, self.group_id, self.own_fingerprint),
         )
         .await;
 

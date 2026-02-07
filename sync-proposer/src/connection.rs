@@ -19,7 +19,9 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use tokio::sync::RwLock;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use universal_sync_core::{AcceptorId, GroupId, Handshake, HandshakeResponse, PAXOS_ALPN};
+use universal_sync_core::{
+    AcceptorId, GroupId, Handshake, HandshakeResponse, MemberFingerprint, PAXOS_ALPN,
+};
 
 use crate::connector::ConnectorError;
 
@@ -106,9 +108,10 @@ impl ConnectionManager {
         &self,
         acceptor_id: &AcceptorId,
         group_id: GroupId,
+        sender: MemberFingerprint,
     ) -> Result<(SendStream, RecvStream), Report<ConnectorError>> {
         let conn = self.new_connection(acceptor_id).await?;
-        self.open_stream_with_handshake(&conn, Handshake::JoinMessages(group_id))
+        self.open_stream_with_handshake(&conn, Handshake::JoinMessages(group_id, sender))
             .await
     }
 

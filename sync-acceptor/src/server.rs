@@ -10,8 +10,8 @@ use tracing::{debug, instrument, warn};
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    ConnectorError, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, MemberId,
-    MessageRequest, MessageResponse, PAXOS_ALPN,
+    ConnectorError, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
+    MemberFingerprint, MemberId, MessageRequest, MessageResponse, PAXOS_ALPN,
 };
 use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor_with_epoch_waiter};
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Learner};
@@ -128,8 +128,8 @@ where
             )
             .await
         }
-        Handshake::JoinMessages(group_id) => {
-            handle_message_stream(group_id, reader, writer, registry).await
+        Handshake::JoinMessages(group_id, subscriber) => {
+            handle_message_stream(group_id, subscriber, reader, writer, registry).await
         }
         Handshake::SendWelcome(_) => {
             Err(Report::new(ConnectorError).attach("acceptors do not handle welcome messages"))
@@ -216,6 +216,7 @@ where
 #[instrument(skip_all, name = "message_stream", fields(?group_id))]
 async fn handle_message_stream<C, CS>(
     group_id: GroupId,
+    subscriber: MemberFingerprint,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
     registry: AcceptorRegistry<C, CS>,
@@ -258,12 +259,16 @@ where
                 };
 
                 let request = request.change_context(ConnectorError)?;
-                handle_message_request(&group_id, request, &mut connection, &registry).await?;
+                handle_message_request(&group_id, &subscriber, request, &mut connection, &registry).await?;
             }
 
             msg = subscription.recv() => {
                 match msg {
                     Ok((id, message)) => {
+                        // Don't echo messages back to the sender.
+                        if id.sender == subscriber {
+                            continue;
+                        }
                         let response = MessageResponse::Message { id, message };
                         connection.send(response).await.change_context(ConnectorError)?;
                     }
@@ -280,6 +285,7 @@ where
 
 async fn handle_message_request<C, CS>(
     group_id: &GroupId,
+    subscriber: &MemberFingerprint,
     request: MessageRequest,
     connection: &mut IrohMessageConnection,
     registry: &AcceptorRegistry<C, CS>,
@@ -314,7 +320,12 @@ where
         } => {
             let messages = registry.get_messages_after(group_id, &state_vector);
             let has_more = messages.len() > limit as usize;
-            let messages: Vec<_> = messages.into_iter().take(limit as usize).collect();
+            // Filter out the subscriber's own messages.
+            let messages: Vec<_> = messages
+                .into_iter()
+                .filter(|(id, _)| id.sender != *subscriber)
+                .take(limit as usize)
+                .collect();
 
             for (id, message) in messages {
                 connection
