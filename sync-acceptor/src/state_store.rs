@@ -558,6 +558,11 @@ pub struct GroupStateStore {
 }
 
 impl GroupStateStore {
+    #[cfg(test)]
+    pub(crate) fn new(inner: FjallStateStore, group_id: GroupId) -> Self {
+        Self { inner: Arc::new(inner), group_id }
+    }
+
     #[must_use]
     pub(crate) fn get_accepted_from(
         &self,
@@ -584,6 +589,17 @@ impl GroupStateStore {
     ) -> Result<usize, fjall::Error> {
         self.inner
             .delete_before_watermark(&self.group_id, watermark)
+    }
+
+    pub(crate) fn check_sender_in_roster(&self, sender: &MemberFingerprint) -> bool {
+        let Some(roster) = self.inner.get_epoch_roster_at_or_before_sync(&self.group_id, Epoch(u64::MAX)) else {
+            return true;
+        };
+
+        roster
+            .members
+            .iter()
+            .any(|(_, key)| MemberFingerprint::from_signing_key(key) == *sender)
     }
 }
 
@@ -878,5 +894,50 @@ mod tests {
         assert_eq!(id.group_id, gid);
         assert_eq!(id.sender, sender);
         assert_eq!(id.seq, 42);
+    }
+
+    #[test]
+    fn check_sender_in_roster_accepts_current_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FjallStateStore::open_sync(dir.path()).unwrap();
+        let gid = GroupId::new([1u8; 32]);
+
+        let alice_key = vec![1, 2, 3, 4];
+        let bob_key = vec![5, 6, 7, 8];
+
+        let roster = EpochRoster::new(Epoch(1), vec![
+            (MemberId(0), alice_key.clone()),
+            (MemberId(1), bob_key.clone()),
+        ]);
+        let group_store = GroupStateStore::new(store, gid);
+        group_store.store_epoch_roster(&roster).unwrap();
+
+        let alice_fp = MemberFingerprint::from_signing_key(&alice_key);
+        assert!(group_store.check_sender_in_roster(&alice_fp));
+    }
+
+    #[test]
+    fn check_sender_in_roster_rejects_removed_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FjallStateStore::open_sync(dir.path()).unwrap();
+        let gid = GroupId::new([1u8; 32]);
+
+        let alice_key = vec![1, 2, 3, 4];
+        let bob_key = vec![5, 6, 7, 8];
+
+        let roster_v1 = EpochRoster::new(Epoch(1), vec![
+            (MemberId(0), alice_key.clone()),
+            (MemberId(1), bob_key.clone()),
+        ]);
+        let group_store = GroupStateStore::new(store, gid);
+        group_store.store_epoch_roster(&roster_v1).unwrap();
+
+        let roster_v2 = EpochRoster::new(Epoch(2), vec![
+            (MemberId(0), alice_key.clone()),
+        ]);
+        group_store.store_epoch_roster(&roster_v2).unwrap();
+
+        let bob_fp = MemberFingerprint::from_signing_key(&bob_key);
+        assert!(!group_store.check_sender_in_roster(&bob_fp));
     }
 }

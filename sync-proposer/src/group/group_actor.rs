@@ -1463,7 +1463,7 @@ where
             .map(|m| MemberFingerprint::from_signing_key(&m.signing_identity.signature_key));
 
         let Some(sender_fp) = signing_key else {
-            tracing::warn!(
+            tracing::debug!(
                 ?sender_member,
                 "sender not found in roster, dropping message"
             );

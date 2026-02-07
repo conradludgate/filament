@@ -250,6 +250,14 @@ where
         self.state_store.subscribe_messages(group_id)
     }
 
+    pub fn check_sender_in_roster(
+        &self,
+        group_id: &GroupId,
+        sender: &universal_sync_core::MemberFingerprint,
+    ) -> bool {
+        self.state_store.for_group(*group_id).check_sender_in_roster(sender)
+    }
+
     pub fn get_epoch_watcher(&self, group_id: &GroupId) -> Option<EpochWatcher> {
         let watchers = self.epoch_watchers.read().ok()?;
         let watcher = watchers.get(group_id)?.clone();
