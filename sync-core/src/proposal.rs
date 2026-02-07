@@ -136,3 +136,21 @@ impl Proposal for GroupProposal {
         Attempt(attempt.0 + 1)
     }
 }
+
+use crate::codec::Versioned;
+
+impl Versioned for GroupProposal {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
+    }
+}

@@ -100,8 +100,14 @@ impl ConnectionManager {
         since_epoch: Epoch,
     ) -> Result<(SendStream, RecvStream), Report<ConnectorError>> {
         let conn = self.get_connection(acceptor_id).await?;
-        self.open_stream_with_handshake(&conn, Handshake::JoinProposals { group_id, since_epoch })
-            .await
+        self.open_stream_with_handshake(
+            &conn,
+            Handshake::JoinProposals {
+                group_id,
+                since_epoch,
+            },
+        )
+        .await
     }
 
     /// Creates a new (uncached) connection because the server handles one stream per connection.

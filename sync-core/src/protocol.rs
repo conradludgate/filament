@@ -58,7 +58,10 @@ pub enum StreamType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Handshake {
     /// Join an existing group's proposal stream, replaying from `since_epoch`.
-    JoinProposals { group_id: GroupId, since_epoch: Epoch },
+    JoinProposals {
+        group_id: GroupId,
+        since_epoch: Epoch,
+    },
     /// Register a new group with serialized `GroupInfo` bytes.
     CreateGroup(Vec<u8>),
     /// Join an existing group's message stream.
@@ -89,6 +92,22 @@ impl GroupMessage {
     #[must_use]
     pub fn new(mls_message: MlsMessage) -> Self {
         Self { mls_message }
+    }
+}
+
+impl crate::codec::Versioned for GroupMessage {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
     }
 }
 
@@ -197,6 +216,68 @@ impl AuthData {
     /// Returns an error if deserialization fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes(bytes)
+    }
+
+    /// Decode from MLS `authenticated_data` bytes using the given protocol version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version is unknown or deserialization fails.
+    pub fn from_bytes_versioned(
+        bytes: &[u8],
+        protocol_version: u32,
+    ) -> Result<Self, postcard::Error> {
+        Self::deserialize_versioned(protocol_version, bytes)
+    }
+}
+
+use crate::codec::Versioned;
+
+impl Versioned for AuthData {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
+    }
+}
+
+impl Versioned for MessageRequest {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
+    }
+}
+
+impl Versioned for MessageResponse {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
     }
 }
 
@@ -356,7 +437,9 @@ mod tests {
 
         match decoded {
             AuthData::Compaction {
-                level, watermark: wm, ..
+                level,
+                watermark: wm,
+                ..
             } => {
                 assert_eq!(level, 1);
                 assert_eq!(wm, watermark);
@@ -368,17 +451,17 @@ mod tests {
     #[test]
     fn auth_data_seq_accessor() {
         assert_eq!(AuthData::update(7).seq(), 7);
-        assert_eq!(
-            AuthData::compaction(99, 2, StateVector::new()).seq(),
-            99
-        );
+        assert_eq!(AuthData::compaction(99, 2, StateVector::new()).seq(), 99);
     }
 
     #[test]
     fn handshake_join_proposals_round_trip() {
         use crate::Epoch;
         let group_id = GroupId::new([1u8; 32]);
-        let handshake = Handshake::JoinProposals { group_id, since_epoch: Epoch(5) };
+        let handshake = Handshake::JoinProposals {
+            group_id,
+            since_epoch: Epoch(5),
+        };
         let bytes = postcard::to_allocvec(&handshake).unwrap();
         let decoded: Handshake = postcard::from_bytes(&bytes).unwrap();
         match decoded {

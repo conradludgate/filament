@@ -9,7 +9,9 @@ use mls_rs::client_builder::MlsConfig;
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tokio::sync::mpsc;
-use universal_sync_core::{CompactionConfig, CrdtFactory, KeyPackageExt, default_compaction_config};
+use universal_sync_core::{
+    CompactionConfig, CrdtFactory, KeyPackageExt, default_compaction_config,
+};
 
 use crate::connection::ConnectionManager;
 use crate::group::{Group, GroupError};

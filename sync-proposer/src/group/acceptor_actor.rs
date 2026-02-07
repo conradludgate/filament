@@ -1,5 +1,6 @@
 use tokio::sync::mpsc;
-use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use tokio_util::codec::{FramedRead, FramedWrite};
+use universal_sync_core::codec::VersionedCodec;
 use universal_sync_core::{
     AcceptorId, Epoch, GroupId, MemberFingerprint, MessageRequest, MessageResponse, StateVector,
 };
@@ -16,6 +17,7 @@ pub(super) struct AcceptorActor {
     pub(super) outbound_rx: mpsc::Receiver<AcceptorOutbound>,
     pub(super) inbound_tx: mpsc::Sender<AcceptorInbound>,
     pub(super) cancel_token: tokio_util::sync::CancellationToken,
+    pub(super) protocol_version: u32,
 }
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
@@ -96,33 +98,30 @@ impl AcceptorActor {
 
         let message_streams = tokio::time::timeout(
             std::time::Duration::from_millis(500),
-            self.connection_manager
-                .open_message_stream(&self.acceptor_id, self.group_id, self.own_fingerprint),
+            self.connection_manager.open_message_stream(
+                &self.acceptor_id,
+                self.group_id,
+                self.own_fingerprint,
+            ),
         )
         .await;
 
         let message_io: Option<(
-            FramedWrite<iroh::endpoint::SendStream, LengthDelimitedCodec>,
-            FramedRead<iroh::endpoint::RecvStream, LengthDelimitedCodec>,
+            FramedWrite<iroh::endpoint::SendStream, VersionedCodec<MessageRequest>>,
+            FramedRead<iroh::endpoint::RecvStream, VersionedCodec<MessageResponse>>,
         )> = match message_streams {
             Ok(Ok((message_send, message_recv))) => {
                 let mut message_writer =
-                    FramedWrite::new(message_send, LengthDelimitedCodec::new());
-                let message_reader = FramedRead::new(message_recv, LengthDelimitedCodec::new());
+                    FramedWrite::new(message_send, VersionedCodec::new(self.protocol_version));
+                let message_reader =
+                    FramedRead::new(message_recv, VersionedCodec::new(self.protocol_version));
 
-                // Request a backfill of all historical messages (empty state vector
-                // means "give me everything"). New messages will arrive via the
-                // broadcast subscription which is always active on the server side.
                 let backfill_request = MessageRequest::Backfill {
                     state_vector: StateVector::default(),
                     limit: u32::MAX,
                 };
-                if let Ok(request_bytes) = postcard::to_allocvec(&backfill_request) {
-                    if message_writer.send(request_bytes.into()).await.is_ok() {
-                        Some((message_writer, message_reader))
-                    } else {
-                        None
-                    }
+                if message_writer.send(backfill_request).await.is_ok() {
+                    Some((message_writer, message_reader))
                 } else {
                     None
                 }
@@ -154,9 +153,7 @@ impl AcceptorActor {
                         AcceptorOutbound::AppMessage { id, msg } => {
                             if let Some(ref mut writer) = message_writer_opt {
                                 let request = MessageRequest::Send { id, message: msg };
-                                if let Ok(request_bytes) = postcard::to_allocvec(&request) {
-                                    let _ = writer.send(request_bytes.into()).await;
-                                }
+                                let _ = writer.send(request).await;
                             }
                         }
                     }
@@ -184,26 +181,23 @@ impl AcceptorActor {
                         std::future::pending().await
                     }
                 } => {
-                    if let Ok(bytes) = result {
-                        match postcard::from_bytes::<MessageResponse>(&bytes) {
-                            Ok(MessageResponse::Message { message, .. }) => {
-                                let _ = self.inbound_tx.send(AcceptorInbound::EncryptedMessage {
-                                    msg: message,
-                                }).await;
-                            }
-                            Ok(MessageResponse::BackfillComplete { .. }
-                                | MessageResponse::Stored) => {}
-
-                            Ok(MessageResponse::Error(e)) => {
-                                tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "message stream error from acceptor");
-                            }
-                            Err(e) => {
-                                tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "failed to decode message response");
-                            }
+                    match result {
+                        Ok(MessageResponse::Message { message, .. }) => {
+                            let _ = self.inbound_tx.send(AcceptorInbound::EncryptedMessage {
+                                msg: message,
+                            }).await;
                         }
-                    } else {
-                        message_reader_opt = None;
-                        message_writer_opt = None;
+                        Ok(MessageResponse::BackfillComplete { .. }
+                            | MessageResponse::Stored) => {}
+
+                        Ok(MessageResponse::Error(e)) => {
+                            tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "message stream error from acceptor");
+                        }
+                        Err(e) => {
+                            tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "failed to decode message response");
+                            message_reader_opt = None;
+                            message_writer_opt = None;
+                        }
                     }
                 }
             }

@@ -409,6 +409,10 @@ where
             outbound_rx,
             inbound_tx: self.acceptor_inbound_tx.clone(),
             cancel_token: self.cancel_token.clone(),
+            protocol_version: self
+                .learner
+                .protocol_version()
+                .expect("GroupContextExt must be present"),
         };
 
         let handle = tokio::spawn(actor.run());
@@ -521,6 +525,24 @@ where
             return;
         }
 
+        let current_version = match self.learner.protocol_version() {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Err(e.change_context(GroupError)));
+                return;
+            }
+        };
+        if let Some(kp) = key_package.as_key_package()
+            && let Ok(Some(kp_ext)) = kp.extensions.get_as::<universal_sync_core::KeyPackageExt>()
+            && !kp_ext.supports_version(current_version)
+        {
+            let _ = reply.send(Err(Report::new(GroupError).attach(format!(
+                "member does not support protocol version {current_version} (supports {:?})",
+                kp_ext.supported_protocol_versions
+            ))));
+            return;
+        }
+
         let result = blocking(|| {
             let group_info_ext = group_info_ext_list(self.learner.acceptors().values().cloned());
 
@@ -618,7 +640,9 @@ where
         let authenticated_data = match auth_data.to_bytes() {
             Ok(bytes) => bytes,
             Err(e) => {
-                let _ = reply.send(Err(Report::new(GroupError).attach(format!("auth data encode: {e}"))));
+                let _ = reply.send(Err(
+                    Report::new(GroupError).attach(format!("auth data encode: {e}"))
+                ));
                 return;
             }
         };
@@ -1273,13 +1297,10 @@ where
                     // a previously compacted snapshot that needs to be
                     // re-encrypted at the current epoch.
                     if !self.update_buffer.is_empty() || self.last_compacted_snapshot.is_some() {
-                        let max_level = u8::try_from(
-                            self.compaction_config.len().saturating_sub(1),
-                        )
-                        .unwrap_or(0);
-                        if max_level > 0
-                            && !self.compaction_state.has_active_claim(max_level)
-                        {
+                        let max_level =
+                            u8::try_from(self.compaction_config.len().saturating_sub(1))
+                                .unwrap_or(0);
+                        if max_level > 0 && !self.compaction_state.has_active_claim(max_level) {
                             tracing::info!("new member added, forcing compaction for catch-up");
                             self.compaction_state.force_compaction = true;
                         }
@@ -1486,8 +1507,7 @@ where
                 self.compaction_state.record_entry(0);
             }
             AuthData::Compaction { level, .. } => {
-                self.compaction_state
-                    .record_entry(usize::from(*level));
+                self.compaction_state.record_entry(usize::from(*level));
             }
         }
 
@@ -1543,7 +1563,9 @@ where
         // Find the highest level that would trigger via cascade.
         // E.g. if L1 triggers and completing it would also trigger L2, skip
         // straight to L2 compaction.
-        if let Some(level) = self.compaction_state.cascade_target(&self.compaction_config)
+        if let Some(level) = self
+            .compaction_state
+            .cascade_target(&self.compaction_config)
             && !self.compaction_state.has_active_claim(level)
         {
             tracing::info!(

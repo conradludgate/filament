@@ -43,7 +43,8 @@ impl<L> Clone for IrohConnector<L> {
 
 impl<L> IrohConnector<L> {
     pub fn set_since_epoch(&self, epoch: Epoch) {
-        self.since_epoch.store(epoch.0, std::sync::atomic::Ordering::Relaxed);
+        self.since_epoch
+            .store(epoch.0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

@@ -2116,7 +2116,10 @@ async fn test_compaction_no_acceptors() {
 
     let config = test_compaction_config(2);
     let alice = test_yrs_group_client("alice", test_endpoint().await);
-    let mut alice_group = alice.create_group_with_config(&[], "yrs", config).await.expect("create group");
+    let mut alice_group = alice
+        .create_group_with_config(&[], "yrs", config)
+        .await
+        .expect("create group");
 
     let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2319,7 +2322,11 @@ async fn test_multi_acceptor_message_delivery() {
     let config = test_compaction_config(4);
     let alice = test_yrs_group_client("alice", test_endpoint().await);
     let mut alice_group = alice
-        .create_group_with_config(&[acceptor1_addr.clone(), acceptor2_addr.clone()], "yrs", config.clone())
+        .create_group_with_config(
+            &[acceptor1_addr.clone(), acceptor2_addr.clone()],
+            "yrs",
+            config.clone(),
+        )
         .await
         .expect("create group");
 

@@ -63,7 +63,11 @@ impl FjallGroupStateStorage {
             .attach("failed to open proposer_meta keyspace")?;
 
         Ok(Self {
-            inner: Arc::new(FjallGroupStateStorageInner { db, keyspace, proposer_meta }),
+            inner: Arc::new(FjallGroupStateStorageInner {
+                db,
+                keyspace,
+                proposer_meta,
+            }),
         })
     }
 

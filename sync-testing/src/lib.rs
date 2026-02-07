@@ -115,7 +115,6 @@ pub fn test_yrs_group_client(
     client
 }
 
-
 /// Safe to call multiple times.
 pub fn init_tracing() {
     let _ = fmt()

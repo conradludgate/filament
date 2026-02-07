@@ -10,8 +10,8 @@ use mls_rs::group::proposal::{MlsCustomProposal, Proposal as MlsProposal};
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::{CipherSuiteProvider, Group};
 use universal_sync_core::{
-    AcceptorId, Attempt, Epoch, GroupMessage, GroupProposal, MemberFingerprint, MemberId,
-    SyncProposal, UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupContextExt, GroupMessage, GroupProposal, MemberFingerprint,
+    MemberId, SyncProposal, UnsignedProposal,
 };
 
 /// Error marker for `GroupLearner` operations.
@@ -193,6 +193,22 @@ where
     /// Get the current epoch from MLS state
     pub(crate) fn mls_epoch(&self) -> Epoch {
         Epoch(self.group.context().epoch)
+    }
+
+    /// Read the protocol version from the group's `GroupContextExt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LearnerError`] if the extension is missing or cannot be parsed.
+    pub(crate) fn protocol_version(&self) -> Result<u32, Report<LearnerError>> {
+        self.group
+            .context()
+            .extensions
+            .get_as::<GroupContextExt>()
+            .change_context(LearnerError)
+            .attach("failed to decode GroupContextExt")?
+            .map(|ext| ext.protocol_version)
+            .ok_or_else(|| Report::new(LearnerError).attach("missing GroupContextExt"))
     }
 
     /// Encrypt an application message using MLS.

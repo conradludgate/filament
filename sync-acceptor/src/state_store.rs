@@ -18,6 +18,25 @@ use universal_sync_paxos::acceptor::RoundState;
 use universal_sync_paxos::core::decision;
 use universal_sync_paxos::{AcceptorStateStore, Learner, Proposal};
 
+const STORAGE_MAGIC: [u8; 2] = [0xFF, 0xFE];
+const STORAGE_VERSION: u8 = 1;
+
+fn storage_versioned_encode(version: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(3 + payload.len());
+    out.extend_from_slice(&STORAGE_MAGIC);
+    out.push(version);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn storage_versioned_decode(bytes: &[u8]) -> (u8, &[u8]) {
+    if bytes.len() >= 3 && bytes[..2] == STORAGE_MAGIC {
+        (bytes[2], &bytes[3..])
+    } else {
+        (1, bytes)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EpochRoster {
     pub(crate) epoch: Epoch,
@@ -55,7 +74,8 @@ impl EpochRoster {
 }
 
 type GroupBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal, GroupMessage)>>>;
-type MessageBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>;
+type MessageBroadcasts =
+    RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>;
 
 pub(crate) struct FjallStateStore {
     db: Database,
@@ -117,19 +137,23 @@ impl FjallStateStore {
     }
 
     fn serialize_proposal(proposal: &GroupProposal) -> Vec<u8> {
-        postcard::to_allocvec(proposal).expect("serialization should not fail")
+        let data = postcard::to_allocvec(proposal).expect("serialization should not fail");
+        storage_versioned_encode(STORAGE_VERSION, &data)
     }
 
     fn deserialize_proposal(bytes: &[u8]) -> Option<GroupProposal> {
-        postcard::from_bytes(bytes).ok()
+        let (_, payload) = storage_versioned_decode(bytes);
+        postcard::from_bytes(payload).ok()
     }
 
     fn serialize_message(message: &GroupMessage) -> Vec<u8> {
-        postcard::to_allocvec(message).expect("serialization should not fail")
+        let data = postcard::to_allocvec(message).expect("serialization should not fail");
+        storage_versioned_encode(STORAGE_VERSION, &data)
     }
 
     fn deserialize_message(bytes: &[u8]) -> Option<GroupMessage> {
-        postcard::from_bytes(bytes).ok()
+        let (_, payload) = storage_versioned_decode(bytes);
+        postcard::from_bytes(payload).ok()
     }
 
     /// Message key: `group_id` (32) || `sender_fingerprint` (32) || `seq` (8) = 72 bytes.
@@ -156,11 +180,13 @@ impl FjallStateStore {
     }
 
     fn serialize_app_message(msg: &EncryptedAppMessage) -> Vec<u8> {
-        postcard::to_allocvec(msg).expect("serialization should not fail")
+        let data = postcard::to_allocvec(msg).expect("serialization should not fail");
+        storage_versioned_encode(STORAGE_VERSION, &data)
     }
 
     fn deserialize_app_message(bytes: &[u8]) -> Option<EncryptedAppMessage> {
-        postcard::from_bytes(bytes).ok()
+        let (_, payload) = storage_versioned_decode(bytes);
+        postcard::from_bytes(payload).ok()
     }
 
     pub(crate) fn store_app_message(
@@ -560,7 +586,10 @@ pub struct GroupStateStore {
 impl GroupStateStore {
     #[cfg(test)]
     pub(crate) fn new(inner: FjallStateStore, group_id: GroupId) -> Self {
-        Self { inner: Arc::new(inner), group_id }
+        Self {
+            inner: Arc::new(inner),
+            group_id,
+        }
     }
 
     #[must_use]
@@ -592,7 +621,10 @@ impl GroupStateStore {
     }
 
     pub(crate) fn check_sender_in_roster(&self, sender: &MemberFingerprint) -> bool {
-        let Some(roster) = self.inner.get_epoch_roster_at_or_before_sync(&self.group_id, Epoch(u64::MAX)) else {
+        let Some(roster) = self
+            .inner
+            .get_epoch_roster_at_or_before_sync(&self.group_id, Epoch(u64::MAX))
+        else {
             return true;
         };
 
@@ -905,15 +937,35 @@ mod tests {
         let alice_key = vec![1, 2, 3, 4];
         let bob_key = vec![5, 6, 7, 8];
 
-        let roster = EpochRoster::new(Epoch(1), vec![
-            (MemberId(0), alice_key.clone()),
-            (MemberId(1), bob_key.clone()),
-        ]);
+        let roster = EpochRoster::new(
+            Epoch(1),
+            vec![
+                (MemberId(0), alice_key.clone()),
+                (MemberId(1), bob_key.clone()),
+            ],
+        );
         let group_store = GroupStateStore::new(store, gid);
         group_store.store_epoch_roster(&roster).unwrap();
 
         let alice_fp = MemberFingerprint::from_signing_key(&alice_key);
         assert!(group_store.check_sender_in_roster(&alice_fp));
+    }
+
+    #[test]
+    fn storage_versioned_encode_decode_roundtrip() {
+        let payload = b"test data";
+        let encoded = super::storage_versioned_encode(1, payload);
+        let (version, decoded) = super::storage_versioned_decode(&encoded);
+        assert_eq!(version, 1);
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn storage_versioned_decode_legacy_data() {
+        let legacy = b"raw postcard bytes";
+        let (version, decoded) = super::storage_versioned_decode(legacy);
+        assert_eq!(version, 1);
+        assert_eq!(decoded, legacy.as_slice());
     }
 
     #[test]
@@ -925,16 +977,17 @@ mod tests {
         let alice_key = vec![1, 2, 3, 4];
         let bob_key = vec![5, 6, 7, 8];
 
-        let roster_v1 = EpochRoster::new(Epoch(1), vec![
-            (MemberId(0), alice_key.clone()),
-            (MemberId(1), bob_key.clone()),
-        ]);
+        let roster_v1 = EpochRoster::new(
+            Epoch(1),
+            vec![
+                (MemberId(0), alice_key.clone()),
+                (MemberId(1), bob_key.clone()),
+            ],
+        );
         let group_store = GroupStateStore::new(store, gid);
         group_store.store_epoch_roster(&roster_v1).unwrap();
 
-        let roster_v2 = EpochRoster::new(Epoch(2), vec![
-            (MemberId(0), alice_key.clone()),
-        ]);
+        let roster_v2 = EpochRoster::new(Epoch(2), vec![(MemberId(0), alice_key.clone())]);
         group_store.store_epoch_roster(&roster_v2).unwrap();
 
         let bob_fp = MemberFingerprint::from_signing_key(&bob_key);

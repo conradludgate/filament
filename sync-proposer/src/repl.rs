@@ -2,7 +2,6 @@
 //!
 //! This module provides an interactive REPL for managing MLS groups with Paxos consensus.
 
-
 use std::collections::HashMap;
 use std::fmt::Write;
 

@@ -10,8 +10,8 @@ use mls_rs::crypto::SignaturePublicKey;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalGroup, ExternalReceivedMessage};
 use universal_sync_core::{
-    AcceptorId, Attempt, Epoch, GroupMessage, GroupProposal, MemberId, SyncProposal,
-    UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupContextExt, GroupMessage, GroupProposal, MemberId,
+    SyncProposal, UnsignedProposal,
 };
 
 /// Error marker for `GroupAcceptor` operations.
@@ -87,6 +87,22 @@ where
 
     pub(crate) fn acceptor_addrs(&self) -> impl Iterator<Item = (&AcceptorId, &EndpointAddr)> {
         self.acceptors.iter()
+    }
+
+    /// Read the protocol version from the group's `GroupContextExt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcceptorError`] if the extension is missing or cannot be parsed.
+    pub fn protocol_version(&self) -> Result<u32, Report<AcceptorError>> {
+        self.external_group
+            .group_context()
+            .extensions
+            .get_as::<GroupContextExt>()
+            .change_context(AcceptorError)
+            .attach("failed to decode GroupContextExt")?
+            .map(|ext| ext.protocol_version)
+            .ok_or_else(|| Report::new(AcceptorError).attach("missing GroupContextExt"))
     }
 
     fn get_member_public_key(&self, member_id: MemberId) -> Option<SignaturePublicKey> {

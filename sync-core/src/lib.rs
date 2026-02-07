@@ -13,16 +13,17 @@ pub mod extension;
 pub mod proposal;
 pub mod protocol;
 pub mod sink_stream;
+pub use codec::{Versioned, VersionedCodec};
 pub use crdt::{
-    CompactionConfig, CompactionLevel, Crdt, CrdtError, CrdtFactory, NoCrdt, NoCrdtFactory,
-    default_compaction_config,
+    default_compaction_config, CompactionConfig, CompactionLevel, Crdt, CrdtError, CrdtFactory,
+    NoCrdt, NoCrdtFactory,
 };
 pub use error::{
     AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
 };
 pub use extension::{
-    GroupContextExt, GroupInfoExt, KeyPackageExt, SyncProposal, SYNC_EXTENSION_TYPE,
-    SYNC_PROPOSAL_TYPE,
+    GroupContextExt, GroupContextExtV1, GroupInfoExt, KeyPackageExt, SyncProposal,
+    CURRENT_PROTOCOL_VERSION, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE,
 };
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 pub use protocol::{

@@ -7,7 +7,7 @@ use mls_rs::CipherSuiteProvider;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, instrument, warn};
-use universal_sync_core::codec::PostcardCodec;
+use universal_sync_core::codec::{PostcardCodec, VersionedCodec};
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
     ConnectorError, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
@@ -42,15 +42,19 @@ where
 }
 
 pub(crate) type IrohMessageConnection = SinkStream<
-    FramedWrite<SendStream, PostcardCodec<MessageResponse>>,
-    FramedRead<RecvStream, PostcardCodec<MessageRequest>>,
+    FramedWrite<SendStream, VersionedCodec<MessageResponse>>,
+    FramedRead<RecvStream, VersionedCodec<MessageRequest>>,
 >;
 
 #[must_use]
-pub(crate) fn new_message_connection(send: SendStream, recv: RecvStream) -> IrohMessageConnection {
+pub(crate) fn new_message_connection(
+    send: SendStream,
+    recv: RecvStream,
+    protocol_version: u32,
+) -> IrohMessageConnection {
     SinkStream::new(
-        FramedWrite::new(send, PostcardCodec::new()),
-        FramedRead::new(recv, PostcardCodec::new()),
+        FramedWrite::new(send, VersionedCodec::new(protocol_version)),
+        FramedRead::new(recv, VersionedCodec::new(protocol_version)),
     )
 }
 
@@ -115,9 +119,10 @@ where
         .attach("invalid handshake")?;
 
     match handshake {
-        Handshake::JoinProposals { group_id, since_epoch } => {
-            handle_proposal_stream(group_id, None, since_epoch, reader, writer, registry).await
-        }
+        Handshake::JoinProposals {
+            group_id,
+            since_epoch,
+        } => handle_proposal_stream(group_id, None, since_epoch, reader, writer, registry).await,
         Handshake::CreateGroup(group_info) => {
             handle_proposal_stream(
                 GroupId::from_slice(&[0; 32]),
@@ -207,9 +212,16 @@ where
         .get_epoch_watcher(&group_id)
         .expect("epoch watcher should exist after get_group/create_group");
 
-    run_acceptor_with_epoch_waiter(handler, connection, proposer_id, since_epoch, epoch_rx, current_epoch_fn)
-        .await
-        .change_context(ConnectorError)?;
+    run_acceptor_with_epoch_waiter(
+        handler,
+        connection,
+        proposer_id,
+        since_epoch,
+        epoch_rx,
+        current_epoch_fn,
+    )
+    .await
+    .change_context(ConnectorError)?;
 
     debug!(?group_id, "proposal stream closed");
     Ok(())
@@ -227,7 +239,7 @@ where
     C: ExternalMlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    if registry.get_group(&group_id).is_none() {
+    let Some((acceptor, _state)) = registry.get_group(&group_id) else {
         warn!("group not found for message stream");
         let response = HandshakeResponse::GroupNotFound;
         let response_bytes = postcard::to_allocvec(&response).change_context(ConnectorError)?;
@@ -236,7 +248,8 @@ where
             .await
             .change_context(ConnectorError)?;
         return Err(Report::new(ConnectorError).attach("group not found"));
-    }
+    };
+    let protocol_version = acceptor.protocol_version().change_context(ConnectorError)?;
 
     debug!("message stream handshake complete");
 
@@ -249,7 +262,7 @@ where
 
     let recv = reader.into_inner();
     let send = writer.into_inner();
-    let mut connection = new_message_connection(send, recv);
+    let mut connection = new_message_connection(send, recv, protocol_version);
     let mut subscription = registry.subscribe_messages(&group_id);
 
     loop {

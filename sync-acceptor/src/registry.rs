@@ -7,10 +7,9 @@ use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
 use mls_rs::external_client::ExternalClient;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
-use mls_rs::mls_rs_codec::MlsDecode;
 use mls_rs::{CipherSuiteProvider, ExtensionList, MlsMessage};
 use tokio::sync::watch;
-use universal_sync_core::{AcceptorId, Epoch, GroupId, GroupInfoExt, SYNC_EXTENSION_TYPE};
+use universal_sync_core::{AcceptorId, Epoch, GroupId, GroupInfoExt};
 use universal_sync_paxos::Learner;
 
 #[derive(Debug)]
@@ -87,14 +86,11 @@ where
     }
 
     fn extract_acceptors_from_extensions(extensions: &ExtensionList) -> Vec<EndpointAddr> {
-        for ext in extensions.iter() {
-            if ext.extension_type == SYNC_EXTENSION_TYPE
-                && let Ok(info) = GroupInfoExt::mls_decode(&mut ext.extension_data.as_slice())
-            {
-                return info.acceptors;
-            }
-        }
-        vec![]
+        extensions
+            .get_as::<GroupInfoExt>()
+            .ok()
+            .flatten()
+            .map_or_else(Vec::new, |info| info.acceptors)
     }
 
     fn create_acceptor_from_bytes(
@@ -255,7 +251,9 @@ where
         group_id: &GroupId,
         sender: &universal_sync_core::MemberFingerprint,
     ) -> bool {
-        self.state_store.for_group(*group_id).check_sender_in_roster(sender)
+        self.state_store
+            .for_group(*group_id)
+            .check_sender_in_roster(sender)
     }
 
     pub fn get_epoch_watcher(&self, group_id: &GroupId) -> Option<EpochWatcher> {

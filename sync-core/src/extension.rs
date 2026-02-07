@@ -32,12 +32,28 @@ pub const SYNC_EXTENSION_TYPE: ExtensionType = ExtensionType::new(0xF796);
 /// Single proposal type for all sync protocol custom proposals (private use range).
 pub const SYNC_PROPOSAL_TYPE: ProposalType = ProposalType::new(0xF796);
 
-/// CRDT type and compaction config (group context extension).
+/// Current protocol version for group context extensions.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
+
+/// Version 1 schema for the group context extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupContextExtV1 {
+    pub crdt_type_id: String,
+    pub compaction_config: CompactionConfig,
+    pub key_rotation_interval_secs: Option<u64>,
+}
+
+/// CRDT type, compaction config, and protocol version (group context extension).
 ///
 /// Set at group creation. Joiners use `crdt_type_id` to select the right CRDT
 /// factory and `compaction_config` to drive hierarchical compaction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The binary encoding uses a fixed 4-byte `u32` version prefix followed by
+/// a version-specific postcard payload. The version number doubles as the
+/// protocol version for all group-scoped messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupContextExt {
+    pub protocol_version: u32,
     pub crdt_type_id: String,
     pub compaction_config: CompactionConfig,
     pub key_rotation_interval_secs: Option<u64>,
@@ -51,6 +67,7 @@ impl GroupContextExt {
         key_rotation_interval_secs: Option<u64>,
     ) -> Self {
         Self {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
             crdt_type_id: crdt_type_id.into(),
             compaction_config,
             key_rotation_interval_secs,
@@ -58,22 +75,83 @@ impl GroupContextExt {
     }
 }
 
+impl From<GroupContextExtV1> for GroupContextExt {
+    fn from(v1: GroupContextExtV1) -> Self {
+        Self {
+            protocol_version: 1,
+            crdt_type_id: v1.crdt_type_id,
+            compaction_config: v1.compaction_config,
+            key_rotation_interval_secs: v1.key_rotation_interval_secs,
+        }
+    }
+}
+
+impl From<&GroupContextExt> for GroupContextExtV1 {
+    fn from(ext: &GroupContextExt) -> Self {
+        Self {
+            crdt_type_id: ext.crdt_type_id.clone(),
+            compaction_config: ext.compaction_config.clone(),
+            key_rotation_interval_secs: ext.key_rotation_interval_secs,
+        }
+    }
+}
+
 impl MlsSize for GroupContextExt {
     fn mls_encoded_len(&self) -> usize {
-        postcard::to_allocvec(self).map_or(4, |v| 4 + v.len())
+        let v1 = GroupContextExtV1::from(self);
+        let payload_len = postcard::to_allocvec(&v1).map_or(0, |v| v.len());
+        // version (4) + payload
+        4 + payload_len
     }
 }
 
 impl MlsEncode for GroupContextExt {
     fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
-        postcard_encode(self, writer)
+        let v1 = GroupContextExtV1::from(self);
+        let payload =
+            postcard::to_allocvec(&v1).map_err(|_| mls_rs_codec::Error::Custom(POSTCARD_ERROR))?;
+        writer.extend_from_slice(&self.protocol_version.to_be_bytes());
+        writer.extend_from_slice(&payload);
+        Ok(())
     }
 }
 
 impl MlsDecode for GroupContextExt {
     fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
-        postcard_decode(reader)
+        if reader.len() < 4 {
+            return Err(mls_rs_codec::Error::UnexpectedEOF);
+        }
+        let version = u32::from_be_bytes([reader[0], reader[1], reader[2], reader[3]]);
+        let payload = &reader[4..];
+        *reader = &[];
+        match version {
+            1 => {
+                let v1: GroupContextExtV1 = postcard::from_bytes(payload)
+                    .map_err(|_| mls_rs_codec::Error::Custom(POSTCARD_ERROR))?;
+                Ok(v1.into())
+            }
+            _ => Err(mls_rs_codec::Error::Custom(POSTCARD_ERROR)),
+        }
     }
+}
+
+/// Extract the protocol version from raw extension data without fully parsing.
+///
+/// Reads the version from the first 4 bytes (big-endian `u32`).
+///
+/// # Errors
+///
+/// Returns an error if the data is too short.
+pub fn read_protocol_version(extension_data: &[u8]) -> Result<u32, mls_rs_codec::Error> {
+    if extension_data.len() < 4 {
+        return Err(mls_rs_codec::Error::UnexpectedEOF);
+    }
+    Ok(u32::from_be_bytes([
+        extension_data[0],
+        extension_data[1],
+        extension_data[2],
+        extension_data[3],
+    ]))
 }
 
 impl MlsCodecExtension for GroupContextExt {
@@ -82,14 +160,16 @@ impl MlsCodecExtension for GroupContextExt {
     }
 }
 
-/// Member endpoint address and supported CRDTs (key package extension).
+/// Member endpoint address, supported CRDTs, and supported protocol versions
+/// (key package extension).
 ///
 /// Included in key packages so the group leader can send the Welcome
-/// directly and verify CRDT compatibility.
+/// directly, verify CRDT compatibility, and check protocol version support.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackageExt {
     pub addr: EndpointAddr,
     pub supported_crdts: Vec<String>,
+    pub supported_protocol_versions: Vec<u32>,
 }
 
 impl KeyPackageExt {
@@ -101,12 +181,18 @@ impl KeyPackageExt {
         Self {
             addr,
             supported_crdts: supported_crdts.into_iter().map(Into::into).collect(),
+            supported_protocol_versions: vec![CURRENT_PROTOCOL_VERSION],
         }
     }
 
     #[must_use]
     pub fn supports(&self, type_id: &str) -> bool {
         self.supported_crdts.iter().any(|id| id == type_id)
+    }
+
+    #[must_use]
+    pub fn supports_version(&self, version: u32) -> bool {
+        self.supported_protocol_versions.contains(&version)
     }
 }
 
@@ -257,6 +343,22 @@ impl MlsDecode for SyncProposal {
 impl MlsCustomProposal for SyncProposal {
     fn proposal_type() -> ProposalType {
         SYNC_PROPOSAL_TYPE
+    }
+}
+
+impl crate::codec::Versioned for SyncProposal {
+    fn serialize_versioned(&self, protocol_version: u32) -> Result<Vec<u8>, postcard::Error> {
+        match protocol_version {
+            1 => postcard::to_allocvec(self),
+            _ => Err(postcard::Error::SerializeBufferFull),
+        }
+    }
+
+    fn deserialize_versioned(protocol_version: u32, bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match protocol_version {
+            1 => postcard::from_bytes(bytes),
+            _ => Err(postcard::Error::DeserializeUnexpectedEnd),
+        }
     }
 }
 
@@ -443,15 +545,12 @@ mod tests {
 
     #[test]
     fn group_context_ext_with_key_rotation_roundtrip() {
-        let ext = GroupContextExt::new(
-            "test-crdt",
-            crate::default_compaction_config(),
-            Some(86400),
-        );
+        let ext =
+            GroupContextExt::new("test-crdt", crate::default_compaction_config(), Some(86400));
         assert_eq!(ext.key_rotation_interval_secs, Some(86400));
 
-        let bytes = postcard::to_allocvec(&ext).unwrap();
-        let decoded: GroupContextExt = postcard::from_bytes(&bytes).unwrap();
+        let encoded = ext.mls_encode_to_vec().unwrap();
+        let decoded = GroupContextExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(decoded.key_rotation_interval_secs, Some(86400));
         assert_eq!(decoded.crdt_type_id, "test-crdt");
     }
@@ -460,5 +559,69 @@ mod tests {
     fn group_context_ext_key_rotation_disabled() {
         let ext = GroupContextExt::new("test", crate::default_compaction_config(), None);
         assert_eq!(ext.key_rotation_interval_secs, None);
+    }
+
+    #[test]
+    fn group_context_ext_version_prefix() {
+        let ext = GroupContextExt::new("yjs", crate::default_compaction_config(), None);
+        let encoded = ext.mls_encode_to_vec().unwrap();
+
+        // First 4 bytes = version (no length prefix)
+        assert!(encoded.len() >= 4);
+        let version = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
+        assert_eq!(version, 1);
+        assert_eq!(ext.protocol_version, 1);
+    }
+
+    #[test]
+    fn group_context_ext_read_protocol_version() {
+        let ext = GroupContextExt::new("yjs", crate::default_compaction_config(), None);
+        let encoded = ext.mls_encode_to_vec().unwrap();
+        let version = super::read_protocol_version(&encoded).unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn group_context_ext_unknown_version_rejected() {
+        let ext = GroupContextExt::new("yjs", crate::default_compaction_config(), None);
+        let mut encoded = ext.mls_encode_to_vec().unwrap();
+
+        // Corrupt the version to an unknown value (99)
+        encoded[0] = 0;
+        encoded[1] = 0;
+        encoded[2] = 0;
+        encoded[3] = 99;
+        assert!(GroupContextExt::mls_decode(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn key_package_ext_version_support() {
+        let addr = test_addr(42);
+        let ext = KeyPackageExt::new(addr, ["yjs"]);
+
+        assert!(ext.supports_version(1));
+        assert!(!ext.supports_version(2));
+        assert_eq!(
+            ext.supported_protocol_versions,
+            vec![CURRENT_PROTOCOL_VERSION]
+        );
+    }
+
+    #[test]
+    fn sync_proposal_versioned_roundtrip() {
+        use crate::codec::Versioned;
+
+        let addr = test_addr(42);
+        let proposal = SyncProposal::acceptor_add(addr);
+
+        let bytes = proposal.serialize_versioned(1).unwrap();
+        let decoded = SyncProposal::deserialize_versioned(1, &bytes).unwrap();
+        assert_eq!(decoded, proposal);
+    }
+
+    #[test]
+    fn sync_proposal_versioned_unknown_version() {
+        use crate::codec::Versioned;
+        assert!(SyncProposal::deserialize_versioned(99, &[0]).is_err());
     }
 }

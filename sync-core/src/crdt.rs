@@ -80,7 +80,6 @@ pub trait CrdtFactory: Send + Sync {
         }
         crdt.snapshot()
     }
-
 }
 
 /// Configuration for a single compaction level.

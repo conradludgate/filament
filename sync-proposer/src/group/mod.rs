@@ -253,7 +253,11 @@ where
         let (learner, group_id, group_info_bytes) = blocking(|| {
             let mut group_context_extensions = mls_rs::ExtensionList::default();
             group_context_extensions
-                .set_from(GroupContextExt::new(&crdt_type_id, compaction_config.clone(), Some(86400)))
+                .set_from(GroupContextExt::new(
+                    &crdt_type_id,
+                    compaction_config.clone(),
+                    Some(86400),
+                ))
                 .change_context(GroupError)
                 .attach(OperationContext::CREATING_GROUP)?;
 
@@ -322,62 +326,68 @@ where
     where
         CS: Clone,
     {
-        let (learner, group_id, crdt_type_id, compaction_config, crdt_snapshot_opt, key_rotation_interval_secs) =
-            blocking(|| {
-                let welcome = MlsMessage::from_bytes(welcome_bytes)
-                    .change_context(GroupError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+        let (
+            learner,
+            group_id,
+            crdt_type_id,
+            compaction_config,
+            crdt_snapshot_opt,
+            key_rotation_interval_secs,
+        ) = blocking(|| {
+            let welcome = MlsMessage::from_bytes(welcome_bytes)
+                .change_context(GroupError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let (group, info) = client
-                    .join_group(None, &welcome, None)
-                    .change_context(GroupError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let (group, info) = client
+                .join_group(None, &welcome, None)
+                .change_context(GroupError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let mls_group_id = group.context().group_id.clone();
-                let group_id = GroupId::from_slice(&mls_group_id);
+            let mls_group_id = group.context().group_id.clone();
+            let group_id = GroupId::from_slice(&mls_group_id);
 
-                let group_info_ext = info
-                    .group_info_extensions
-                    .get_as::<GroupInfoExt>()
-                    .change_context(GroupError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let group_info_ext = info
+                .group_info_extensions
+                .get_as::<GroupInfoExt>()
+                .change_context(GroupError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let acceptors = group_info_ext
-                    .as_ref()
-                    .map(|e| e.acceptors.clone())
-                    .unwrap_or_default();
+            let acceptors = group_info_ext
+                .as_ref()
+                .map(|e| e.acceptors.clone())
+                .unwrap_or_default();
 
-                let crdt_snapshot_opt = group_info_ext.map(|e| e.snapshot);
+            let crdt_snapshot_opt = group_info_ext.map(|e| e.snapshot);
 
-                let group_ctx = group
-                    .context()
-                    .extensions
-                    .get_as::<GroupContextExt>()
-                    .change_context(GroupError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let group_ctx = group
+                .context()
+                .extensions
+                .get_as::<GroupContextExt>()
+                .change_context(GroupError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let crdt_type_id = group_ctx
-                    .as_ref()
-                    .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id.clone());
+            let crdt_type_id = group_ctx
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id.clone());
 
-                let key_rotation_interval_secs = group_ctx
-                    .as_ref()
-                    .and_then(|e| e.key_rotation_interval_secs);
+            let key_rotation_interval_secs = group_ctx
+                .as_ref()
+                .and_then(|e| e.key_rotation_interval_secs);
 
-                let compaction_config = group_ctx
-                    .map_or_else(default_compaction_config, |e| e.compaction_config);
+            let compaction_config =
+                group_ctx.map_or_else(default_compaction_config, |e| e.compaction_config);
 
-                let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
+            let learner = GroupLearner::new(group, signer, cipher_suite, acceptors);
 
-                Ok::<_, Report<GroupError>>((
-                    learner,
-                    group_id,
-                    crdt_type_id,
-                    compaction_config,
-                    crdt_snapshot_opt,
-                    key_rotation_interval_secs,
-                ))
-            })?;
+            Ok::<_, Report<GroupError>>((
+                learner,
+                group_id,
+                crdt_type_id,
+                compaction_config,
+                crdt_snapshot_opt,
+                key_rotation_interval_secs,
+            ))
+        })?;
 
         let crdt_factory = crdt_factories.get(&crdt_type_id).ok_or_else(|| {
             Report::new(GroupError).attach(format!(
@@ -426,8 +436,7 @@ where
         let (request_tx, request_rx) = mpsc::channel(64);
         let (app_message_tx, app_message_rx) = mpsc::channel(256);
 
-        let key_rotation_interval = key_rotation_interval_secs
-            .map(std::time::Duration::from_secs);
+        let key_rotation_interval = key_rotation_interval_secs.map(std::time::Duration::from_secs);
 
         let actor = group_actor::GroupActor::new(
             learner,
