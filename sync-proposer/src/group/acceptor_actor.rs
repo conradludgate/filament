@@ -5,6 +5,9 @@ use universal_sync_core::{
     AcceptorId, Epoch, GroupId, MemberFingerprint, MessageRequest, MessageResponse, StateVector,
 };
 
+type MessageWriter = FramedWrite<iroh::endpoint::SendStream, VersionedCodec<MessageRequest>>;
+type MessageReader = FramedRead<iroh::endpoint::RecvStream, VersionedCodec<MessageResponse>>;
+
 use super::{AcceptorInbound, AcceptorOutbound};
 use crate::connection::ConnectionManager;
 
@@ -99,10 +102,7 @@ impl AcceptorActor {
         )
         .await;
 
-        let message_io: Option<(
-            FramedWrite<iroh::endpoint::SendStream, VersionedCodec<MessageRequest>>,
-            FramedRead<iroh::endpoint::RecvStream, VersionedCodec<MessageResponse>>,
-        )> = match message_streams {
+        let message_io: Option<(MessageWriter, MessageReader)> = match message_streams {
             Ok(Ok((message_send, message_recv))) => {
                 let mut message_writer =
                     FramedWrite::new(message_send, VersionedCodec::new(self.protocol_version));

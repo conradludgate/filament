@@ -1,5 +1,7 @@
 //! `GroupStateStorage` implementation backed by fjall.
 
+#![allow(dead_code)]
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -96,7 +98,7 @@ impl FjallGroupStateStorage {
         let key = Self::message_seq_key(group_id);
         self.inner
             .proposer_meta
-            .insert(&key, &seq.to_be_bytes())
+            .insert(&key, seq.to_be_bytes())
             .map_err(|_| GroupStateError)
     }
 

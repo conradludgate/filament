@@ -433,6 +433,7 @@ where
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_actors(
         learner: GroupLearner<C, CS>,
         group_id: GroupId,
