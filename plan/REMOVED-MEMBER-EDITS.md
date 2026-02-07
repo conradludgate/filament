@@ -1,5 +1,7 @@
 # Removed Member Edits
 
+**Status**: Implemented
+
 ## Problem
 
 When a member is removed from the group via Paxos commit, their CRDT updates

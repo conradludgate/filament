@@ -153,18 +153,17 @@ as a trade-off of the `ceil(sqrt(n))` routing design.
 
 ## Stale Documentation
 
-- **COMPACTION.md Phase 5**: Lists AcceptorAdd/AcceptorRemove migration from
-  context extensions to custom proposals. This migration is already complete
-  in the code — Phase 5 should be marked as done.
 - **Old README**: Claimed p2p initial sync via iroh for new members. The
   current implementation uses compaction-based catch-up from acceptors
   instead. The README has been rewritten to reflect this.
 
-## Priority Issues
+## Issues
 
-| Issue | Severity | Document |
-|-------|----------|----------|
-| No proactive commit catch-up on proposer reconnect | **High** | [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md) |
-| Removed member edits silently dropped | **Medium** | [REMOVED-MEMBER-EDITS.md](REMOVED-MEMBER-EDITS.md) |
-| Backoff is linear, no jitter, max 3 retries | **Low** | [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md) |
-| No time-based key rotation floor | **Low** | [KEY-ROTATION.md](KEY-ROTATION.md) |
+All issues identified in this review have been implemented.
+
+| Issue | Severity | Status | Document |
+|-------|----------|--------|----------|
+| No proactive commit catch-up on proposer reconnect | **High** | **Implemented** | [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md) |
+| Removed member edits silently dropped | **Medium** | **Implemented** | [REMOVED-MEMBER-EDITS.md](REMOVED-MEMBER-EDITS.md) |
+| Backoff is linear, no jitter, max 3 retries | **Low** | **Implemented** | [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md) |
+| No time-based key rotation floor | **Low** | **Implemented** | [KEY-ROTATION.md](KEY-ROTATION.md) |
