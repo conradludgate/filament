@@ -55,11 +55,15 @@ pub trait Crdt: Send + Sync + 'static {
 #[allow(clippy::wrong_self_convention)]
 pub trait CrdtFactory: Send + Sync {
     fn type_id(&self) -> &str;
-    fn create(&self) -> Box<dyn Crdt>;
+    fn create(&self, client_id: u64) -> Box<dyn Crdt>;
     /// # Errors
     ///
     /// Returns [`CrdtError`] if the snapshot bytes cannot be decoded.
-    fn from_snapshot(&self, snapshot: &[u8]) -> Result<Box<dyn Crdt>, Report<CrdtError>>;
+    fn from_snapshot(
+        &self,
+        snapshot: &[u8],
+        client_id: u64,
+    ) -> Result<Box<dyn Crdt>, Report<CrdtError>>;
 
     /// Merge an optional base snapshot with a series of updates into a single snapshot.
     ///
@@ -72,8 +76,8 @@ pub trait CrdtFactory: Send + Sync {
         updates: &[&[u8]],
     ) -> Result<Vec<u8>, Report<CrdtError>> {
         let mut crdt = match base {
-            Some(b) => self.from_snapshot(b)?,
-            None => self.create(),
+            Some(b) => self.from_snapshot(b, 0)?,
+            None => self.create(0),
         };
         for update in updates {
             crdt.apply(update)?;
@@ -166,11 +170,15 @@ impl CrdtFactory for NoCrdtFactory {
         "none"
     }
 
-    fn create(&self) -> Box<dyn Crdt> {
+    fn create(&self, _client_id: u64) -> Box<dyn Crdt> {
         Box::new(NoCrdt)
     }
 
-    fn from_snapshot(&self, _snapshot: &[u8]) -> Result<Box<dyn Crdt>, Report<CrdtError>> {
+    fn from_snapshot(
+        &self,
+        _snapshot: &[u8],
+        _client_id: u64,
+    ) -> Result<Box<dyn Crdt>, Report<CrdtError>> {
         Ok(Box::new(NoCrdt))
     }
 }
@@ -199,10 +207,10 @@ mod tests {
 
         assert_eq!(CrdtFactory::type_id(&factory), "none");
 
-        let crdt = factory.create();
+        let crdt = factory.create(0);
         assert_eq!(Crdt::protocol_name(&*crdt), "none");
 
-        let crdt2 = factory.from_snapshot(b"ignored").unwrap();
+        let crdt2 = factory.from_snapshot(b"ignored", 0).unwrap();
         assert_eq!(Crdt::protocol_name(&*crdt2), "none");
     }
 

@@ -74,10 +74,15 @@ impl AcceptorActor {
             Ok(streams) => streams,
             Err(e) => {
                 tracing::warn!(acceptor_id = ?self.acceptor_id, ?e, "failed to open proposal stream");
-                let _ = self.inbound_tx.send(AcceptorInbound::Disconnected {
-                    acceptor_id: self.acceptor_id,
-                }).await;
-                return ConnectionResult::Disconnected { was_connected: false };
+                let _ = self
+                    .inbound_tx
+                    .send(AcceptorInbound::Disconnected {
+                        acceptor_id: self.acceptor_id,
+                    })
+                    .await;
+                return ConnectionResult::Disconnected {
+                    was_connected: false,
+                };
             }
         };
 
@@ -122,9 +127,12 @@ impl AcceptorActor {
             None => (None, None),
         };
 
-        let _ = self.inbound_tx.send(AcceptorInbound::Connected {
-            acceptor_id: self.acceptor_id,
-        }).await;
+        let _ = self
+            .inbound_tx
+            .send(AcceptorInbound::Connected {
+                acceptor_id: self.acceptor_id,
+            })
+            .await;
 
         let result = loop {
             tokio::select! {
@@ -196,9 +204,12 @@ impl AcceptorActor {
         };
 
         if matches!(result, ConnectionResult::Disconnected { .. }) {
-            let _ = self.inbound_tx.send(AcceptorInbound::Disconnected {
-                acceptor_id: self.acceptor_id,
-            }).await;
+            let _ = self
+                .inbound_tx
+                .send(AcceptorInbound::Disconnected {
+                    acceptor_id: self.acceptor_id,
+                })
+                .await;
         }
 
         result

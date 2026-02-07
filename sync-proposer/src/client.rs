@@ -10,7 +10,7 @@ use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tokio::sync::mpsc;
 use universal_sync_core::{
-    CompactionConfig, CrdtFactory, KeyPackageExt, default_compaction_config,
+    CompactionConfig, CrdtFactory, KeyPackageExt, LeafNodeExt, default_compaction_config,
 };
 
 use crate::connection::ConnectionManager;
@@ -92,8 +92,12 @@ where
         let mut kp_extensions = ExtensionList::default();
         kp_extensions.set_from(kp_ext).change_context(GroupError)?;
 
+        let ln_ext = LeafNodeExt::random();
+        let mut ln_extensions = ExtensionList::default();
+        ln_extensions.set_from(ln_ext).change_context(GroupError)?;
+
         self.client
-            .generate_key_package_message(kp_extensions, ExtensionList::default(), None)
+            .generate_key_package_message(kp_extensions, ln_extensions, None)
             .change_context(GroupError)
     }
 

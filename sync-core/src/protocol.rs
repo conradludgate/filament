@@ -111,21 +111,36 @@ impl crate::codec::Versioned for GroupMessage {
     }
 }
 
-/// SHA-256 of the member's MLS signing public key. Stable across epochs.
+/// Truncated SHA-256 of (`group_id` || `signing_key` || `binding_id`). Scoped per-group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct MemberFingerprint(pub [u8; 32]);
+pub struct MemberFingerprint(pub [u8; 8]);
 
 impl MemberFingerprint {
     #[must_use]
-    pub fn from_signing_key(key: &[u8]) -> Self {
+    pub fn from_key(group_id: &GroupId, signing_key: &[u8], binding_id: u64) -> Self {
         use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(key);
-        Self(hash.into())
+        let mut hasher = Sha256::new();
+        hasher.update(group_id.as_bytes());
+        hasher.update(signing_key);
+        hasher.update(binding_id.to_le_bytes());
+        let hash = hasher.finalize();
+        let mut fp = [0u8; 8];
+        fp.copy_from_slice(&hash[..8]);
+        Self(fp)
     }
 
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
+    pub const fn as_bytes(&self) -> &[u8; 8] {
         &self.0
+    }
+
+    /// Derive a Yrs-compatible client ID.
+    ///
+    /// Yrs V2 encoding uses signed varints internally, so client IDs must
+    /// fit in 63 bits. We mask off the high bit to stay in range.
+    #[must_use]
+    pub fn as_client_id(&self) -> u64 {
+        u64::from_le_bytes(self.0) & 0x7FFF_FFFF_FFFF_FFFF
     }
 }
 
@@ -315,24 +330,52 @@ mod tests {
 
     #[test]
     fn test_member_fingerprint_deterministic() {
+        let gid = GroupId::new([1u8; 32]);
         let key = b"some signing public key";
-        let fp1 = MemberFingerprint::from_signing_key(key);
-        let fp2 = MemberFingerprint::from_signing_key(key);
+        let fp1 = MemberFingerprint::from_key(&gid, key, 0);
+        let fp2 = MemberFingerprint::from_key(&gid, key, 0);
         assert_eq!(fp1, fp2);
     }
 
     #[test]
     fn test_member_fingerprint_different_keys() {
-        let fp1 = MemberFingerprint::from_signing_key(b"key1");
-        let fp2 = MemberFingerprint::from_signing_key(b"key2");
+        let gid = GroupId::new([1u8; 32]);
+        let fp1 = MemberFingerprint::from_key(&gid, b"key1", 0);
+        let fp2 = MemberFingerprint::from_key(&gid, b"key2", 0);
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_member_fingerprint_different_groups() {
+        let gid1 = GroupId::new([1u8; 32]);
+        let gid2 = GroupId::new([2u8; 32]);
+        let fp1 = MemberFingerprint::from_key(&gid1, b"key", 0);
+        let fp2 = MemberFingerprint::from_key(&gid2, b"key", 0);
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_member_fingerprint_different_binding_ids() {
+        let gid = GroupId::new([1u8; 32]);
+        let fp1 = MemberFingerprint::from_key(&gid, b"key", 0);
+        let fp2 = MemberFingerprint::from_key(&gid, b"key", 1);
         assert_ne!(fp1, fp2);
     }
 
     #[test]
     fn test_member_fingerprint_empty_key() {
-        let fp = MemberFingerprint::from_signing_key(b"");
-        // SHA-256 of empty input is a known value
-        assert_ne!(fp.0, [0u8; 32]);
+        let gid = GroupId::new([1u8; 32]);
+        let fp = MemberFingerprint::from_key(&gid, b"", 0);
+        assert_ne!(fp.0, [0u8; 8]);
+    }
+
+    #[test]
+    fn test_member_fingerprint_as_client_id() {
+        let gid = GroupId::new([1u8; 32]);
+        let fp = MemberFingerprint::from_key(&gid, b"key", 42);
+        let cid = fp.as_client_id();
+        assert_eq!(cid & 0x8000_0000_0000_0000, 0, "high bit must be cleared");
+        assert_eq!(cid, u64::from_le_bytes(fp.0) & 0x7FFF_FFFF_FFFF_FFFF);
     }
 
     #[test]
@@ -368,7 +411,7 @@ mod tests {
     fn test_message_id_roundtrip() {
         let id = MessageId {
             group_id: GroupId::new([1u8; 32]),
-            sender: MemberFingerprint([2u8; 32]),
+            sender: MemberFingerprint([2u8; 8]),
             seq: 42,
         };
         let bytes = postcard::to_allocvec(&id).unwrap();
@@ -391,7 +434,7 @@ mod tests {
         let send = MessageRequest::Send {
             id: MessageId {
                 group_id: GroupId::new([0u8; 32]),
-                sender: MemberFingerprint([1u8; 32]),
+                sender: MemberFingerprint([1u8; 8]),
                 seq: 1,
             },
             message: EncryptedAppMessage {
@@ -426,8 +469,8 @@ mod tests {
     #[test]
     fn auth_data_compaction_roundtrip() {
         let mut watermark = StateVector::new();
-        watermark.insert(MemberFingerprint([0xAA; 32]), 100);
-        watermark.insert(MemberFingerprint([0xBB; 32]), 200);
+        watermark.insert(MemberFingerprint([0xAA; 8]), 100);
+        watermark.insert(MemberFingerprint([0xBB; 8]), 200);
 
         let ad = AuthData::compaction(50, 1, watermark.clone());
         let bytes = ad.to_bytes().unwrap();

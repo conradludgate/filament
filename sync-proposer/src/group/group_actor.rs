@@ -1062,13 +1062,17 @@ where
             AcceptorInbound::Connected { acceptor_id } => {
                 if self.connected_acceptors.insert(acceptor_id) {
                     tracing::info!(?acceptor_id, "acceptor connected");
-                    let _ = self.event_tx.send(GroupEvent::AcceptorConnected { id: acceptor_id });
+                    let _ = self
+                        .event_tx
+                        .send(GroupEvent::AcceptorConnected { id: acceptor_id });
                 }
             }
             AcceptorInbound::Disconnected { acceptor_id } => {
                 if self.connected_acceptors.remove(&acceptor_id) {
                     tracing::warn!(?acceptor_id, "acceptor disconnected");
-                    let _ = self.event_tx.send(GroupEvent::AcceptorDisconnected { id: acceptor_id });
+                    let _ = self
+                        .event_tx
+                        .send(GroupEvent::AcceptorDisconnected { id: acceptor_id });
                 }
             }
         }
@@ -1292,7 +1296,7 @@ where
                 .members()
                 .iter()
                 .find(|m| m.index == idx)
-                .map(|m| MemberFingerprint::from_signing_key(&m.signing_identity.signature_key))
+                .map(|m| crate::learner::fingerprint_of_member(&self.group_id, m))
         });
 
         for proposal_info in applied_proposals {
@@ -1483,16 +1487,16 @@ where
         let seq = auth_data.seq();
 
         let sender_member = MemberId(app_msg.sender_index);
-        let signing_key = self
+        let sender_fp = self
             .learner
             .group()
             .roster()
             .members()
             .iter()
             .find(|m| m.index == sender_member.0)
-            .map(|m| MemberFingerprint::from_signing_key(&m.signing_identity.signature_key));
+            .map(|m| crate::learner::fingerprint_of_member(&self.group_id, m));
 
-        let Some(sender_fp) = signing_key else {
+        let Some(sender_fp) = sender_fp else {
             tracing::debug!(
                 ?sender_member,
                 "sender not found in roster, dropping message"
@@ -1861,7 +1865,7 @@ mod tests {
 
     fn make_claim(level: u8, deadline: u64) -> ActiveCompactionClaim {
         ActiveCompactionClaim {
-            claimer: MemberFingerprint([0u8; 32]),
+            claimer: MemberFingerprint([0u8; 8]),
             level,
             watermark: StateVector::default(),
             deadline,

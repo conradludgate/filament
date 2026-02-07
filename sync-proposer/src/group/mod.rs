@@ -26,7 +26,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
     AcceptorId, CompactionConfig, Crdt, CrdtFactory, EncryptedAppMessage, Epoch, GroupContextExt,
-    GroupId, GroupInfoExt, Handshake, KeyPackageExt, MessageId, default_compaction_config,
+    GroupId, GroupInfoExt, Handshake, KeyPackageExt, LeafNodeExt, MessageId,
+    default_compaction_config,
 };
 
 use crate::connection::ConnectionManager;
@@ -268,12 +269,14 @@ where
                 .change_context(GroupError)
                 .attach(OperationContext::CREATING_GROUP)?;
 
+            let mut leaf_node_extensions = mls_rs::ExtensionList::default();
+            leaf_node_extensions
+                .set_from(LeafNodeExt::random())
+                .change_context(GroupError)
+                .attach(OperationContext::CREATING_GROUP)?;
+
             let group = client
-                .create_group(
-                    group_context_extensions,
-                    mls_rs::ExtensionList::default(),
-                    None,
-                )
+                .create_group(group_context_extensions, leaf_node_extensions, None)
                 .change_context(GroupError)
                 .attach(OperationContext::CREATING_GROUP)?;
 
@@ -307,7 +310,8 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
-        let crdt = crdt_factory.create();
+        let client_id = learner.own_fingerprint().as_client_id();
+        let crdt = crdt_factory.create(client_id);
 
         Ok(Self::spawn_actors(
             learner,
@@ -406,13 +410,14 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
+        let client_id = learner.own_fingerprint().as_client_id();
         let crdt = match crdt_snapshot_opt {
             Some(snapshot) if !snapshot.is_empty() => crdt_factory
-                .from_snapshot(&snapshot)
+                .from_snapshot(&snapshot, client_id)
                 .change_context(GroupError)?,
             _ => {
                 tracing::info!("joining group without CRDT snapshot, will catch up via backfill");
-                crdt_factory.create()
+                crdt_factory.create(client_id)
             }
         };
 

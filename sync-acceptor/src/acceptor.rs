@@ -10,8 +10,8 @@ use mls_rs::crypto::SignaturePublicKey;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
 use mls_rs::external_client::{ExternalGroup, ExternalReceivedMessage};
 use universal_sync_core::{
-    AcceptorId, Attempt, Epoch, GroupContextExt, GroupMessage, GroupProposal, MemberId,
-    SyncProposal, UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupContextExt, GroupMessage, GroupProposal, LeafNodeExt,
+    MemberId, SyncProposal, UnsignedProposal,
 };
 
 /// Error marker for `GroupAcceptor` operations.
@@ -382,16 +382,25 @@ where
 
     fn store_current_epoch_roster(&self, epoch: Epoch) {
         if let Some(ref store) = self.state_store {
-            use crate::state_store::EpochRoster;
+            use crate::state_store::{EpochRoster, RosterMember};
 
             let members: Vec<_> = self
                 .external_group
                 .roster()
                 .members_iter()
                 .map(|m| {
+                    let binding_id = m
+                        .extensions
+                        .get_as::<LeafNodeExt>()
+                        .ok()
+                        .flatten()
+                        .map_or(0, |ext| ext.binding_id);
                     (
                         MemberId(m.index),
-                        m.signing_identity.signature_key.as_bytes().to_vec(),
+                        RosterMember {
+                            signing_key: m.signing_identity.signature_key.as_bytes().to_vec(),
+                            binding_id,
+                        },
                     )
                 })
                 .collect();

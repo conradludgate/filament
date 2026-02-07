@@ -9,11 +9,11 @@ use universal_sync_core::{AcceptorId, MessageId};
 use xxhash_rust::xxh3::xxh3_64;
 
 fn compute_score(acceptor_id: &AcceptorId, message_id: &MessageId) -> u64 {
-    let mut buf = [0u8; 104];
+    let mut buf = [0u8; 80];
     buf[..32].copy_from_slice(acceptor_id.as_bytes());
     buf[32..64].copy_from_slice(message_id.group_id.as_bytes());
-    buf[64..96].copy_from_slice(message_id.sender.as_bytes());
-    buf[96..104].copy_from_slice(&message_id.seq.to_le_bytes());
+    buf[64..72].copy_from_slice(message_id.sender.as_bytes());
+    buf[72..80].copy_from_slice(&message_id.seq.to_le_bytes());
     xxh3_64(&buf)
 }
 
@@ -92,7 +92,7 @@ mod tests {
     fn make_message_id(seq: u64) -> MessageId {
         MessageId {
             group_id: GroupId::new([1u8; 32]),
-            sender: MemberFingerprint([0u8; 32]),
+            sender: MemberFingerprint([0u8; 8]),
             seq,
         }
     }

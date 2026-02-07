@@ -9,10 +9,21 @@ use mls_rs::crypto::{SignaturePublicKey, SignatureSecretKey};
 use mls_rs::group::proposal::{MlsCustomProposal, Proposal as MlsProposal};
 use mls_rs::group::{CommitEffect, ReceivedMessage};
 use mls_rs::{CipherSuiteProvider, Group};
+use mls_rs_core::group::Member;
 use universal_sync_core::{
-    AcceptorId, Attempt, Epoch, GroupContextExt, GroupMessage, GroupProposal, MemberFingerprint,
-    MemberId, SyncProposal, UnsignedProposal,
+    AcceptorId, Attempt, Epoch, GroupContextExt, GroupId, GroupMessage, GroupProposal, LeafNodeExt,
+    MemberFingerprint, MemberId, SyncProposal, UnsignedProposal,
 };
+
+pub(crate) fn fingerprint_of_member(group_id: &GroupId, member: &Member) -> MemberFingerprint {
+    let binding_id = member
+        .extensions
+        .get_as::<LeafNodeExt>()
+        .ok()
+        .flatten()
+        .map_or(0, |ext| ext.binding_id);
+    MemberFingerprint::from_key(group_id, &member.signing_identity.signature_key, binding_id)
+}
 
 /// Error marker for `GroupLearner` operations.
 ///
@@ -113,20 +124,22 @@ where
         self.acceptors.remove(acceptor_id);
     }
 
-    /// Our own signing public key fingerprint (SHA-256).
+    pub(crate) fn group_id(&self) -> GroupId {
+        GroupId::from_slice(&self.group.context().group_id)
+    }
+
     pub(crate) fn own_fingerprint(&self) -> MemberFingerprint {
+        let group_id = self.group_id();
         let member_index = self.group.current_member_index();
-        let signing_key = self
+        let member = self
             .group
             .roster()
             .members()
             .iter()
             .find(|m| m.index == member_index)
             .expect("own member must be in roster")
-            .signing_identity
-            .signature_key
             .clone();
-        MemberFingerprint::from_signing_key(&signing_key)
+        fingerprint_of_member(&group_id, &member)
     }
 
     /// Apply a pending commit that this member created

@@ -22,7 +22,7 @@ pub use error::{
     AcceptorContext, ConnectorError, EpochContext, GroupContext, MemberContext, OperationContext,
 };
 pub use extension::{
-    GroupContextExt, GroupContextExtV1, GroupInfoExt, KeyPackageExt, SyncProposal,
+    GroupContextExt, GroupContextExtV1, GroupInfoExt, KeyPackageExt, LeafNodeExt, SyncProposal,
     CURRENT_PROTOCOL_VERSION, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE,
 };
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};

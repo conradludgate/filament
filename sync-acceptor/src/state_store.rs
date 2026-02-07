@@ -38,15 +38,21 @@ fn storage_versioned_decode(bytes: &[u8]) -> (u8, &[u8]) {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RosterMember {
+    pub(crate) signing_key: Vec<u8>,
+    pub(crate) binding_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EpochRoster {
     pub(crate) epoch: Epoch,
-    pub(crate) members: Vec<(universal_sync_core::MemberId, Vec<u8>)>,
+    pub(crate) members: Vec<(universal_sync_core::MemberId, RosterMember)>,
 }
 
 impl EpochRoster {
     pub(crate) fn new(
         epoch: Epoch,
-        members: impl IntoIterator<Item = (universal_sync_core::MemberId, Vec<u8>)>,
+        members: impl IntoIterator<Item = (universal_sync_core::MemberId, RosterMember)>,
     ) -> Self {
         Self {
             epoch,
@@ -59,7 +65,13 @@ impl EpochRoster {
         self.members
             .iter()
             .find(|(id, _)| *id == member_id)
-            .map(|(_, key)| key.as_slice())
+            .map(|(_, m)| m.signing_key.as_slice())
+    }
+
+    pub(crate) fn has_fingerprint(&self, group_id: &GroupId, sender: MemberFingerprint) -> bool {
+        self.members.iter().any(|(_, m)| {
+            MemberFingerprint::from_key(group_id, &m.signing_key, m.binding_id) == sender
+        })
     }
 
     #[must_use]
@@ -156,22 +168,22 @@ impl FjallStateStore {
         postcard::from_bytes(payload).ok()
     }
 
-    /// Message key: `group_id` (32) || `sender_fingerprint` (32) || `seq` (8) = 72 bytes.
-    fn build_message_key(group_id: &GroupId, sender: &MemberFingerprint, seq: u64) -> [u8; 72] {
-        let mut key = [0u8; 72];
+    /// Message key: `group_id` (32) || `sender_fingerprint` (8) || `seq` (8) = 48 bytes.
+    fn build_message_key(group_id: &GroupId, sender: MemberFingerprint, seq: u64) -> [u8; 48] {
+        let mut key = [0u8; 48];
         key[..32].copy_from_slice(group_id.as_bytes());
-        key[32..64].copy_from_slice(sender.as_bytes());
-        key[64..72].copy_from_slice(&seq.to_be_bytes());
+        key[32..40].copy_from_slice(sender.as_bytes());
+        key[40..48].copy_from_slice(&seq.to_be_bytes());
         key
     }
 
     fn message_id_from_key(group_id: &GroupId, key: &[u8]) -> Option<MessageId> {
-        if key.len() < 72 {
+        if key.len() < 48 {
             return None;
         }
-        let mut fp = [0u8; 32];
-        fp.copy_from_slice(&key[32..64]);
-        let seq = u64::from_be_bytes(key[64..72].try_into().ok()?);
+        let mut fp = [0u8; 8];
+        fp.copy_from_slice(&key[32..40]);
+        let seq = u64::from_be_bytes(key[40..48].try_into().ok()?);
         Some(MessageId {
             group_id: *group_id,
             sender: MemberFingerprint(fp),
@@ -195,7 +207,7 @@ impl FjallStateStore {
         id: &MessageId,
         msg: &EncryptedAppMessage,
     ) -> Result<(), fjall::Error> {
-        let msg_key = Self::build_message_key(group_id, &id.sender, id.seq);
+        let msg_key = Self::build_message_key(group_id, id.sender, id.seq);
         let msg_bytes = Self::serialize_app_message(msg);
         self.messages.insert(msg_key, &msg_bytes)?;
 
@@ -620,7 +632,7 @@ impl GroupStateStore {
             .delete_before_watermark(&self.group_id, watermark)
     }
 
-    pub(crate) fn check_sender_in_roster(&self, sender: &MemberFingerprint) -> bool {
+    pub(crate) fn check_sender_in_roster(&self, sender: MemberFingerprint) -> bool {
         let Some(roster) = self
             .inner
             .get_epoch_roster_at_or_before_sync(&self.group_id, Epoch(u64::MAX))
@@ -628,10 +640,7 @@ impl GroupStateStore {
             return true;
         };
 
-        roster
-            .members
-            .iter()
-            .any(|(_, key)| MemberFingerprint::from_signing_key(key) == *sender)
+        roster.has_fingerprint(&self.group_id, sender)
     }
 }
 
@@ -793,13 +802,20 @@ mod tests {
 
     use super::*;
 
+    fn test_roster_member(key: &[u8]) -> RosterMember {
+        RosterMember {
+            signing_key: key.to_vec(),
+            binding_id: 0,
+        }
+    }
+
     #[test]
     fn test_epoch_roster_roundtrip() {
         let roster = EpochRoster::new(
             Epoch(5),
             vec![
-                (MemberId(0), vec![1, 2, 3, 4]),
-                (MemberId(1), vec![5, 6, 7, 8]),
+                (MemberId(0), test_roster_member(&[1, 2, 3, 4])),
+                (MemberId(1), test_roster_member(&[5, 6, 7, 8])),
             ],
         );
 
@@ -817,7 +833,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FjallStateStore::open_sync(dir.path()).unwrap();
         let gid = GroupId::new([1u8; 32]);
-        let sender = MemberFingerprint([2u8; 32]);
+        let sender = MemberFingerprint([2u8; 8]);
 
         let id1 = MessageId {
             group_id: gid,
@@ -854,8 +870,8 @@ mod tests {
         let store = FjallStateStore::open_sync(dir.path()).unwrap();
         let gid = GroupId::new([3u8; 32]);
 
-        let sender_a = MemberFingerprint([10u8; 32]);
-        let sender_b = MemberFingerprint([20u8; 32]);
+        let sender_a = MemberFingerprint([10u8; 8]);
+        let sender_b = MemberFingerprint([20u8; 8]);
         let msg = EncryptedAppMessage {
             ciphertext: vec![1],
         };
@@ -905,11 +921,11 @@ mod tests {
     #[test]
     fn test_message_key_ordering() {
         let gid = GroupId::new([1u8; 32]);
-        let sender = MemberFingerprint([2u8; 32]);
+        let sender = MemberFingerprint([2u8; 8]);
 
-        let key1 = FjallStateStore::build_message_key(&gid, &sender, 1);
-        let key2 = FjallStateStore::build_message_key(&gid, &sender, 2);
-        let key3 = FjallStateStore::build_message_key(&gid, &sender, 100);
+        let key1 = FjallStateStore::build_message_key(&gid, sender, 1);
+        let key2 = FjallStateStore::build_message_key(&gid, sender, 2);
+        let key3 = FjallStateStore::build_message_key(&gid, sender, 100);
 
         assert!(key1 < key2);
         assert!(key2 < key3);
@@ -918,9 +934,9 @@ mod tests {
     #[test]
     fn test_message_id_from_key_roundtrip() {
         let gid = GroupId::new([5u8; 32]);
-        let sender = MemberFingerprint([6u8; 32]);
+        let sender = MemberFingerprint([6u8; 8]);
 
-        let key = FjallStateStore::build_message_key(&gid, &sender, 42);
+        let key = FjallStateStore::build_message_key(&gid, sender, 42);
         let id = FjallStateStore::message_id_from_key(&gid, &key).unwrap();
 
         assert_eq!(id.group_id, gid);
@@ -940,15 +956,15 @@ mod tests {
         let roster = EpochRoster::new(
             Epoch(1),
             vec![
-                (MemberId(0), alice_key.clone()),
-                (MemberId(1), bob_key.clone()),
+                (MemberId(0), test_roster_member(&alice_key)),
+                (MemberId(1), test_roster_member(&bob_key)),
             ],
         );
         let group_store = GroupStateStore::new(store, gid);
         group_store.store_epoch_roster(&roster).unwrap();
 
-        let alice_fp = MemberFingerprint::from_signing_key(&alice_key);
-        assert!(group_store.check_sender_in_roster(&alice_fp));
+        let alice_fp = MemberFingerprint::from_key(&gid, &alice_key, 0);
+        assert!(group_store.check_sender_in_roster(alice_fp));
     }
 
     #[test]
@@ -980,17 +996,20 @@ mod tests {
         let roster_v1 = EpochRoster::new(
             Epoch(1),
             vec![
-                (MemberId(0), alice_key.clone()),
-                (MemberId(1), bob_key.clone()),
+                (MemberId(0), test_roster_member(&alice_key)),
+                (MemberId(1), test_roster_member(&bob_key)),
             ],
         );
         let group_store = GroupStateStore::new(store, gid);
         group_store.store_epoch_roster(&roster_v1).unwrap();
 
-        let roster_v2 = EpochRoster::new(Epoch(2), vec![(MemberId(0), alice_key.clone())]);
+        let roster_v2 = EpochRoster::new(
+            Epoch(2),
+            vec![(MemberId(0), test_roster_member(&alice_key))],
+        );
         group_store.store_epoch_roster(&roster_v2).unwrap();
 
-        let bob_fp = MemberFingerprint::from_signing_key(&bob_key);
-        assert!(!group_store.check_sender_in_roster(&bob_fp));
+        let bob_fp = MemberFingerprint::from_key(&gid, &bob_key, 0);
+        assert!(!group_store.check_sender_in_roster(bob_fp));
     }
 }

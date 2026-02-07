@@ -311,7 +311,7 @@ where
 {
     match request {
         MessageRequest::Send { id, message } => {
-            if !registry.check_sender_in_roster(group_id, &id.sender) {
+            if !registry.check_sender_in_roster(group_id, id.sender) {
                 debug!(sender = ?id.sender, "rejecting message from sender not in roster");
                 connection
                     .send(MessageResponse::Error("sender not in roster".into()))

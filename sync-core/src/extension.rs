@@ -220,6 +220,49 @@ impl MlsCodecExtension for KeyPackageExt {
     }
 }
 
+/// Random binding ID for fingerprint collision resolution (leaf node extension).
+///
+/// Included in key packages' leaf node extensions so the binding ID persists
+/// in the group roster. Used as additional input when computing
+/// [`MemberFingerprint`](crate::MemberFingerprint).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeafNodeExt {
+    pub binding_id: u64,
+}
+
+impl LeafNodeExt {
+    #[must_use]
+    pub fn random() -> Self {
+        Self {
+            binding_id: rand::random(),
+        }
+    }
+}
+
+impl MlsSize for LeafNodeExt {
+    fn mls_encoded_len(&self) -> usize {
+        postcard::to_allocvec(self).map_or(4, |v| 4 + v.len())
+    }
+}
+
+impl MlsEncode for LeafNodeExt {
+    fn mls_encode(&self, writer: &mut Vec<u8>) -> Result<(), mls_rs_codec::Error> {
+        postcard_encode(self, writer)
+    }
+}
+
+impl MlsDecode for LeafNodeExt {
+    fn mls_decode(reader: &mut &[u8]) -> Result<Self, mls_rs_codec::Error> {
+        postcard_decode(reader)
+    }
+}
+
+impl MlsCodecExtension for LeafNodeExt {
+    fn extension_type() -> ExtensionType {
+        SYNC_EXTENSION_TYPE
+    }
+}
+
 /// Current acceptor list and CRDT snapshot (group info extension).
 ///
 /// Sent in Welcome messages so joiners can discover acceptors and optionally
@@ -517,8 +560,8 @@ mod tests {
     #[test]
     fn sync_proposal_compaction_claim_roundtrip() {
         let mut watermark = BTreeMap::new();
-        watermark.insert(MemberFingerprint([1u8; 32]), 42);
-        watermark.insert(MemberFingerprint([2u8; 32]), 100);
+        watermark.insert(MemberFingerprint([1u8; 8]), 42);
+        watermark.insert(MemberFingerprint([2u8; 8]), 100);
         let proposal = SyncProposal::compaction_claim(1, watermark, 1_700_000_000);
 
         let custom = proposal.to_custom_proposal().unwrap();
@@ -529,7 +572,7 @@ mod tests {
     #[test]
     fn sync_proposal_compaction_complete_roundtrip() {
         let mut watermark = BTreeMap::new();
-        watermark.insert(MemberFingerprint([3u8; 32]), 99);
+        watermark.insert(MemberFingerprint([3u8; 8]), 99);
         let proposal = SyncProposal::compaction_complete(2, watermark);
 
         let custom = proposal.to_custom_proposal().unwrap();

@@ -7059,6 +7059,7 @@ dependencies = [
  "mls-rs-core",
  "pin-project-lite",
  "postcard",
+ "rand 0.9.2",
  "serde",
  "sha2 0.10.9",
  "tokio",

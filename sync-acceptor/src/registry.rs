@@ -249,7 +249,7 @@ where
     pub fn check_sender_in_roster(
         &self,
         group_id: &GroupId,
-        sender: &universal_sync_core::MemberFingerprint,
+        sender: universal_sync_core::MemberFingerprint,
     ) -> bool {
         self.state_store
             .for_group(*group_id)
