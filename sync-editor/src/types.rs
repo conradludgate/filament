@@ -10,7 +10,7 @@ pub struct AppState {
     pub coordinator_tx: mpsc::Sender<CoordinatorRequest>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Delta {
     Insert {
@@ -52,6 +52,7 @@ pub enum PeerEntry {
 pub struct DocumentUpdatedPayload {
     pub group_id: String,
     pub text: String,
+    pub deltas: Vec<Delta>,
 }
 
 #[derive(Debug, Clone, Serialize)]

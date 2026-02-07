@@ -635,7 +635,7 @@ async function setupTauriEvents() {
     const { listen } = window.__TAURI__.event;
 
     await listen('document-updated', (event) => {
-        const { group_id, text } = event.payload;
+        const { group_id, text, deltas } = event.payload;
 
         const doc = state.documents.get(group_id);
         if (doc) doc.text = text;
@@ -645,7 +645,35 @@ async function setupTauriEvents() {
             if (text === currentText) return;
 
             isApplyingRemote = true;
-            monacoEditor.setValue(text);
+            if (deltas && deltas.length > 0) {
+                const model = monacoEditor.getModel();
+                const edits = deltas.map(d => {
+                    if (d.type === 'Insert') {
+                        const pos = model.getPositionAt(d.position);
+                        return {
+                            range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
+                            text: d.text,
+                        };
+                    } else if (d.type === 'Delete') {
+                        const start = model.getPositionAt(d.position);
+                        const end = model.getPositionAt(d.position + d.length);
+                        return {
+                            range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+                            text: null,
+                        };
+                    } else if (d.type === 'Replace') {
+                        const start = model.getPositionAt(d.position);
+                        const end = model.getPositionAt(d.position + d.length);
+                        return {
+                            range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+                            text: d.text,
+                        };
+                    }
+                }).filter(Boolean);
+                monacoEditor.executeEdits('remote-sync', edits);
+            } else {
+                monacoEditor.setValue(text);
+            }
             isApplyingRemote = false;
         }
     });

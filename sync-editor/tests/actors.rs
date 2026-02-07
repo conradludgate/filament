@@ -276,6 +276,12 @@ async fn doc_actor_remote_update_triggers_event() {
         .expect("bob event channel closed");
 
     assert_eq!(event.text, "Hello");
+    assert_eq!(event.deltas.len(), 1);
+    assert!(
+        matches!(&event.deltas[0], Delta::Insert { position: 0, text } if text == "Hello"),
+        "expected Insert delta, got {:?}",
+        event.deltas
+    );
 
     // Verify Bob's text matches
     let bob_text = send_doc(&bob_doc_tx, |reply| DocRequest::GetText { reply })
@@ -584,6 +590,10 @@ async fn full_two_peer_sync() {
         .expect("bob event timeout")
         .expect("bob event");
     assert_eq!(bob_event.text, "Hello");
+    assert!(
+        !bob_event.deltas.is_empty(),
+        "expected deltas for remote update"
+    );
 
     // Bob types " World"
     send_coord_doc(&bob_tx, bob_group_id, |reply| DocRequest::ApplyDelta {
@@ -602,6 +612,10 @@ async fn full_two_peer_sync() {
         .expect("alice event timeout")
         .expect("alice event");
     assert_eq!(alice_event.text, "Hello World");
+    assert!(
+        !alice_event.deltas.is_empty(),
+        "expected deltas for remote update"
+    );
 
     // Verify final state
     let alice_text = send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::GetText {

@@ -3,13 +3,15 @@
 //! Each open document is managed by a [`DocumentActor`] that owns a [`Group`]
 //! and is the sole owner — no mutexes.
 
+use std::sync::{Arc, Mutex};
+
 use mls_rs::client_builder::MlsConfig;
 use mls_rs::{CipherSuiteProvider, MlsMessage};
 use tokio::sync::{broadcast, mpsc};
 use universal_sync_core::GroupId;
 use universal_sync_proposer::{Group, GroupEvent};
 use universal_sync_testing::YrsCrdt;
-use yrs::{GetString, Text, Transact};
+use yrs::{Any, GetString, Observable, Out, Text, Transact};
 
 use crate::types::{
     Delta, DocRequest, DocumentUpdatedPayload, EventEmitter, GroupStatePayload, PeerEntry,
@@ -54,6 +56,38 @@ where
     pub async fn run(mut self) {
         self.emit_group_state().await;
 
+        let delta_buf: Arc<Mutex<Vec<Delta>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let text_ref = self.yrs_crdt().doc().get_or_insert_text("doc");
+            let buf_clone = delta_buf.clone();
+            text_ref.observe_with("delta-collector", move |txn, event| {
+                let mut buf = buf_clone.lock().unwrap();
+                let mut offset = 0u32;
+                for d in event.delta(txn) {
+                    match d {
+                        yrs::types::Delta::Retain(n, _) => offset += n,
+                        yrs::types::Delta::Inserted(value, _) => {
+                            if let Out::Any(Any::String(s)) = value {
+                                let text = s.to_string();
+                                let len = text.len() as u32;
+                                buf.push(Delta::Insert {
+                                    position: offset,
+                                    text,
+                                });
+                                offset += len;
+                            }
+                        }
+                        yrs::types::Delta::Deleted(n) => {
+                            buf.push(Delta::Delete {
+                                position: offset,
+                                length: *n,
+                            });
+                        }
+                    }
+                }
+            });
+        }
+
         loop {
             tokio::select! {
                 req = self.request_rx.recv() => {
@@ -65,10 +99,12 @@ where
                         }
                         None => break,
                     }
+                    // Discard deltas produced by local edits
+                    delta_buf.lock().unwrap().clear();
                 }
                 update = self.group.wait_for_update() => {
                     match update {
-                        Some(()) => self.emit_text_update(),
+                        Some(()) => self.emit_text_update(&delta_buf),
                         None => break,
                     }
                 }
@@ -332,10 +368,12 @@ where
             .map_err(|e| format!("failed to update keys: {e:?}"))
     }
 
-    fn emit_text_update(&self) {
+    fn emit_text_update(&self, delta_buf: &Arc<Mutex<Vec<Delta>>>) {
+        let deltas = std::mem::take(&mut *delta_buf.lock().unwrap());
         let payload = DocumentUpdatedPayload {
             group_id: self.group_id_b58.clone(),
             text: self.get_text(),
+            deltas,
         };
         self.emitter.emit_document_updated(&payload);
     }
