@@ -31,6 +31,7 @@ pub async fn run_acceptor_with_epoch_waiter<A, S, C>(
     mut handler: AcceptorHandler<A, S>,
     conn: C,
     proposer_id: <A::Proposal as Proposal>::NodeId,
+    since_round: <A::Proposal as Proposal>::RoundId,
     mut epoch_rx: watch::Receiver<<A::Proposal as Proposal>::RoundId>,
     mut current_epoch_fn: impl FnMut() -> <A::Proposal as Proposal>::RoundId,
 ) -> Result<(), A::Error>
@@ -42,9 +43,9 @@ where
 {
     debug!("acceptor with epoch waiter started");
 
-    // Subscribe to learned values immediately so passive learners can
-    // advance their epoch by receiving commits from other proposers.
-    let initial_subscription = handler.state().subscribe_from(Default::default()).await;
+    // Subscribe to learned values starting from the proposer's known epoch
+    // so that offline proposers catch up on missed commits.
+    let initial_subscription = handler.state().subscribe_from(since_round).await;
     let mut sync = pin!(initial_subscription.fuse());
     let mut conn = pin!(conn);
 

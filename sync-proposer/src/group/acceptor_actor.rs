@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use universal_sync_core::{
-    AcceptorId, GroupId, MemberFingerprint, MessageRequest, MessageResponse, StateVector,
+    AcceptorId, Epoch, GroupId, MemberFingerprint, MessageRequest, MessageResponse, StateVector,
 };
 
 use super::{AcceptorInbound, AcceptorOutbound};
@@ -10,6 +10,7 @@ use crate::connection::ConnectionManager;
 pub(super) struct AcceptorActor {
     pub(super) acceptor_id: AcceptorId,
     pub(super) group_id: GroupId,
+    pub(super) current_epoch: Epoch,
     pub(super) own_fingerprint: MemberFingerprint,
     pub(super) connection_manager: ConnectionManager,
     pub(super) outbound_rx: mpsc::Receiver<AcceptorOutbound>,
@@ -79,7 +80,7 @@ impl AcceptorActor {
 
         let proposal_streams = self
             .connection_manager
-            .open_proposal_stream(&self.acceptor_id, self.group_id)
+            .open_proposal_stream(&self.acceptor_id, self.group_id, self.current_epoch)
             .await;
 
         let (proposal_send, proposal_recv) = match proposal_streams {

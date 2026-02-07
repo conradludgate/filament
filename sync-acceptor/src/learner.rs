@@ -255,7 +255,7 @@ async fn run_peer_connection(
     let mut reader = FramedRead::new(recv, codec.clone());
     let mut writer = FramedWrite::new(send, codec);
 
-    let handshake = Handshake::JoinProposals(group_id);
+    let handshake = Handshake::JoinProposals { group_id, since_epoch: current_round };
     let handshake_bytes = postcard::to_allocvec(&handshake).change_context(ConnectorError)?;
     writer
         .send(handshake_bytes.into())

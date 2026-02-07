@@ -35,6 +35,7 @@ struct FjallGroupStateStorageInner {
     #[allow(dead_code)]
     db: Database,
     keyspace: Keyspace,
+    proposer_meta: Keyspace,
 }
 
 impl FjallGroupStateStorage {
@@ -56,9 +57,43 @@ impl FjallGroupStateStorage {
             .change_context(GroupStateError)
             .attach("failed to open keyspace")?;
 
+        let proposer_meta = db
+            .keyspace("proposer_meta", KeyspaceCreateOptions::default)
+            .change_context(GroupStateError)
+            .attach("failed to open proposer_meta keyspace")?;
+
         Ok(Self {
-            inner: Arc::new(FjallGroupStateStorageInner { db, keyspace }),
+            inner: Arc::new(FjallGroupStateStorageInner { db, keyspace, proposer_meta }),
         })
+    }
+
+    fn message_seq_key(group_id: &[u8]) -> Vec<u8> {
+        let mut key = Vec::with_capacity(group_id.len() + 4);
+        key.extend_from_slice(b"seq:");
+        key.extend_from_slice(group_id);
+        key
+    }
+
+    pub(crate) fn get_message_seq(&self, group_id: &[u8]) -> Result<Option<u64>, GroupStateError> {
+        let key = Self::message_seq_key(group_id);
+        self.inner
+            .proposer_meta
+            .get(&key)
+            .map_err(|_| GroupStateError)
+            .map(|opt| {
+                opt.and_then(|slice| {
+                    let bytes: [u8; 8] = slice.as_ref().try_into().ok()?;
+                    Some(u64::from_be_bytes(bytes))
+                })
+            })
+    }
+
+    pub(crate) fn set_message_seq(&self, group_id: &[u8], seq: u64) -> Result<(), GroupStateError> {
+        let key = Self::message_seq_key(group_id);
+        self.inner
+            .proposer_meta
+            .insert(&key, &seq.to_be_bytes())
+            .map_err(|_| GroupStateError)
     }
 
     fn state_key(group_id: &[u8]) -> &[u8] {
@@ -220,5 +255,28 @@ mod tests {
         assert!(storage.epoch(group_id, 3).unwrap().is_some());
         assert!(storage.epoch(group_id, 5).unwrap().is_some());
         assert!(storage.epoch(group_id, 2).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn message_seq_persists_across_reopens() {
+        let dir = TempDir::new().unwrap();
+        let group_id = [1u8; 32];
+        {
+            let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+            storage.set_message_seq(&group_id, 42).unwrap();
+        }
+        {
+            let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+            let seq = storage.get_message_seq(&group_id).unwrap();
+            assert_eq!(seq, Some(42));
+        }
+    }
+
+    #[tokio::test]
+    async fn message_seq_defaults_to_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+        let seq = storage.get_message_seq(&[1u8; 32]).unwrap();
+        assert_eq!(seq, None);
     }
 }

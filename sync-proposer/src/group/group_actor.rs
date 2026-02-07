@@ -403,6 +403,7 @@ where
         let actor = AcceptorActor {
             acceptor_id,
             group_id: self.group_id,
+            current_epoch: self.learner.mls_epoch(),
             own_fingerprint: self.own_fingerprint,
             connection_manager: self.connection_manager.clone(),
             outbound_rx,

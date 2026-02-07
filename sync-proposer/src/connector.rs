@@ -14,7 +14,8 @@ pub use universal_sync_core::ConnectorError;
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    AcceptorId, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse, PAXOS_ALPN,
+    AcceptorId, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
+    PAXOS_ALPN,
 };
 use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner};
 
@@ -23,6 +24,7 @@ use universal_sync_paxos::{AcceptorMessage, AcceptorRequest, Connector, Learner}
 pub struct IrohConnector<L> {
     endpoint: Endpoint,
     group_id: GroupId,
+    since_epoch: Arc<std::sync::atomic::AtomicU64>,
     address_hints: Arc<HashMap<AcceptorId, EndpointAddr>>,
     _marker: PhantomData<fn() -> L>,
 }
@@ -32,9 +34,16 @@ impl<L> Clone for IrohConnector<L> {
         Self {
             endpoint: self.endpoint.clone(),
             group_id: self.group_id,
+            since_epoch: self.since_epoch.clone(),
             address_hints: self.address_hints.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<L> IrohConnector<L> {
+    pub fn set_since_epoch(&self, epoch: Epoch) {
+        self.since_epoch.store(epoch.0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -51,6 +60,7 @@ where
     fn connect(&mut self, acceptor_id: &AcceptorId) -> Self::ConnectFuture {
         let endpoint = self.endpoint.clone();
         let group_id = self.group_id;
+        let since_epoch = self.since_epoch.load(std::sync::atomic::Ordering::Relaxed);
 
         let addr: EndpointAddr =
             self.address_hints
@@ -76,7 +86,10 @@ where
             let mut reader = FramedRead::new(recv, codec.clone());
             let mut writer = FramedWrite::new(send, codec);
 
-            let handshake = Handshake::JoinProposals(group_id);
+            let handshake = Handshake::JoinProposals {
+                group_id,
+                since_epoch: Epoch(since_epoch),
+            };
             let handshake_bytes =
                 postcard::to_allocvec(&handshake).change_context(ConnectorError)?;
             writer

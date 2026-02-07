@@ -8,6 +8,7 @@ pub(crate) mod client;
 pub(crate) mod connection;
 pub(crate) mod connector;
 pub(crate) mod group;
+pub(crate) mod group_state;
 pub(crate) mod learner;
 pub(crate) mod rendezvous;
 

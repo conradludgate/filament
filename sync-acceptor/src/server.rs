@@ -10,7 +10,7 @@ use tracing::{debug, instrument, warn};
 use universal_sync_core::codec::PostcardCodec;
 use universal_sync_core::sink_stream::{Mapped, SinkStream};
 use universal_sync_core::{
-    ConnectorError, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
+    ConnectorError, Epoch, GroupId, GroupMessage, GroupProposal, Handshake, HandshakeResponse,
     MemberFingerprint, MemberId, MessageRequest, MessageResponse, PAXOS_ALPN,
 };
 use universal_sync_paxos::acceptor::{AcceptorHandler, run_acceptor_with_epoch_waiter};
@@ -115,13 +115,14 @@ where
         .attach("invalid handshake")?;
 
     match handshake {
-        Handshake::JoinProposals(group_id) => {
-            handle_proposal_stream(group_id, None, reader, writer, registry).await
+        Handshake::JoinProposals { group_id, since_epoch } => {
+            handle_proposal_stream(group_id, None, since_epoch, reader, writer, registry).await
         }
         Handshake::CreateGroup(group_info) => {
             handle_proposal_stream(
                 GroupId::from_slice(&[0; 32]),
                 Some(group_info),
+                Epoch(0),
                 reader,
                 writer,
                 registry,
@@ -141,6 +142,7 @@ where
 async fn handle_proposal_stream<C, CS>(
     mut group_id: GroupId,
     create_group_info: Option<Vec<u8>>,
+    since_epoch: Epoch,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
     registry: AcceptorRegistry<C, CS>,
@@ -205,7 +207,7 @@ where
         .get_epoch_watcher(&group_id)
         .expect("epoch watcher should exist after get_group/create_group");
 
-    run_acceptor_with_epoch_waiter(handler, connection, proposer_id, epoch_rx, current_epoch_fn)
+    run_acceptor_with_epoch_waiter(handler, connection, proposer_id, since_epoch, epoch_rx, current_epoch_fn)
         .await
         .change_context(ConnectorError)?;
 

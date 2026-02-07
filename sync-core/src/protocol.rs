@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use mls_rs::MlsMessage;
 use serde::{Deserialize, Serialize};
 
+use crate::Epoch;
+
 /// Group identifier (32 bytes, zero-padded from MLS group ID).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GroupId(pub [u8; 32]);
@@ -55,8 +57,8 @@ pub enum StreamType {
 /// First message on a bidirectional stream, identifying group and intent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Handshake {
-    /// Join an existing group's proposal stream.
-    JoinProposals(GroupId),
+    /// Join an existing group's proposal stream, replaying from `since_epoch`.
+    JoinProposals { group_id: GroupId, since_epoch: Epoch },
     /// Register a new group with serialized `GroupInfo` bytes.
     CreateGroup(Vec<u8>),
     /// Join an existing group's message stream.
@@ -370,6 +372,19 @@ mod tests {
             AuthData::compaction(99, 2, StateVector::new()).seq(),
             99
         );
+    }
+
+    #[test]
+    fn handshake_join_proposals_round_trip() {
+        use crate::Epoch;
+        let group_id = GroupId::new([1u8; 32]);
+        let handshake = Handshake::JoinProposals { group_id, since_epoch: Epoch(5) };
+        let bytes = postcard::to_allocvec(&handshake).unwrap();
+        let decoded: Handshake = postcard::from_bytes(&bytes).unwrap();
+        match decoded {
+            Handshake::JoinProposals { since_epoch, .. } => assert_eq!(since_epoch, Epoch(5)),
+            _ => panic!("wrong variant"),
+        }
     }
 }
 
