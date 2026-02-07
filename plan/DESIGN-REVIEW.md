@@ -1,0 +1,125 @@
+# Design Review — Findings Summary
+
+Review of the universal-sync architecture against the README design claims,
+cross-referenced with the actual codebase.
+
+## Trust Model
+
+The safety/liveness separation is clean: MLS cryptography (signatures + AAD)
+guarantees message integrity and confidentiality. Acceptors affect liveness only.
+A colluding quorum can cause DoS but cannot decrypt, forge, or reorder messages.
+
+**Caveat**: A colluding quorum _can_ cause a split-brain in the MLS group epoch
+by accepting two different values for the same Paxos slot. This permanently
+breaks the group (devices fork onto different epoch chains) but does not
+compromise message secrecy. There is no detection or recovery mechanism for
+this scenario — it requires manual intervention (creating a new group).
+
+Metadata privacy (who is in a group, message timing/frequency) is leaked to
+acceptors. This is an accepted trade-off.
+
+## Paxos Consensus
+
+### Ballot Scheme
+
+Ballots are `(Epoch, Attempt, MemberId)` with lexicographic ordering.
+`MemberId` is the MLS leaf index (`u32`), guaranteed unique by MLS.
+
+### No Multi-Paxos Optimization
+
+Every Accept must match an exact prior Promise. No leader election, no
+skipping Prepare phase. This is a deliberate safety-over-latency choice
+documented in `.cursor/rules/paxos.mdc`.
+
+### Contention Resolution
+
+See [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md).
+
+### Proposer Crash Recovery
+
+See [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md).
+
+## MLS Integration
+
+### Commit Races
+
+When two devices race to commit at the same epoch, the loser's path is cheap:
+clear the pending commit (O(1)), process the winning commit via MLS
+`process_incoming_message()`. No re-derivation needed.
+
+### Epoch Ordering
+
+Commits must be processed sequentially. There is no queuing for out-of-order
+commits. If a device misses epoch N and receives epoch N+1, it cannot process
+it and must receive N first. This interacts with the commit catch-up gap.
+
+### Forward/Backward Decryption
+
+MLS retains old epoch keys, so messages encrypted with epoch N can be
+decrypted after advancing to epoch N+1. Messages that fail to decrypt are
+buffered (up to 10 attempts) and retried after epoch advances.
+
+## CRDT & Application Messages
+
+### Routing
+
+Application messages (CRDT updates) bypass Paxos and are routed to
+`ceil(sqrt(n))` acceptors via rendezvous hashing. Paxos messages go to all
+acceptors. Devices connect to all acceptors and deduplicate via
+`(MemberFingerprint, seq)`.
+
+### Removed Member Edits
+
+See [REMOVED-MEMBER-EDITS.md](REMOVED-MEMBER-EDITS.md).
+
+### Ordering
+
+No causal ordering for CRDT updates. Messages are processed as "apply
+whatever you can decrypt." CRDTs handle convergence. Backfill returns
+messages in storage order (sender + seq), not causal order.
+
+## Acceptor Management
+
+### AcceptorAdd/AcceptorRemove
+
+Already implemented as MLS custom proposals (`SyncProposal`). The
+COMPACTION.md Phase 5 migration note is stale — this is done.
+
+### New Acceptor Bootstrapping
+
+New acceptors receive `GroupInfo`, then replay all historical commits from
+epoch 0. They know the current slot from MLS context and validate proposals
+against epoch rosters. No gap here.
+
+### Quorum
+
+`(n / 2) + 1`, updated atomically in `apply_proposal()` when acceptors change.
+
+### Acceptor Failure
+
+No replication or gossip between acceptors for application messages.
+Permanent acceptor failure can lose messages stored only on that acceptor.
+With `ceil(sqrt(n))` routing, messages are typically on multiple acceptors,
+but the risk is non-zero.
+
+## Key Rotation
+
+See [KEY-ROTATION.md](KEY-ROTATION.md).
+
+## Compaction & Offline Recovery
+
+Compacted snapshots are stored as regular messages with `AuthData::Compaction`
+metadata. When old messages are deleted via `delete_before_watermark`, the
+compacted snapshot remains. Devices backfill with their `StateVector`, receive
+the snapshot plus newer updates, and reconstruct state.
+
+Snapshots are re-encrypted at the current epoch for offline/new members.
+
+## Priority Issues
+
+| Issue | Severity | Document |
+|-------|----------|----------|
+| No proactive commit catch-up on proposer reconnect | **High** | [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md) |
+| Removed member edits silently dropped | **Medium** | [REMOVED-MEMBER-EDITS.md](REMOVED-MEMBER-EDITS.md) |
+| Backoff is linear, no jitter, max 3 retries | **Low** | [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md) |
+| No time-based key rotation floor | **Low** | [KEY-ROTATION.md](KEY-ROTATION.md) |
