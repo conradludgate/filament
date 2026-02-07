@@ -253,7 +253,7 @@ where
         let (learner, group_id, group_info_bytes) = blocking(|| {
             let mut group_context_extensions = mls_rs::ExtensionList::default();
             group_context_extensions
-                .set_from(GroupContextExt::new(&crdt_type_id, compaction_config.clone()))
+                .set_from(GroupContextExt::new(&crdt_type_id, compaction_config.clone(), Some(86400)))
                 .change_context(GroupError)
                 .attach(OperationContext::CREATING_GROUP)?;
 
@@ -306,6 +306,7 @@ where
             crdt,
             compaction_config,
             crdt_factory,
+            Some(86400),
         ))
     }
 
@@ -321,7 +322,7 @@ where
     where
         CS: Clone,
     {
-        let (learner, group_id, crdt_type_id, compaction_config, crdt_snapshot_opt) =
+        let (learner, group_id, crdt_type_id, compaction_config, crdt_snapshot_opt, key_rotation_interval_secs) =
             blocking(|| {
                 let welcome = MlsMessage::from_bytes(welcome_bytes)
                     .change_context(GroupError)
@@ -359,6 +360,10 @@ where
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id.clone());
 
+                let key_rotation_interval_secs = group_ctx
+                    .as_ref()
+                    .and_then(|e| e.key_rotation_interval_secs);
+
                 let compaction_config = group_ctx
                     .map_or_else(default_compaction_config, |e| e.compaction_config);
 
@@ -370,6 +375,7 @@ where
                     crdt_type_id,
                     compaction_config,
                     crdt_snapshot_opt,
+                    key_rotation_interval_secs,
                 ))
             })?;
 
@@ -401,6 +407,7 @@ where
             crdt,
             compaction_config,
             crdt_factory.clone(),
+            key_rotation_interval_secs,
         ))
     }
 
@@ -412,11 +419,15 @@ where
         crdt: Box<dyn Crdt>,
         compaction_config: CompactionConfig,
         crdt_factory: Arc<dyn CrdtFactory>,
+        key_rotation_interval_secs: Option<u64>,
     ) -> Self {
         let cancel_token = CancellationToken::new();
         let (event_tx, _) = broadcast::channel(64);
         let (request_tx, request_rx) = mpsc::channel(64);
         let (app_message_tx, app_message_rx) = mpsc::channel(256);
+
+        let key_rotation_interval = key_rotation_interval_secs
+            .map(std::time::Duration::from_secs);
 
         let actor = group_actor::GroupActor::new(
             learner,
@@ -429,6 +440,7 @@ where
             cancel_token.clone(),
             compaction_config,
             crdt_factory,
+            key_rotation_interval,
         );
 
         let actor_handle = tokio::spawn(actor.run());

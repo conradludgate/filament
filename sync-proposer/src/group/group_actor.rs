@@ -67,6 +67,8 @@ where
     /// and send it at the current epoch when a new member joins after the
     /// original compacted message was encrypted at an older epoch.
     last_compacted_snapshot: Option<Vec<u8>>,
+    last_epoch_advance: std::time::Instant,
+    key_rotation_interval: Option<std::time::Duration>,
 }
 
 struct ActiveProposal {
@@ -240,6 +242,7 @@ where
         cancel_token: CancellationToken,
         compaction_config: CompactionConfig,
         crdt_factory: Arc<dyn CrdtFactory>,
+        key_rotation_interval: Option<std::time::Duration>,
     ) -> Self {
         let num_acceptors = learner.acceptor_ids().count();
         let join_epoch = learner.mls_epoch();
@@ -274,6 +277,8 @@ where
             crdt_factory,
             update_buffer: Vec::new(),
             last_compacted_snapshot: None,
+            last_epoch_advance: std::time::Instant::now(),
+            key_rotation_interval,
         }
     }
 
@@ -287,6 +292,13 @@ where
             COMPACTION_CHECK_INTERVAL_SECS,
         ));
         compaction_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let key_rotation_check_interval = std::time::Duration::from_secs(
+            self.key_rotation_interval
+                .map_or(3600, |d| d.as_secs().max(1)),
+        );
+        let mut key_rotation_check = tokio::time::interval(key_rotation_check_interval);
+        key_rotation_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -313,6 +325,10 @@ where
 
                 _ = compaction_check.tick() => {
                     self.maybe_trigger_compaction().await;
+                }
+
+                _ = key_rotation_check.tick(), if self.key_rotation_interval.is_some() => {
+                    self.maybe_trigger_key_rotation().await;
                 }
             }
 
@@ -1203,6 +1219,7 @@ where
             let _ = self.event_tx.send(GroupEvent::EpochAdvanced {
                 epoch: self.learner.mls_epoch().0,
             });
+            self.last_epoch_advance = std::time::Instant::now();
 
             for (acceptor_id, addr) in new_acceptors {
                 self.spawn_acceptor_actor_with_registration(acceptor_id, addr)
@@ -1535,6 +1552,32 @@ where
             );
             self.perform_compaction(level).await;
         }
+    }
+
+    async fn maybe_trigger_key_rotation(&mut self) {
+        let Some(interval) = self.key_rotation_interval else {
+            return;
+        };
+
+        if self.active_proposal.is_some() {
+            return;
+        }
+
+        if self.learner.acceptor_ids().len() == 0 {
+            return;
+        }
+
+        if self.last_epoch_advance.elapsed() < interval {
+            return;
+        }
+
+        tracing::info!(
+            elapsed_secs = self.last_epoch_advance.elapsed().as_secs(),
+            "triggering time-based key rotation"
+        );
+
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        self.handle_update_keys(reply_tx).await;
     }
 
     /// Perform a compaction at the given level: merge buffered updates into a

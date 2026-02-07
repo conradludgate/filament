@@ -40,6 +40,7 @@ pub const SYNC_PROPOSAL_TYPE: ProposalType = ProposalType::new(0xF796);
 pub struct GroupContextExt {
     pub crdt_type_id: String,
     pub compaction_config: CompactionConfig,
+    pub key_rotation_interval_secs: Option<u64>,
 }
 
 impl GroupContextExt {
@@ -47,10 +48,12 @@ impl GroupContextExt {
     pub fn new(
         crdt_type_id: impl Into<String>,
         compaction_config: CompactionConfig,
+        key_rotation_interval_secs: Option<u64>,
     ) -> Self {
         Self {
             crdt_type_id: crdt_type_id.into(),
             compaction_config,
+            key_rotation_interval_secs,
         }
     }
 }
@@ -326,7 +329,7 @@ mod tests {
                 replication: 0,
             },
         ];
-        let ext = GroupContextExt::new("yjs", config.clone());
+        let ext = GroupContextExt::new("yjs", config.clone(), None);
 
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupContextExt::mls_decode(&mut encoded.as_slice()).unwrap();
@@ -436,5 +439,26 @@ mod tests {
     fn sync_types_in_private_range() {
         assert!(SYNC_EXTENSION_TYPE.raw_value() >= 0xF000);
         assert!(SYNC_PROPOSAL_TYPE.raw_value() >= 0xF000);
+    }
+
+    #[test]
+    fn group_context_ext_with_key_rotation_roundtrip() {
+        let ext = GroupContextExt::new(
+            "test-crdt",
+            crate::default_compaction_config(),
+            Some(86400),
+        );
+        assert_eq!(ext.key_rotation_interval_secs, Some(86400));
+
+        let bytes = postcard::to_allocvec(&ext).unwrap();
+        let decoded: GroupContextExt = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.key_rotation_interval_secs, Some(86400));
+        assert_eq!(decoded.crdt_type_id, "test-crdt");
+    }
+
+    #[test]
+    fn group_context_ext_key_rotation_disabled() {
+        let ext = GroupContextExt::new("test", crate::default_compaction_config(), None);
+        assert_eq!(ext.key_rotation_interval_secs, None);
     }
 }
