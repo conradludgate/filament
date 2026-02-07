@@ -52,10 +52,10 @@ where
         // Process all pending welcomes
         while let Some(welcome_bytes) = self.client.try_recv_welcome() {
             match self.client.join_group(&welcome_bytes).await {
-                Ok(group) => {
-                    let group_id = group.group_id();
-                    info!(?group_id, "Automatically joined group from welcome");
-                    self.groups.insert(group_id, group);
+                Ok(join_info) => {
+                    let group_id = join_info.group.group_id();
+                    info!(?group_id, protocol_name = %join_info.protocol_name, "Automatically joined group from welcome");
+                    self.groups.insert(group_id, join_info.group);
                     joined_groups.push(group_id);
                 }
                 Err(e) => {
@@ -239,12 +239,13 @@ Note: Welcome messages are received automatically in the background.
             .into_vec()
             .map_err(|e| format!("Invalid base58: {e}"))?;
 
-        let mut group = self
+        let join_info = self
             .client
             .join_group(&welcome_bytes)
             .await
             .map_err(|e| format!("Failed to join group: {e:?}"))?;
 
+        let mut group = join_info.group;
         let group_id = group.group_id();
         let output =
             Self::print_group_context(&group.context().await.map_err(|e| format!("{e:?}"))?);
@@ -442,7 +443,7 @@ Note: Welcome messages are received automatically in the background.
             .ok_or_else(|| format!("Group not loaded: {group_id_hex}"))?;
 
         group
-            .send_update()
+            .send_update(&mut universal_sync_core::NoCrdt)
             .await
             .map_err(|e| format!("Failed to send update: {e:?}"))?;
 
@@ -462,7 +463,11 @@ Note: Welcome messages are received automatically in the background.
             .ok_or_else(|| format!("Group not loaded: {group_id_hex}"))?;
 
         // Use a short timeout to avoid blocking the REPL forever
-        let result = timeout(Duration::from_secs(5), group.wait_for_update()).await;
+        let result = timeout(
+            Duration::from_secs(5),
+            group.wait_for_update(&mut universal_sync_core::NoCrdt),
+        )
+        .await;
 
         match result {
             Ok(Some(())) => Ok("Update received and applied".to_string()),

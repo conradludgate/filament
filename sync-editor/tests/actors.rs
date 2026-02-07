@@ -29,9 +29,7 @@ impl EventEmitter for MockEmitter {
     fn emit_document_updated(&self, payload: &DocumentUpdatedPayload) {
         let _ = self.tx.try_send(payload.clone());
     }
-    fn emit_group_state_changed(&self, _payload: &sync_editor::types::GroupStatePayload) {
-        // Ignored in tests for now
-    }
+    fn emit_group_state_changed(&self, _payload: &sync_editor::types::GroupStatePayload) {}
 }
 
 fn mock_emitter() -> (MockEmitter, mpsc::Receiver<DocumentUpdatedPayload>) {
@@ -98,11 +96,11 @@ async fn spawn_doc_actor() -> (
         .expect("create group");
 
     let group_id = group.group_id();
-    let group = group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
+    let crdt = YrsCrdt::new();
     let (doc_tx, doc_rx) = mpsc::channel(64);
     let (emitter, event_rx) = mock_emitter();
 
-    let actor = DocumentActor::new(group, group_id, doc_rx, emitter);
+    let actor = DocumentActor::new(group, crdt, group_id, doc_rx, emitter);
     tokio::spawn(async move {
         actor.run().await;
         acceptor_task.abort();
@@ -116,7 +114,6 @@ async fn doc_actor_local_edit_round_trip() {
     init_tracing();
     let (tx, _event_rx, _id) = spawn_doc_actor().await;
 
-    // Insert text
     send_doc(&tx, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 0,
@@ -127,7 +124,6 @@ async fn doc_actor_local_edit_round_trip() {
     .await
     .expect("apply delta");
 
-    // Read back
     let text = send_doc(&tx, |reply| DocRequest::GetText { reply })
         .await
         .expect("get text");
@@ -190,7 +186,6 @@ async fn doc_actor_delete_after_insert() {
     .await
     .unwrap();
 
-    // Delete " World"
     send_doc(&tx, |reply| DocRequest::ApplyDelta {
         delta: Delta::Delete {
             position: 5,
@@ -210,7 +205,7 @@ async fn doc_actor_delete_after_insert() {
 /// Test that a remote CRDT update triggers a document-updated event emission.
 ///
 /// Two DocumentActors sharing the same MLS group (Alice & Bob).
-/// Alice applies a delta → Bob's doc actor receives via wait_for_update()
+/// Alice applies a delta -> Bob's doc actor receives via wait_for_update()
 /// and emits a `document-updated` event captured by the MockEmitter.
 #[tokio::test]
 async fn doc_actor_remote_update_triggers_event() {
@@ -219,7 +214,6 @@ async fn doc_actor_remote_update_triggers_event() {
     let (_acceptor_task, acceptor_addr, _dir) = spawn_acceptor().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Alice creates a group
     let alice_client = test_yrs_group_client("alice-doc-event", test_endpoint().await);
     let mut alice_group = alice_client
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
@@ -229,36 +223,36 @@ async fn doc_actor_remote_update_triggers_event() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Bob joins
     let mut bob_client = test_yrs_group_client("bob-doc-event", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
     let welcome = bob_client.recv_welcome().await.expect("bob welcome");
-    let bob_group = bob_client.join_group(&welcome).await.expect("bob join");
+    let join_info = bob_client.join_group(&welcome).await.expect("bob join");
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Wrap Bob's group in a DocumentActor
     let (bob_doc_tx, mut bob_event_rx) = {
-        let bob_group = bob_group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
+        let bob_crdt = if let Some(snapshot) = join_info.snapshot {
+            YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+        } else {
+            YrsCrdt::new()
+        };
         let (tx, rx) = mpsc::channel(64);
         let (emitter, event_rx) = mock_emitter();
-        let actor = DocumentActor::new(bob_group, group_id, rx, emitter);
+        let actor = DocumentActor::new(join_info.group, bob_crdt, group_id, rx, emitter);
         tokio::spawn(actor.run());
         (tx, event_rx)
     };
 
-    // Wrap Alice's group in a DocumentActor
     let (alice_doc_tx, _alice_event_rx) = {
-        let alice_group = alice_group.downcast::<YrsCrdt>().expect("CRDT is YrsCrdt");
+        let alice_crdt = YrsCrdt::new();
         let (tx, rx) = mpsc::channel(64);
         let (emitter, _event_rx) = mock_emitter();
-        let actor = DocumentActor::new(alice_group, group_id, rx, emitter);
+        let actor = DocumentActor::new(alice_group, alice_crdt, group_id, rx, emitter);
         tokio::spawn(actor.run());
         (tx, _event_rx)
     };
 
-    // Alice types "Hello"
     send_doc(&alice_doc_tx, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 0,
@@ -269,7 +263,6 @@ async fn doc_actor_remote_update_triggers_event() {
     .await
     .expect("alice apply delta");
 
-    // Bob should receive the update as a document-updated event
     let event = tokio::time::timeout(Duration::from_secs(5), bob_event_rx.recv())
         .await
         .expect("bob event timeout")
@@ -283,7 +276,6 @@ async fn doc_actor_remote_update_triggers_event() {
         event.deltas
     );
 
-    // Verify Bob's text matches
     let bob_text = send_doc(&bob_doc_tx, |reply| DocRequest::GetText { reply })
         .await
         .expect("bob get text");
@@ -330,16 +322,13 @@ async fn coordinator_create_document() {
     assert!(!info.group_id.is_empty());
     assert_eq!(info.text, "");
 
-    // Verify we can get text from the created document
     let group_id = GroupId::from_slice(&bs58::decode(&info.group_id).into_vec().unwrap());
     let text = send_coord_doc(&tx, group_id, |reply| DocRequest::GetText { reply })
         .await
         .expect("get text");
     assert_eq!(text, "");
 
-    // Cleanup: drop sender to shut down coordinator
     drop(tx);
-    // Give it a moment to clean up
     tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
@@ -360,13 +349,11 @@ async fn coordinator_create_multiple_documents() {
         .await
         .expect("create doc B");
 
-    // Different group IDs
     assert_ne!(info_a.group_id, info_b.group_id);
 
     let id_a = GroupId::from_slice(&bs58::decode(&info_a.group_id).into_vec().unwrap());
     let id_b = GroupId::from_slice(&bs58::decode(&info_b.group_id).into_vec().unwrap());
 
-    // Apply delta to doc A only
     send_coord_doc(&tx, id_a, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 0,
@@ -377,7 +364,6 @@ async fn coordinator_create_multiple_documents() {
     .await
     .unwrap();
 
-    // Verify isolation
     let text_a = send_coord_doc(&tx, id_a, |reply| DocRequest::GetText { reply })
         .await
         .unwrap();
@@ -397,9 +383,6 @@ async fn coordinator_route_to_unknown_group_id() {
 
     let fake_id = GroupId::new([42u8; 32]);
 
-    // Send a ForDoc request with an unknown group_id.
-    // The coordinator drops the oneshot because the group doesn't exist,
-    // so reply_rx.await returns a RecvError.
     let (reply_tx, reply_rx) = oneshot::channel::<Result<String, String>>();
     tx.send(CoordinatorRequest::ForDoc {
         group_id: fake_id,
@@ -408,10 +391,8 @@ async fn coordinator_route_to_unknown_group_id() {
     .await
     .unwrap();
 
-    // Give coordinator time to process and drop the oneshot.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // The oneshot receiver should see a closed channel (RecvError).
     let result = reply_rx.await;
     assert!(result.is_err(), "expected RecvError for unknown group_id");
 }
@@ -426,11 +407,9 @@ async fn coordinator_join_via_welcome() {
     let (_acceptor_task, acceptor_addr, _dir) = spawn_acceptor().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Alice
     let alice_client = test_yrs_group_client("alice-coord", test_endpoint().await);
     let (alice_tx, _alice_events) = spawn_coordinator(alice_client);
 
-    // Create doc
     let doc_info = send_coord(&alice_tx, |reply| CoordinatorRequest::CreateDocument {
         reply,
     })
@@ -438,7 +417,6 @@ async fn coordinator_join_via_welcome() {
     .expect("alice create doc");
     let alice_group_id = GroupId::from_slice(&bs58::decode(&doc_info.group_id).into_vec().unwrap());
 
-    // Add acceptor
     let addr_b58 = bs58::encode(postcard::to_allocvec(&acceptor_addr).unwrap()).into_string();
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddAcceptor {
         addr_b58,
@@ -448,7 +426,6 @@ async fn coordinator_join_via_welcome() {
     .expect("add acceptor");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Alice writes some text
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 0,
@@ -459,22 +436,18 @@ async fn coordinator_join_via_welcome() {
     .await
     .expect("alice write");
 
-    // Bob
     let bob_client = test_yrs_group_client("bob-coord", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
     let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
     let (bob_tx, _bob_events) = spawn_coordinator(bob_client);
 
-    // Start Bob waiting for welcome BEFORE Alice adds him (avoid race condition).
     let bob_tx2 = bob_tx.clone();
     let bob_welcome_handle = tokio::spawn(async move {
         send_coord(&bob_tx2, |reply| CoordinatorRequest::RecvWelcome { reply }).await
     });
 
-    // Small delay to ensure RecvWelcome is registered before add_member sends the welcome.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Alice adds Bob — this triggers welcome to be sent to Bob.
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddMember {
         key_package_b58: bob_kp_b58,
         reply,
@@ -482,19 +455,15 @@ async fn coordinator_join_via_welcome() {
     .await
     .expect("alice add bob");
 
-    // Bob receives welcome
     let bob_doc_info = tokio::time::timeout(Duration::from_secs(10), bob_welcome_handle)
         .await
         .expect("bob welcome timeout")
         .expect("bob task panicked")
         .expect("bob join");
 
-    // Bob starts with an empty CRDT (no snapshot in welcome) and catches up
-    // via compaction + backfill from acceptors.
     let bob_group_id =
         GroupId::from_slice(&bs58::decode(&bob_doc_info.group_id).into_vec().unwrap());
 
-    // Wait for Bob to sync up via backfill
     let mut synced = false;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -518,11 +487,9 @@ async fn full_two_peer_sync() {
     let (_acceptor_task, acceptor_addr, _dir) = spawn_acceptor().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Alice
     let alice_client = test_yrs_group_client("alice-sync", test_endpoint().await);
     let (alice_tx, mut alice_events) = spawn_coordinator(alice_client);
 
-    // Create doc
     let doc_info = send_coord(&alice_tx, |reply| CoordinatorRequest::CreateDocument {
         reply,
     })
@@ -530,7 +497,6 @@ async fn full_two_peer_sync() {
     .expect("alice create doc");
     let alice_group_id = GroupId::from_slice(&bs58::decode(&doc_info.group_id).into_vec().unwrap());
 
-    // Add acceptor
     let addr_b58 = bs58::encode(postcard::to_allocvec(&acceptor_addr).unwrap()).into_string();
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddAcceptor {
         addr_b58,
@@ -540,20 +506,17 @@ async fn full_two_peer_sync() {
     .expect("add acceptor");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Bob
     let bob_client = test_yrs_group_client("bob-sync", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
     let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
     let (bob_tx, mut bob_events) = spawn_coordinator(bob_client);
 
-    // Start Bob waiting for welcome BEFORE Alice adds him.
     let bob_tx2 = bob_tx.clone();
     let bob_welcome_handle = tokio::spawn(async move {
         send_coord(&bob_tx2, |reply| CoordinatorRequest::RecvWelcome { reply }).await
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Alice adds Bob
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddMember {
         key_package_b58: bob_kp_b58,
         reply,
@@ -561,7 +524,6 @@ async fn full_two_peer_sync() {
     .await
     .expect("alice add bob");
 
-    // Bob joins
     let bob_doc_info = tokio::time::timeout(Duration::from_secs(10), bob_welcome_handle)
         .await
         .expect("bob welcome timeout")
@@ -573,7 +535,6 @@ async fn full_two_peer_sync() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Alice types "Hello"
     send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 0,
@@ -584,18 +545,18 @@ async fn full_two_peer_sync() {
     .await
     .expect("alice type hello");
 
-    // Bob should receive the update via event
-    let bob_event = tokio::time::timeout(Duration::from_secs(5), bob_events.recv())
-        .await
-        .expect("bob event timeout")
-        .expect("bob event");
+    let bob_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = bob_events.recv().await.expect("bob event channel closed");
+            if !event.deltas.is_empty() {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("bob event timeout");
     assert_eq!(bob_event.text, "Hello");
-    assert!(
-        !bob_event.deltas.is_empty(),
-        "expected deltas for remote update"
-    );
 
-    // Bob types " World"
     send_coord_doc(&bob_tx, bob_group_id, |reply| DocRequest::ApplyDelta {
         delta: Delta::Insert {
             position: 5,
@@ -606,18 +567,21 @@ async fn full_two_peer_sync() {
     .await
     .expect("bob type world");
 
-    // Alice should receive the update via event
-    let alice_event = tokio::time::timeout(Duration::from_secs(5), alice_events.recv())
-        .await
-        .expect("alice event timeout")
-        .expect("alice event");
+    let alice_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = alice_events
+                .recv()
+                .await
+                .expect("alice event channel closed");
+            if !event.deltas.is_empty() {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("alice event timeout");
     assert_eq!(alice_event.text, "Hello World");
-    assert!(
-        !alice_event.deltas.is_empty(),
-        "expected deltas for remote update"
-    );
 
-    // Verify final state
     let alice_text = send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::GetText {
         reply,
     })

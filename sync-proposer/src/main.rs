@@ -12,9 +12,7 @@ use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use tracing::info;
-use universal_sync_core::{
-    NoCrdtFactory, PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE, load_secret_key,
-};
+use universal_sync_core::{PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE, load_secret_key};
 use universal_sync_proposer::GroupClient;
 use universal_sync_proposer::repl::ReplContext;
 
@@ -103,8 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(addr = ?endpoint.addr(), "Iroh endpoint ready");
 
-    let mut group_client = GroupClient::new(client, secret_key, cipher_suite, endpoint);
-    group_client.register_crdt_factory(NoCrdtFactory);
+    let group_client = GroupClient::new(client, secret_key, cipher_suite, endpoint);
 
     let mut context = ReplContext {
         client: group_client,

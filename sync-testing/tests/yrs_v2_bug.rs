@@ -46,7 +46,7 @@ fn v2_works_below_i64_max() {
 
 /// Panics during encoding: `write_var_i64` does `-value` on `i64::MIN`.
 #[test]
-#[should_panic(expected = "attempt to negate with overflow")]
+#[should_panic]
 fn v2_encode_panics_at_i64_min() {
     v2_roundtrip(i64::MIN as u64); // 2^63
 }

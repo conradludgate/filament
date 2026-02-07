@@ -8,7 +8,7 @@ use std::time::Duration;
 use mls_rs::external_client::ExternalClient;
 use tempfile::TempDir;
 use universal_sync_acceptor::{AcceptorRegistry, SharedFjallStateStore, accept_connection};
-use universal_sync_core::{AcceptorId, CompactionLevel, GroupId};
+use universal_sync_core::{AcceptorId, CompactionLevel, GroupId, NoCrdt};
 use universal_sync_proposer::GroupEvent;
 use universal_sync_testing::{
     YrsCrdt, init_tracing, spawn_acceptor, test_cipher_suite, test_crypto_provider, test_endpoint,
@@ -169,7 +169,8 @@ async fn test_alice_adds_bob_with_group_api() {
     tracing::info!("Bob received welcome message");
 
     // --- Bob joins using GroupClient ---
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join group");
+    let join_info = bob.join_group(&welcome).await.expect("bob join group");
+    let mut bob_group = join_info.group;
 
     let bob_context = bob_group.context().await.expect("bob context");
     tracing::info!(epoch = ?bob_context.epoch, "Bob joined group");
@@ -432,7 +433,8 @@ async fn test_remove_member() {
         .expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("failed to receive welcome");
-    let bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let bob_group = join_info.group;
 
     let context = alice_group.context().await.expect("context after add bob");
     assert_eq!(context.member_count, 2, "Should have 2 members");
@@ -485,7 +487,8 @@ async fn test_three_member_group() {
         .expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -499,7 +502,8 @@ async fn test_three_member_group() {
         .expect("add carol");
 
     let welcome = carol.recv_welcome().await.expect("carol welcome");
-    let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
+    let join_info = carol.join_group(&welcome).await.expect("carol join");
+    let mut carol_group = join_info.group;
 
     // Give Bob time to learn the commit that added Carol
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -540,7 +544,11 @@ async fn test_send_update_no_changes() {
     let mut group = alice.create_group(&[], "none").await.expect("create group");
 
     // send_update with no CRDT changes should be a no-op
-    group.send_update().await.expect("send update (no-op)");
+    let mut crdt = NoCrdt;
+    group
+        .send_update(&mut crdt)
+        .await
+        .expect("send update (no-op)");
 
     group.shutdown().await;
 }
@@ -1048,16 +1056,15 @@ async fn test_yrs_crdt_snapshot_in_welcome() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Bob joins - he needs YrsCrdtFactory registered to process the snapshot
     let mut bob = test_yrs_group_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob key package");
 
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join yrs group");
+    let join_info = bob.join_group(&welcome).await.expect("bob join yrs group");
+    let mut bob_group = join_info.group;
 
-    // Verify both are in the group
     let alice_ctx = alice_group.context().await.expect("alice context");
     let bob_ctx = bob_group.context().await.expect("bob context");
     assert_eq!(alice_ctx.member_count, 2);
@@ -1084,6 +1091,7 @@ async fn test_crdt_operations_sent_and_received() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1094,44 +1102,44 @@ async fn test_crdt_operations_sent_and_received() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Alice edits the CRDT (insert text into a Yrs document)
     {
         use yrs::{Text, Transact};
-
-        let yrs_crdt = alice_group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .expect("should be YrsCrdt");
-        let text = yrs_crdt.doc().get_or_insert_text("doc");
-        let mut txn = yrs_crdt.doc().transact_mut();
+        let text = alice_crdt.doc().get_or_insert_text("doc");
+        let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 0, "Hello from Alice");
     }
 
     // Send the update
-    alice_group.send_update().await.expect("send update");
+    alice_group
+        .send_update(&mut alice_crdt)
+        .await
+        .expect("send update");
 
     // Bob should receive and apply the update
-    tokio::time::timeout(Duration::from_secs(5), bob_group.wait_for_update())
-        .await
-        .expect("timeout waiting for update")
-        .expect("channel closed");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        bob_group.wait_for_update(&mut bob_crdt),
+    )
+    .await
+    .expect("timeout waiting for update")
+    .expect("channel closed");
 
     // Verify Bob's CRDT has Alice's text
     {
         use yrs::{GetString, Transact};
-
-        let yrs_crdt = bob_group
-            .crdt()
-            .as_any()
-            .downcast_ref::<YrsCrdt>()
-            .expect("should be YrsCrdt");
-        let text = yrs_crdt.doc().get_or_insert_text("doc");
-        let txn = yrs_crdt.doc().transact();
+        let text = bob_crdt.doc().get_or_insert_text("doc");
+        let txn = bob_crdt.doc().transact();
         assert_eq!(text.get_string(&txn), "Hello from Alice");
     }
 
@@ -1154,6 +1162,7 @@ async fn test_crdt_bidirectional_message_exchange() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1163,64 +1172,67 @@ async fn test_crdt_bidirectional_message_exchange() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Alice inserts text
     {
         use yrs::{Text, Transact};
-        let yrs = alice_group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let mut txn = yrs.doc().transact_mut();
+        let text = alice_crdt.doc().get_or_insert_text("doc");
+        let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 0, "Hello");
     }
-    alice_group.send_update().await.expect("alice send");
+    alice_group
+        .send_update(&mut alice_crdt)
+        .await
+        .expect("alice send");
 
     // Bob receives Alice's update
-    tokio::time::timeout(Duration::from_secs(5), bob_group.wait_for_update())
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        bob_group.wait_for_update(&mut bob_crdt),
+    )
+    .await
+    .expect("timeout")
+    .expect("channel closed");
 
     // Verify Bob has Alice's text, then Bob appends
     {
         use yrs::{GetString, Text, Transact};
-        let yrs = bob_group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
+        let text = bob_crdt.doc().get_or_insert_text("doc");
         {
-            let txn = yrs.doc().transact();
+            let txn = bob_crdt.doc().transact();
             assert_eq!(text.get_string(&txn), "Hello");
         }
-        let mut txn = yrs.doc().transact_mut();
+        let mut txn = bob_crdt.doc().transact_mut();
         text.insert(&mut txn, 5, " World");
     }
-    bob_group.send_update().await.expect("bob send");
+    bob_group
+        .send_update(&mut bob_crdt)
+        .await
+        .expect("bob send");
 
     // Alice receives Bob's update
-    tokio::time::timeout(Duration::from_secs(5), alice_group.wait_for_update())
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        alice_group.wait_for_update(&mut alice_crdt),
+    )
+    .await
+    .expect("timeout")
+    .expect("channel closed");
 
     // Verify Alice has the combined text
     {
         use yrs::{GetString, Transact};
-        let yrs = alice_group
-            .crdt()
-            .as_any()
-            .downcast_ref::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let txn = yrs.doc().transact();
+        let text = alice_crdt.doc().get_or_insert_text("doc");
+        let txn = alice_crdt.doc().transact();
         assert_eq!(text.get_string(&txn), "Hello World");
     }
 
@@ -1244,22 +1256,22 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice writes some text before anyone joins and sends the update
     {
         use yrs::{Text, Transact};
-        let yrs = alice_group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let mut txn = yrs.doc().transact_mut();
+        let text = alice_crdt.doc().get_or_insert_text("doc");
+        let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 0, "Initial content");
     }
-    alice_group.send_update().await.expect("alice send initial");
+    alice_group
+        .send_update(&mut alice_crdt)
+        .await
+        .expect("alice send initial");
 
     // Wait for the update to reach the acceptor
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1269,20 +1281,37 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     // Bob catches up via backfill (compaction sends snapshot to acceptors)
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            // Drain and apply pending CRDT updates from the message channel
-            bob_group.sync();
+            bob_group.sync(&mut bob_crdt);
             let text = {
                 use yrs::{GetString, Transact};
-                let yrs = bob_group.crdt().as_any().downcast_ref::<YrsCrdt>().unwrap();
-                let text_ref = yrs.doc().get_or_insert_text("doc");
-                let txn = yrs.doc().transact();
+                let text_ref = bob_crdt.doc().get_or_insert_text("doc");
+                let txn = bob_crdt.doc().transact();
                 text_ref.get_string(&txn)
             };
             if text == "Initial content" {
@@ -1300,24 +1329,38 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = carol.recv_welcome().await.expect("carol welcome");
-    let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
+    let join_info = carol.join_group(&welcome).await.expect("carol join");
+    let mut carol_group = join_info.group;
+    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     // Carol catches up via backfill
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             // Drain and apply pending CRDT updates from the message channel
-            carol_group.sync();
+            carol_group.sync(&mut carol_crdt);
             let text = {
                 use yrs::{GetString, Transact};
-                let yrs = carol_group
-                    .crdt()
-                    .as_any()
-                    .downcast_ref::<YrsCrdt>()
-                    .unwrap();
-                let text_ref = yrs.doc().get_or_insert_text("doc");
-                let txn = yrs.doc().transact();
+                let text_ref = carol_crdt.doc().get_or_insert_text("doc");
+                let txn = carol_crdt.doc().transact();
                 text_ref.get_string(&txn)
             };
             if text == "Initial content" {
@@ -1333,31 +1376,27 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     // Alice sends a CRDT update to Carol
     {
         use yrs::{Text, Transact};
-        let yrs = alice_group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let mut txn = yrs.doc().transact_mut();
+        let text = alice_crdt.doc().get_or_insert_text("doc");
+        let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 15, " + update");
     }
-    alice_group.send_update().await.expect("alice send");
-
-    tokio::time::timeout(Duration::from_secs(5), carol_group.wait_for_update())
+    alice_group
+        .send_update(&mut alice_crdt)
         .await
-        .expect("carol timeout")
-        .expect("carol channel closed");
+        .expect("alice send");
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        carol_group.wait_for_update(&mut carol_crdt),
+    )
+    .await
+    .expect("carol timeout")
+    .expect("carol channel closed");
 
     {
         use yrs::{GetString, Transact};
-        let yrs = carol_group
-            .crdt()
-            .as_any()
-            .downcast_ref::<YrsCrdt>()
-            .unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let txn = yrs.doc().transact();
+        let text = carol_crdt.doc().get_or_insert_text("doc");
+        let txn = carol_crdt.doc().transact();
         assert_eq!(text.get_string(&txn), "Initial content + update");
     }
 
@@ -1377,34 +1416,24 @@ async fn yrs_insert_and_send(
         impl mls_rs::client_builder::MlsConfig + 'static,
         impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
+    crdt: &mut YrsCrdt,
     position: u32,
     text: &str,
 ) {
     {
         use yrs::{Text, Transact};
-        let yrs = group
-            .crdt_mut()
-            .as_any_mut()
-            .downcast_mut::<YrsCrdt>()
-            .unwrap();
-        let text_ref = yrs.doc().get_or_insert_text("doc");
-        let mut txn = yrs.doc().transact_mut();
+        let text_ref = crdt.doc().get_or_insert_text("doc");
+        let mut txn = crdt.doc().transact_mut();
         text_ref.insert(&mut txn, position, text);
     }
-    group.send_update().await.expect("send update");
+    group.send_update(crdt).await.expect("send update");
 }
 
-/// Helper: read text from a Yrs CRDT group.
-fn yrs_get_text(
-    group: &universal_sync_proposer::Group<
-        impl mls_rs::client_builder::MlsConfig + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + 'static,
-    >,
-) -> String {
+/// Helper: read text from a Yrs CRDT.
+fn yrs_get_text(crdt: &YrsCrdt) -> String {
     use yrs::{GetString, Transact};
-    let yrs = group.crdt().as_any().downcast_ref::<YrsCrdt>().unwrap();
-    let text_ref = yrs.doc().get_or_insert_text("doc");
-    let txn = yrs.doc().transact();
+    let text_ref = crdt.doc().get_or_insert_text("doc");
+    let txn = crdt.doc().transact();
     text_ref.get_string(&txn)
 }
 
@@ -1439,14 +1468,15 @@ async fn wait_for_sync(
         impl mls_rs::client_builder::MlsConfig + 'static,
         impl mls_rs::CipherSuiteProvider + Clone + 'static,
     >,
+    crdt: &mut YrsCrdt,
     expected: &str,
     timeout_secs: u64,
 ) {
     tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            group.sync();
-            if yrs_get_text(group) == expected {
+            group.sync(crdt);
+            if yrs_get_text(crdt) == expected {
                 break;
             }
         }
@@ -1456,7 +1486,7 @@ async fn wait_for_sync(
         panic!(
             "timed out waiting for sync: expected '{}', got '{}'",
             expected,
-            yrs_get_text(group),
+            yrs_get_text(crdt),
         );
     });
 }
@@ -1476,6 +1506,23 @@ fn test_compaction_config(threshold: u32) -> Vec<CompactionLevel> {
     ]
 }
 
+/// Helper: drive compaction by listening for CompactionNeeded events and calling compact.
+#[allow(dead_code)]
+async fn drive_compaction(
+    group: &mut universal_sync_proposer::Group<
+        impl mls_rs::client_builder::MlsConfig + 'static,
+        impl mls_rs::CipherSuiteProvider + Clone + 'static,
+    >,
+    crdt: &impl universal_sync_core::Crdt,
+    events: &mut tokio::sync::broadcast::Receiver<GroupEvent>,
+) {
+    while let Ok(event) = events.try_recv() {
+        if let GroupEvent::CompactionNeeded { level } = event {
+            group.compact(crdt, level).await.expect("compact");
+        }
+    }
+}
+
 /// Test 1: Welcome + force_compaction L(max) with verified compaction.
 ///
 /// Alice writes text, adds Bob. The `force_compaction` path triggers
@@ -1493,6 +1540,7 @@ async fn test_welcome_force_compaction_verified() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     // Subscribe to events BEFORE any compaction can fire
     let mut alice_events = alice_group.subscribe();
@@ -1500,7 +1548,7 @@ async fn test_welcome_force_compaction_verified() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice writes text
-    yrs_insert_and_send(&mut alice_group, 0, "Hello World").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "Hello World").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins
@@ -1509,7 +1557,27 @@ async fn test_welcome_force_compaction_verified() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    // Handle CompactionNeeded event
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Verify CompactionCompleted event fires on Alice's side
     let event = wait_for_event(
@@ -1529,7 +1597,7 @@ async fn test_welcome_force_compaction_verified() {
     }
 
     // Bob should catch up via backfill
-    wait_for_sync(&mut bob_group, "Hello World", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "Hello World", 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1555,15 +1623,30 @@ async fn test_welcome_after_threshold_compaction() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config)
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice sends 3 updates (hits threshold)
-    yrs_insert_and_send(&mut alice_group, 0, "aaa").await;
-    yrs_insert_and_send(&mut alice_group, 3, "bbb").await;
-    yrs_insert_and_send(&mut alice_group, 6, "ccc").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "aaa").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 3, "bbb").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 6, "ccc").await;
+
+    // Wait for threshold-triggered CompactionNeeded
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Wait for threshold-triggered CompactionCompleted
     let event = wait_for_event(
@@ -1585,11 +1668,30 @@ async fn test_welcome_after_threshold_compaction() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     // Bob catches up via backfill (force_compaction re-encrypts)
-    wait_for_sync(&mut bob_group, "aaabbbccc", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "aaabbbccc", 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1614,11 +1716,13 @@ async fn test_welcome_reencryption_sequential_joiners() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice writes text
-    yrs_insert_and_send(&mut alice_group, 0, "Shared state").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "Shared state").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins — triggers force_compaction (L(max))
@@ -1627,10 +1731,30 @@ async fn test_welcome_reencryption_sequential_joiners() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    // Handle CompactionNeeded event
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Bob catches up
-    wait_for_sync(&mut bob_group, "Shared state", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "Shared state", 10).await;
 
     // Wait for Alice's compaction to fully process
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1641,10 +1765,30 @@ async fn test_welcome_reencryption_sequential_joiners() {
     alice_group.add_member(carol_kp).await.expect("add carol");
 
     let welcome = carol.recv_welcome().await.expect("carol welcome");
-    let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
+    let join_info = carol.join_group(&welcome).await.expect("carol join");
+    let mut carol_group = join_info.group;
+    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    // Handle CompactionNeeded event for Carol
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Carol catches up via re-encrypted snapshot
-    wait_for_sync(&mut carol_group, "Shared state", 10).await;
+    wait_for_sync(&mut carol_group, &mut carol_crdt, "Shared state", 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1670,11 +1814,13 @@ async fn test_post_compaction_bidirectional() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice writes initial text
-    yrs_insert_and_send(&mut alice_group, 0, "Hello").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "Hello").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins — triggers compaction, clears update_buffer
@@ -1683,30 +1829,53 @@ async fn test_post_compaction_bidirectional() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    // Handle CompactionNeeded event
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Bob catches up with initial state via backfill
-    wait_for_sync(&mut bob_group, "Hello", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "Hello", 10).await;
 
     // Give Bob time to learn the CompactionComplete commit and advance epoch
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Alice sends a NEW message AFTER compaction (at post-CompactionComplete epoch)
-    yrs_insert_and_send(&mut alice_group, 5, " World").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 5, " World").await;
 
     // Bob should receive Alice's message (Bob has advanced epoch via passive learning)
-    wait_for_sync(&mut bob_group, "Hello World", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "Hello World", 10).await;
 
     // Bob sends back to Alice
-    yrs_insert_and_send(&mut bob_group, 11, "!").await;
+    yrs_insert_and_send(&mut bob_group, &mut bob_crdt, 11, "!").await;
 
     // Alice receives Bob's update
-    tokio::time::timeout(Duration::from_secs(5), alice_group.wait_for_update())
-        .await
-        .expect("timeout waiting for Alice to receive Bob's message")
-        .expect("channel closed");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        alice_group.wait_for_update(&mut alice_crdt),
+    )
+    .await
+    .expect("timeout waiting for Alice to receive Bob's message")
+    .expect("channel closed");
 
-    assert_eq!(yrs_get_text(&alice_group), "Hello World!");
+    assert_eq!(yrs_get_text(&alice_crdt), "Hello World!");
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1729,7 +1898,9 @@ async fn test_welcome_force_compaction_empty() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob immediately — no writes, no snapshot
@@ -1738,24 +1909,47 @@ async fn test_welcome_force_compaction_empty() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    // Handle CompactionNeeded from member add
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Both should have empty text (no crash)
-    assert_eq!(yrs_get_text(&alice_group), "");
-    bob_group.sync();
-    assert_eq!(yrs_get_text(&bob_group), "");
+    assert_eq!(yrs_get_text(&alice_crdt), "");
+    bob_group.sync(&mut bob_crdt);
+    assert_eq!(yrs_get_text(&bob_crdt), "");
 
     // Now Alice writes — should still work
-    yrs_insert_and_send(&mut alice_group, 0, "Late write").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "Late write").await;
 
-    tokio::time::timeout(Duration::from_secs(5), bob_group.wait_for_update())
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        bob_group.wait_for_update(&mut bob_crdt),
+    )
+    .await
+    .expect("timeout")
+    .expect("channel closed");
 
-    assert_eq!(yrs_get_text(&bob_group), "Late write");
+    assert_eq!(yrs_get_text(&bob_crdt), "Late write");
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1779,23 +1973,24 @@ async fn test_compaction_threshold_boundary() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config)
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Send 2 updates — below threshold
-    yrs_insert_and_send(&mut alice_group, 0, "aa").await;
-    yrs_insert_and_send(&mut alice_group, 2, "bb").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "aa").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 2, "bb").await;
 
     // Give compaction timer a chance to fire (it checks every 1s)
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // Should NOT have received CompactionCompleted
+    // Should NOT have received CompactionNeeded
     let no_compaction = tokio::time::timeout(Duration::from_millis(100), async {
         loop {
             match alice_events.recv().await {
-                Ok(GroupEvent::CompactionCompleted { .. }) => return true,
+                Ok(GroupEvent::CompactionNeeded { .. }) => return true,
                 Ok(_) => continue,
                 Err(_) => return false,
             }
@@ -1808,7 +2003,21 @@ async fn test_compaction_threshold_boundary() {
     );
 
     // Send the 3rd update — hits threshold
-    yrs_insert_and_send(&mut alice_group, 4, "cc").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 4, "cc").await;
+
+    // Now CompactionNeeded should fire
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Now CompactionCompleted should fire
     let event = wait_for_event(
@@ -1844,15 +2053,29 @@ async fn test_multiple_compaction_rounds() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Round 1: send 3 updates → triggers compaction
-    yrs_insert_and_send(&mut alice_group, 0, "aaa").await;
-    yrs_insert_and_send(&mut alice_group, 3, "bbb").await;
-    yrs_insert_and_send(&mut alice_group, 6, "ccc").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "aaa").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 3, "bbb").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 6, "ccc").await;
+
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     wait_for_event(
         &mut alice_events,
@@ -1866,9 +2089,22 @@ async fn test_multiple_compaction_rounds() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Round 2: send 3 more updates → triggers second compaction
-    yrs_insert_and_send(&mut alice_group, 9, "ddd").await;
-    yrs_insert_and_send(&mut alice_group, 12, "eee").await;
-    yrs_insert_and_send(&mut alice_group, 15, "fff").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 9, "ddd").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 12, "eee").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 15, "fff").await;
+
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     wait_for_event(
         &mut alice_events,
@@ -1885,10 +2121,29 @@ async fn test_multiple_compaction_rounds() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
-    let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    wait_for_sync(&mut bob_group, "aaabbbcccdddeeefff", 10).await;
+    let welcome = bob.recv_welcome().await.expect("bob welcome");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "aaabbbcccdddeeefff", 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1914,6 +2169,7 @@ async fn test_compaction_deletion_late_joiner() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
 
@@ -1921,7 +2177,21 @@ async fn test_compaction_deletion_late_joiner() {
 
     // Send 6 updates (two rounds of compaction at threshold=3)
     for i in 0u32..6 {
-        yrs_insert_and_send(&mut alice_group, i * 2, &format!("{i}x")).await;
+        yrs_insert_and_send(&mut alice_group, &mut alice_crdt, i * 2, &format!("{i}x")).await;
+    }
+
+    // Handle CompactionNeeded after sends (threshold=3 fires after 3rd send)
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
     }
 
     // Wait for at least one CompactionCompleted
@@ -1940,11 +2210,30 @@ async fn test_compaction_deletion_late_joiner() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
-    let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    let expected = yrs_get_text(&alice_group);
-    wait_for_sync(&mut bob_group, &expected, 10).await;
+    let welcome = bob.recv_welcome().await.expect("bob welcome");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    let expected = yrs_get_text(&alice_crdt);
+    wait_for_sync(&mut bob_group, &mut bob_crdt, &expected, 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -1969,7 +2258,9 @@ async fn test_concurrent_writers_compaction() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob
@@ -1977,18 +2268,49 @@ async fn test_concurrent_writers_compaction() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     // Wait for Bob to stabilize
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let mut alice_events = alice_group.subscribe();
-
     // Alice writes 3 messages
-    yrs_insert_and_send(&mut alice_group, 0, "A1").await;
-    yrs_insert_and_send(&mut alice_group, 2, "A2").await;
-    yrs_insert_and_send(&mut alice_group, 4, "A3").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "A1").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 2, "A2").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 4, "A3").await;
+
+    // Wait for Alice's CompactionNeeded and handle it
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Wait for Alice's compaction to fire
     wait_for_event(
@@ -2003,9 +2325,20 @@ async fn test_concurrent_writers_compaction() {
 
     // Now Bob writes 3 messages (his own threshold)
     let mut bob_events = bob_group.subscribe();
-    yrs_insert_and_send(&mut bob_group, 0, "B1").await;
-    yrs_insert_and_send(&mut bob_group, 2, "B2").await;
-    yrs_insert_and_send(&mut bob_group, 4, "B3").await;
+    yrs_insert_and_send(&mut bob_group, &mut bob_crdt, 0, "B1").await;
+    yrs_insert_and_send(&mut bob_group, &mut bob_crdt, 2, "B2").await;
+    yrs_insert_and_send(&mut bob_group, &mut bob_crdt, 4, "B3").await;
+
+    // Wait for Bob's CompactionNeeded and handle it
+    let compaction_event = wait_for_event(
+        &mut bob_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        bob_group.compact(&bob_crdt, level).await.expect("compact");
+    }
 
     // Wait for Bob's compaction
     wait_for_event(
@@ -2017,10 +2350,10 @@ async fn test_concurrent_writers_compaction() {
 
     // Let both members settle
     tokio::time::sleep(Duration::from_millis(1000)).await;
-    alice_group.sync();
+    alice_group.sync(&mut alice_crdt);
 
     // Alice should have both her own and Bob's text
-    let alice_text = yrs_get_text(&alice_group);
+    let alice_text = yrs_get_text(&alice_crdt);
     assert!(
         alice_text.contains("A1") && alice_text.contains("B1"),
         "Alice should have merged both writers' text, got: {alice_text}"
@@ -2031,10 +2364,29 @@ async fn test_concurrent_writers_compaction() {
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
-    let welcome = carol.recv_welcome().await.expect("carol welcome");
-    let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    wait_for_sync(&mut carol_group, &alice_text, 10).await;
+    let welcome = carol.recv_welcome().await.expect("carol welcome");
+    let join_info = carol.join_group(&welcome).await.expect("carol join");
+    let mut carol_group = join_info.group;
+    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    wait_for_sync(&mut carol_group, &mut carol_crdt, &alice_text, 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -2060,21 +2412,36 @@ async fn test_key_update_then_compaction() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Write 2 messages before key update
-    yrs_insert_and_send(&mut alice_group, 0, "before1").await;
-    yrs_insert_and_send(&mut alice_group, 7, "before2").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "before1").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 7, "before2").await;
 
     // Key update (advances epoch)
     alice_group.update_keys().await.expect("update keys");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Write 2 more messages (hits threshold=4)
-    yrs_insert_and_send(&mut alice_group, 14, "after1").await;
-    yrs_insert_and_send(&mut alice_group, 20, "after2").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 14, "after1").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 20, "after2").await;
+
+    // Wait for CompactionNeeded and handle it
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Wait for compaction
     wait_for_event(
@@ -2091,15 +2458,34 @@ async fn test_key_update_then_compaction() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
-    let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    let expected = yrs_get_text(&alice_group);
+    let welcome = bob.recv_welcome().await.expect("bob welcome");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    let expected = yrs_get_text(&alice_crdt);
     assert!(
         expected.contains("before1") && expected.contains("after2"),
         "expected full text, got: {expected}"
     );
-    wait_for_sync(&mut bob_group, &expected, 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, &expected, 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -2120,23 +2506,24 @@ async fn test_compaction_no_acceptors() {
         .create_group_with_config(&[], "yrs", config)
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
     let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Write enough to exceed threshold
-    yrs_insert_and_send(&mut alice_group, 0, "aa").await;
-    yrs_insert_and_send(&mut alice_group, 2, "bb").await;
-    yrs_insert_and_send(&mut alice_group, 4, "cc").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "aa").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 2, "bb").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 4, "cc").await;
 
     // Wait for compaction timer to fire (but it should skip)
     tokio::time::sleep(Duration::from_millis(3000)).await;
 
-    // No CompactionCompleted should have fired
+    // No CompactionNeeded should have fired
     let no_compaction = tokio::time::timeout(Duration::from_millis(100), async {
         loop {
             match alice_events.recv().await {
-                Ok(GroupEvent::CompactionCompleted { .. }) => return true,
+                Ok(GroupEvent::CompactionNeeded { .. }) => return true,
                 Ok(_) => continue,
                 Err(_) => return false,
             }
@@ -2149,7 +2536,7 @@ async fn test_compaction_no_acceptors() {
     );
 
     // Data should still be intact locally
-    assert_eq!(yrs_get_text(&alice_group), "aabbcc");
+    assert_eq!(yrs_get_text(&alice_crdt), "aabbcc");
 
     alice_group.shutdown().await;
 }
@@ -2171,7 +2558,9 @@ async fn test_compaction_after_member_removal() {
         .create_group_with_config(std::slice::from_ref(&acceptor_addr), "yrs", config.clone())
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add Bob
@@ -2179,12 +2568,26 @@ async fn test_compaction_after_member_removal() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let bob_group = join_info.group;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Alice writes
-    yrs_insert_and_send(&mut alice_group, 0, "with_bob").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "with_bob").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Remove Bob (member index 1)
@@ -2197,12 +2600,24 @@ async fn test_compaction_after_member_removal() {
     bob_group.shutdown().await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let mut alice_events = alice_group.subscribe();
-
     // Alice writes more (total 4 = threshold for compaction)
-    yrs_insert_and_send(&mut alice_group, 8, "_after1").await;
-    yrs_insert_and_send(&mut alice_group, 15, "_after2").await;
-    yrs_insert_and_send(&mut alice_group, 22, "_after3").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 8, "_after1").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 15, "_after2").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 22, "_after3").await;
+
+    // Wait for CompactionNeeded and handle it
+    let compaction_event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = compaction_event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
     // Wait for compaction
     wait_for_event(
@@ -2219,25 +2634,44 @@ async fn test_compaction_after_member_removal() {
     let carol_kp = carol.generate_key_package().expect("carol kp");
     alice_group.add_member(carol_kp).await.expect("add carol");
 
-    let welcome = carol.recv_welcome().await.expect("carol welcome");
-    let mut carol_group = carol.join_group(&welcome).await.expect("carol join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    let expected = yrs_get_text(&alice_group);
+    let welcome = carol.recv_welcome().await.expect("carol welcome");
+    let join_info = carol.join_group(&welcome).await.expect("carol join");
+    let mut carol_group = join_info.group;
+    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    let expected = yrs_get_text(&alice_crdt);
     assert!(
         expected.contains("with_bob") && expected.contains("_after3"),
         "expected full text, got: {expected}"
     );
-    wait_for_sync(&mut carol_group, &expected, 10).await;
+    wait_for_sync(&mut carol_group, &mut carol_crdt, &expected, 10).await;
 
     alice_group.shutdown().await;
     carol_group.shutdown().await;
     acceptor_task.abort();
 }
 
-/// Test: `crdt_type_id` set at group creation survives the welcome and is
+/// Test: `protocol_name` set at group creation survives the welcome and is
 /// readable by the joining member.
 #[tokio::test]
-async fn test_crdt_type_id_survives_join() {
+async fn test_protocol_name_survives_join() {
     init_tracing();
 
     let (acceptor_task, acceptor_addr, _dir) = spawn_acceptor().await;
@@ -2257,10 +2691,11 @@ async fn test_crdt_type_id_survives_join() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
 
-    // Bob successfully joined with a Yrs CRDT — if the crdt_type_id
-    // were lost, join_group would fail with "CRDT type not registered".
+    // Verify protocol_name is preserved
+    assert_eq!(join_info.protocol_name, "yrs");
     let bob_ctx = bob_group.context().await.expect("bob context");
     assert_eq!(bob_ctx.acceptors.len(), 1);
 
@@ -2296,7 +2731,8 @@ async fn test_acceptor_list_in_group_info() {
     alice_group.add_member(bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
 
     let bob_ctx = bob_group.context().await.expect("bob context");
     assert_eq!(bob_ctx.acceptors.len(), 2, "bob should see 2 acceptors");
@@ -2329,12 +2765,14 @@ async fn test_multi_acceptor_message_delivery() {
         )
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Alice writes a few messages (below compaction threshold)
-    yrs_insert_and_send(&mut alice_group, 0, "hello").await;
-    yrs_insert_and_send(&mut alice_group, 5, " world").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "hello").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 5, " world").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Bob joins and should sync the data via backfill from acceptors
@@ -2342,12 +2780,31 @@ async fn test_multi_acceptor_message_delivery() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
-    let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
 
-    let expected = yrs_get_text(&alice_group);
+    let welcome = bob.recv_welcome().await.expect("bob welcome");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
+
+    let expected = yrs_get_text(&alice_crdt);
     assert!(!expected.is_empty(), "alice should have text");
-    wait_for_sync(&mut bob_group, &expected, 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, &expected, 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;
@@ -2369,11 +2826,13 @@ async fn test_empty_snapshot_join() {
         .create_group(std::slice::from_ref(&acceptor_addr), "yrs")
         .await
         .expect("create group");
+    let mut alice_crdt = YrsCrdt::new();
 
+    let mut alice_events = alice_group.subscribe();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice writes some data
-    yrs_insert_and_send(&mut alice_group, 0, "data").await;
+    yrs_insert_and_send(&mut alice_group, &mut alice_crdt, 0, "data").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob joins — welcome has empty snapshot (vec![]), join should succeed
@@ -2382,18 +2841,37 @@ async fn test_empty_snapshot_join() {
     let bob_kp = bob.generate_key_package().expect("bob kp");
     alice_group.add_member(bob_kp).await.expect("add bob");
 
+    let event = wait_for_event(
+        &mut alice_events,
+        |e| matches!(e, GroupEvent::CompactionNeeded { .. }),
+        10,
+    )
+    .await;
+    if let GroupEvent::CompactionNeeded { level } = event {
+        alice_group
+            .compact(&alice_crdt, level)
+            .await
+            .expect("compact");
+    }
+
     let welcome = bob.recv_welcome().await.expect("bob welcome");
-    let mut bob_group = bob.join_group(&welcome).await.expect("bob join");
+    let join_info = bob.join_group(&welcome).await.expect("bob join");
+    let mut bob_group = join_info.group;
+    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
+        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
+    } else {
+        YrsCrdt::new()
+    };
 
     // Bob should start empty
-    let bob_text = yrs_get_text(&bob_group);
+    let bob_text = yrs_get_text(&bob_crdt);
     assert!(
         bob_text.is_empty(),
         "bob should start empty, got: {bob_text}"
     );
 
     // Wait for backfill
-    wait_for_sync(&mut bob_group, "data", 10).await;
+    wait_for_sync(&mut bob_group, &mut bob_crdt, "data", 10).await;
 
     alice_group.shutdown().await;
     bob_group.shutdown().await;

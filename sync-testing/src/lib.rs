@@ -14,9 +14,9 @@ use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tempfile::TempDir;
 use tracing_subscriber::{EnvFilter, fmt};
 use universal_sync_acceptor::{AcceptorRegistry, SharedFjallStateStore, accept_connection};
-use universal_sync_core::{NoCrdtFactory, PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
+use universal_sync_core::{PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
 use universal_sync_proposer::{GroupClient, ReplContext};
-pub use yrs_crdt::{YrsCrdt, YrsCrdtFactory};
+pub use yrs_crdt::YrsCrdt;
 
 pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
@@ -78,8 +78,6 @@ pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::
     }
 }
 
-/// Pre-registered with `NoCrdtFactory`.
-///
 /// # Panics
 /// Panics if key generation or client building fails.
 #[must_use]
@@ -88,9 +86,7 @@ pub fn test_group_client(
     endpoint: iroh::Endpoint,
 ) -> GroupClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
     let result = test_client(name);
-    let mut client = GroupClient::new(result.client, result.signer, result.cipher_suite, endpoint);
-    client.register_crdt_factory(NoCrdtFactory);
-    client
+    GroupClient::new(result.client, result.signer, result.cipher_suite, endpoint)
 }
 
 /// # Panics
@@ -104,15 +100,13 @@ pub fn test_repl_context(
     ReplContext::new(client)
 }
 
-/// Like [`test_group_client`] but also registers `YrsCrdtFactory`.
+/// Alias for [`test_group_client`] (factory registration is no longer needed).
 #[must_use]
 pub fn test_yrs_group_client(
     name: &'static str,
     endpoint: Endpoint,
 ) -> GroupClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
-    let mut client = test_group_client(name, endpoint);
-    client.register_crdt_factory(YrsCrdtFactory::new());
-    client
+    test_group_client(name, endpoint)
 }
 
 /// Safe to call multiple times.

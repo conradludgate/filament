@@ -38,15 +38,15 @@ pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
 /// Version 1 schema for the group context extension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupContextExtV1 {
-    pub crdt_type_id: String,
+    pub protocol_name: String,
     pub compaction_config: CompactionConfig,
     pub key_rotation_interval_secs: Option<u64>,
 }
 
 /// CRDT type, compaction config, and protocol version (group context extension).
 ///
-/// Set at group creation. Joiners use `crdt_type_id` to select the right CRDT
-/// factory and `compaction_config` to drive hierarchical compaction.
+/// Set at group creation. Joiners use `protocol_name` to select the right CRDT
+/// implementation and `compaction_config` to drive hierarchical compaction.
 ///
 /// The binary encoding uses a fixed 4-byte `u32` version prefix followed by
 /// a version-specific postcard payload. The version number doubles as the
@@ -54,7 +54,7 @@ pub struct GroupContextExtV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupContextExt {
     pub protocol_version: u32,
-    pub crdt_type_id: String,
+    pub protocol_name: String,
     pub compaction_config: CompactionConfig,
     pub key_rotation_interval_secs: Option<u64>,
 }
@@ -62,13 +62,13 @@ pub struct GroupContextExt {
 impl GroupContextExt {
     #[must_use]
     pub fn new(
-        crdt_type_id: impl Into<String>,
+        protocol_name: impl Into<String>,
         compaction_config: CompactionConfig,
         key_rotation_interval_secs: Option<u64>,
     ) -> Self {
         Self {
             protocol_version: CURRENT_PROTOCOL_VERSION,
-            crdt_type_id: crdt_type_id.into(),
+            protocol_name: protocol_name.into(),
             compaction_config,
             key_rotation_interval_secs,
         }
@@ -79,7 +79,7 @@ impl From<GroupContextExtV1> for GroupContextExt {
     fn from(v1: GroupContextExtV1) -> Self {
         Self {
             protocol_version: 1,
-            crdt_type_id: v1.crdt_type_id,
+            protocol_name: v1.protocol_name,
             compaction_config: v1.compaction_config,
             key_rotation_interval_secs: v1.key_rotation_interval_secs,
         }
@@ -89,7 +89,7 @@ impl From<GroupContextExtV1> for GroupContextExt {
 impl From<&GroupContextExt> for GroupContextExtV1 {
     fn from(ext: &GroupContextExt) -> Self {
         Self {
-            crdt_type_id: ext.crdt_type_id.clone(),
+            protocol_name: ext.protocol_name.clone(),
             compaction_config: ext.compaction_config.clone(),
             key_rotation_interval_secs: ext.key_rotation_interval_secs,
         }
@@ -479,7 +479,7 @@ mod tests {
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupContextExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
-        assert_eq!(decoded.crdt_type_id, "yjs");
+        assert_eq!(decoded.protocol_name, "yjs");
         assert_eq!(decoded.compaction_config, config);
     }
 
@@ -595,7 +595,7 @@ mod tests {
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupContextExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(decoded.key_rotation_interval_secs, Some(86400));
-        assert_eq!(decoded.crdt_type_id, "test-crdt");
+        assert_eq!(decoded.protocol_name, "test-crdt");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! High-level client abstraction for creating and joining groups.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
@@ -10,21 +9,18 @@ use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::{CipherSuiteProvider, Client, ExtensionList, MlsMessage};
 use tokio::sync::mpsc;
 use universal_sync_core::{
-    CompactionConfig, CrdtFactory, KeyPackageExt, LeafNodeExt, default_compaction_config,
+    CompactionConfig, KeyPackageExt, LeafNodeExt, default_compaction_config,
 };
 
 use crate::connection::ConnectionManager;
-use crate::group::{Group, GroupError};
+use crate::group::{Group, GroupError, JoinInfo};
 
-/// Combines an MLS client, iroh endpoint, connection manager, and CRDT factory
-/// registry. When joining a group, looks up the factory for the group's CRDT type
-/// to construct the CRDT from the welcome snapshot.
+/// Combines an MLS client, iroh endpoint, and connection manager.
 pub struct GroupClient<C, CS> {
     client: Arc<Client<C>>,
     signer: SignatureSecretKey,
     cipher_suite: CS,
     connection_manager: ConnectionManager,
-    crdt_factories: HashMap<String, Arc<dyn CrdtFactory>>,
     welcome_rx: mpsc::Receiver<Vec<u8>>,
 }
 
@@ -53,7 +49,6 @@ where
             signer,
             cipher_suite,
             connection_manager,
-            crdt_factories: HashMap::new(),
             welcome_rx,
         }
     }
@@ -73,21 +68,14 @@ where
         }
     }
 
-    /// Register a CRDT factory. The factory's `type_id()` is used as the key.
-    pub fn register_crdt_factory(&mut self, factory: impl CrdtFactory + 'static) {
-        let type_id = factory.type_id().to_owned();
-        self.crdt_factories.insert(type_id, Arc::new(factory));
-    }
-
-    /// Generate a key package containing this client's endpoint address and
-    /// supported CRDT types.
+    /// Generate a key package containing this client's endpoint address.
     ///
     /// # Errors
     /// Returns an error if key package generation fails.
     pub fn generate_key_package(&self) -> Result<MlsMessage, Report<GroupError>> {
         let kp_ext = KeyPackageExt::new(
             self.connection_manager.endpoint().addr(),
-            self.crdt_factories.keys().cloned(),
+            std::iter::empty::<String>(),
         );
         let mut kp_extensions = ExtensionList::default();
         kp_extensions.set_from(kp_ext).change_context(GroupError)?;
@@ -101,65 +89,57 @@ where
             .change_context(GroupError)
     }
 
-    /// Create a new group, optionally registering with acceptors.
-    ///
-    /// Create a group with the default compaction config.
+    /// Create a new group with the default compaction config.
     ///
     /// # Errors
-    /// Returns an error if `crdt_type_id` is not registered, or if group creation fails.
+    /// Returns an error if group creation fails.
     pub async fn create_group(
         &self,
         acceptors: &[EndpointAddr],
-        crdt_type_id: &str,
+        protocol_name: &str,
     ) -> Result<Group<C, CS>, Report<GroupError>> {
-        self.create_group_with_config(acceptors, crdt_type_id, default_compaction_config())
+        self.create_group_with_config(acceptors, protocol_name, default_compaction_config())
             .await
     }
 
     /// Create a group with a custom compaction config.
     ///
     /// # Errors
-    /// Returns an error if `crdt_type_id` is not registered, or if group creation fails.
+    /// Returns an error if group creation fails.
     pub async fn create_group_with_config(
         &self,
         acceptors: &[EndpointAddr],
-        crdt_type_id: &str,
+        protocol_name: &str,
         compaction_config: CompactionConfig,
     ) -> Result<Group<C, CS>, Report<GroupError>> {
-        let crdt_factory = self.crdt_factories.get(crdt_type_id).ok_or_else(|| {
-            Report::new(GroupError).attach(format!(
-                "CRDT type '{crdt_type_id}' not registered. Register a factory with register_crdt_factory()"
-            ))
-        })?;
-
         Group::create(
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
             &self.connection_manager,
             acceptors,
-            crdt_factory.clone(),
+            protocol_name,
             compaction_config,
         )
         .await
     }
 
-    /// Join an existing group using a welcome message. The CRDT factory is looked
-    /// up from the registry based on the group's CRDT registration extension.
+    /// Join an existing group using a welcome message. Returns the group
+    /// handle along with the protocol name and optional CRDT snapshot
+    /// so the caller can construct the appropriate CRDT.
     ///
     /// # Errors
-    /// Returns an error if the CRDT type is not registered or if joining fails.
+    /// Returns an error if joining fails.
     pub async fn join_group(
         &self,
         welcome_bytes: &[u8],
-    ) -> Result<Group<C, CS>, Report<GroupError>> {
+    ) -> Result<JoinInfo<C, CS>, Report<GroupError>> {
         Group::join(
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
             &self.connection_manager,
             welcome_bytes,
-            &self.crdt_factories,
         )
         .await
     }

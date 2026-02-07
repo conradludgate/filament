@@ -1,7 +1,7 @@
 //! Per-document actor.
 //!
 //! Each open document is managed by a [`DocumentActor`] that owns a [`Group`]
-//! and is the sole owner — no mutexes.
+//! and a [`YrsCrdt`] separately — no mutexes.
 
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +23,8 @@ where
     CS: CipherSuiteProvider + Send + Sync + 'static,
     E: EventEmitter,
 {
-    group: Group<C, CS, YrsCrdt>,
+    group: Group<C, CS>,
+    crdt: YrsCrdt,
     group_id_b58: String,
     request_rx: mpsc::Receiver<DocRequest>,
     event_rx: broadcast::Receiver<GroupEvent>,
@@ -37,7 +38,8 @@ where
     E: EventEmitter,
 {
     pub fn new(
-        group: Group<C, CS, YrsCrdt>,
+        group: Group<C, CS>,
+        crdt: YrsCrdt,
         group_id: GroupId,
         request_rx: mpsc::Receiver<DocRequest>,
         emitter: E,
@@ -46,6 +48,7 @@ where
         let event_rx = group.subscribe();
         Self {
             group,
+            crdt,
             group_id_b58,
             request_rx,
             event_rx,
@@ -58,7 +61,7 @@ where
 
         let delta_buf: Arc<Mutex<Vec<Delta>>> = Arc::new(Mutex::new(Vec::new()));
         {
-            let text_ref = self.yrs_crdt().doc().get_or_insert_text("doc");
+            let text_ref = self.crdt.doc().get_or_insert_text("doc");
             let buf_clone = delta_buf.clone();
             text_ref.observe_with("delta-collector", move |txn, event| {
                 let mut buf = buf_clone.lock().unwrap();
@@ -102,7 +105,7 @@ where
                     // Discard deltas produced by local edits
                     delta_buf.lock().unwrap().clear();
                 }
-                update = self.group.wait_for_update() => {
+                update = self.group.wait_for_update(&mut self.crdt) => {
                     match update {
                         Some(()) => self.emit_text_update(&delta_buf),
                         None => break,
@@ -110,6 +113,11 @@ where
                 }
                 event = self.event_rx.recv() => {
                     match event {
+                        Ok(GroupEvent::CompactionNeeded { level }) => {
+                            if let Err(e) = self.group.compact(&self.crdt, level).await {
+                                tracing::warn!(?e, level, "compaction failed");
+                            }
+                        }
                         Ok(_group_event) => {
                             self.emit_group_state().await;
                         }
@@ -186,28 +194,17 @@ where
         false
     }
 
-    fn yrs_crdt(&self) -> &YrsCrdt {
-        self.group.crdt()
-    }
-
-    fn yrs_crdt_mut(&mut self) -> &mut YrsCrdt {
-        self.group.crdt_mut()
-    }
-
     fn get_text(&self) -> String {
-        let yrs = self.yrs_crdt();
-        let text_ref = yrs.doc().get_or_insert_text("doc");
-        let txn = yrs.doc().transact();
+        let text_ref = self.crdt.doc().get_or_insert_text("doc");
+        let txn = self.crdt.doc().transact();
         text_ref.get_string(&txn)
     }
 
     async fn apply_delta(&mut self, delta: Delta) -> Result<(), String> {
         {
-            let yrs = self.yrs_crdt_mut();
-            let text_ref = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
+            let text_ref = self.crdt.doc().get_or_insert_text("doc");
+            let mut txn = self.crdt.doc().transact_mut();
 
-            // Clamp positions so stale/out-of-order deltas don't panic
             let doc_len = text_ref.len(&txn);
 
             match delta {
@@ -237,7 +234,7 @@ where
             }
         }
         self.group
-            .send_update()
+            .send_update(&mut self.crdt)
             .await
             .map_err(|e| format!("failed to send update: {e:?}"))
     }
@@ -309,7 +306,6 @@ where
             .into_vec()
             .map_err(|e| format!("invalid base58: {e}"))?;
 
-        // Try KeyPackage first, then EndpointAddr
         if let Ok(msg) = MlsMessage::from_bytes(&bytes)
             && msg.as_key_package().is_some()
         {

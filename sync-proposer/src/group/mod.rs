@@ -14,7 +14,6 @@ mod group_actor;
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
 use iroh::{Endpoint, EndpointAddr};
@@ -25,9 +24,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use universal_sync_core::{
-    AcceptorId, CompactionConfig, Crdt, CrdtFactory, EncryptedAppMessage, Epoch, GroupContextExt,
-    GroupId, GroupInfoExt, Handshake, KeyPackageExt, LeafNodeExt, MessageId,
-    default_compaction_config,
+    AcceptorId, CompactionConfig, Crdt, EncryptedAppMessage, Epoch, GroupContextExt, GroupId,
+    GroupInfoExt, Handshake, KeyPackageExt, LeafNodeExt, MessageId, default_compaction_config,
 };
 
 use crate::connection::ConnectionManager;
@@ -103,6 +101,11 @@ where
         acceptor_id: AcceptorId,
         reply: oneshot::Sender<Result<(), Report<GroupError>>>,
     },
+    CompactSnapshot {
+        snapshot: Vec<u8>,
+        level: u8,
+        reply: oneshot::Sender<Result<(), Report<GroupError>>>,
+    },
     Shutdown,
     #[allow(dead_code)]
     _Marker(std::marker::PhantomData<(C, CS)>),
@@ -144,7 +147,8 @@ enum AcceptorOutbound {
     },
 }
 
-/// Informational events emitted by a Group. Applications don't need to handle these.
+/// Events emitted by a Group. `CompactionNeeded` should be handled by the
+/// application by calling [`Group::compact`].
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum GroupEvent {
@@ -160,6 +164,7 @@ pub enum GroupEvent {
     EpochAdvanced { epoch: u64 },
     CompactionClaimed { level: u8 },
     CompactionCompleted { level: u8 },
+    CompactionNeeded { level: u8 },
     Unknown,
 }
 
@@ -181,12 +186,23 @@ pub struct GroupContext {
     pub confirmed_transcript_hash: Vec<u8>,
 }
 
+/// Returned by [`Group::join`] so the caller can construct the right CRDT.
+pub struct JoinInfo<C, CS>
+where
+    C: MlsConfig + Clone + Send + Sync + 'static,
+    CS: CipherSuiteProvider + Send + Sync + 'static,
+{
+    pub group: Group<C, CS>,
+    pub protocol_name: String,
+    pub snapshot: Option<Vec<u8>>,
+}
+
 /// Handle to a synchronized MLS group with automatic Paxos consensus.
 ///
 /// All mutations are sent to a background actor. Drop cancels actors without waiting;
 /// use [`shutdown()`](Self::shutdown) for graceful termination.
 #[allow(clippy::struct_field_names)]
-pub struct Group<C, CS, D: ?Sized + Crdt = dyn Crdt>
+pub struct Group<C, CS>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
@@ -194,11 +210,9 @@ where
     request_tx: mpsc::Sender<GroupRequest<C, CS>>,
     app_message_rx: mpsc::Receiver<Vec<u8>>,
     event_tx: broadcast::Sender<GroupEvent>,
-    cancel_token: CancellationToken,
     cancel_guard: tokio_util::sync::DropGuard,
     actor_handle: Option<JoinHandle<()>>,
     group_id: GroupId,
-    crdt: Box<D>,
 }
 
 /// `block_in_place` on multi-threaded runtimes, direct call on single-threaded.
@@ -223,32 +237,13 @@ where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
 {
-    /// Downcast the CRDT to a concrete type, consuming the group.
-    ///
-    /// Returns `None` if the CRDT is not of type `D`. The group is consumed
-    /// either way — callers should know the expected CRDT type.
-    #[must_use]
-    pub fn downcast<D: Crdt>(self) -> Option<Group<C, CS, D>> {
-        let crdt = self.crdt.into_any().downcast::<D>().ok()?;
-        Some(Group {
-            request_tx: self.request_tx,
-            app_message_rx: self.app_message_rx,
-            event_tx: self.event_tx,
-            cancel_token: self.cancel_token,
-            cancel_guard: self.cancel_guard,
-            actor_handle: self.actor_handle,
-            group_id: self.group_id,
-            crdt,
-        })
-    }
-
     pub(crate) async fn create(
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
         connection_manager: &ConnectionManager,
         acceptors: &[EndpointAddr],
-        crdt_factory: Arc<dyn CrdtFactory>,
+        protocol_name: &str,
         compaction_config: CompactionConfig,
     ) -> Result<Self, Report<GroupError>>
     where
@@ -256,13 +251,13 @@ where
     {
         use crate::connector::register_group_with_addr;
 
-        let crdt_type_id = crdt_factory.type_id().to_owned();
+        let protocol_name = protocol_name.to_owned();
 
         let (learner, group_id, group_info_bytes) = blocking(|| {
             let mut group_context_extensions = mls_rs::ExtensionList::default();
             group_context_extensions
                 .set_from(GroupContextExt::new(
-                    &crdt_type_id,
+                    &protocol_name,
                     compaction_config.clone(),
                     Some(86400),
                 ))
@@ -310,17 +305,12 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
-        let client_id = learner.own_fingerprint().as_client_id();
-        let crdt = crdt_factory.create(client_id);
-
         Ok(Self::spawn_actors(
             learner,
             group_id,
             endpoint.clone(),
             connection_manager.clone(),
-            crdt,
             compaction_config,
-            crdt_factory,
             Some(86400),
         ))
     }
@@ -332,15 +322,14 @@ where
         cipher_suite: CS,
         connection_manager: &ConnectionManager,
         welcome_bytes: &[u8],
-        crdt_factories: &std::collections::HashMap<String, Arc<dyn CrdtFactory>>,
-    ) -> Result<Self, Report<GroupError>>
+    ) -> Result<JoinInfo<C, CS>, Report<GroupError>>
     where
         CS: Clone,
     {
         let (
             learner,
             group_id,
-            crdt_type_id,
+            protocol_name,
             compaction_config,
             crdt_snapshot_opt,
             key_rotation_interval_secs,
@@ -377,9 +366,9 @@ where
                 .change_context(GroupError)
                 .attach(OperationContext::JOINING_GROUP)?;
 
-            let crdt_type_id = group_ctx
+            let protocol_name = group_ctx
                 .as_ref()
-                .map_or_else(|| "none".to_owned(), |e| e.crdt_type_id.clone());
+                .map_or_else(|| "none".to_owned(), |e| e.protocol_name.clone());
 
             let key_rotation_interval_secs = group_ctx
                 .as_ref()
@@ -393,16 +382,10 @@ where
             Ok::<_, Report<GroupError>>((
                 learner,
                 group_id,
-                crdt_type_id,
+                protocol_name,
                 compaction_config,
                 crdt_snapshot_opt,
                 key_rotation_interval_secs,
-            ))
-        })?;
-
-        let crdt_factory = crdt_factories.get(&crdt_type_id).ok_or_else(|| {
-            Report::new(GroupError).attach(format!(
-                "CRDT type '{crdt_type_id}' not registered. Register a factory with register_crdt_factory()"
             ))
         })?;
 
@@ -410,38 +393,36 @@ where
             connection_manager.add_address_hint(*id, addr.clone()).await;
         }
 
-        let client_id = learner.own_fingerprint().as_client_id();
-        let crdt = match crdt_snapshot_opt {
-            Some(snapshot) if !snapshot.is_empty() => crdt_factory
-                .from_snapshot(&snapshot, client_id)
-                .change_context(GroupError)?,
+        let snapshot = match crdt_snapshot_opt {
+            Some(s) if !s.is_empty() => Some(s),
             _ => {
                 tracing::info!("joining group without CRDT snapshot, will catch up via backfill");
-                crdt_factory.create(client_id)
+                None
             }
         };
 
-        Ok(Self::spawn_actors(
+        let group = Self::spawn_actors(
             learner,
             group_id,
             connection_manager.endpoint().clone(),
             connection_manager.clone(),
-            crdt,
             compaction_config,
-            crdt_factory.clone(),
             key_rotation_interval_secs,
-        ))
+        );
+
+        Ok(JoinInfo {
+            group,
+            protocol_name,
+            snapshot,
+        })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn spawn_actors(
         learner: GroupLearner<C, CS>,
         group_id: GroupId,
         endpoint: Endpoint,
         connection_manager: ConnectionManager,
-        crdt: Box<dyn Crdt>,
         compaction_config: CompactionConfig,
-        crdt_factory: Arc<dyn CrdtFactory>,
         key_rotation_interval_secs: Option<u64>,
     ) -> Self {
         let cancel_token = CancellationToken::new();
@@ -461,7 +442,6 @@ where
             event_tx.clone(),
             cancel_token.clone(),
             compaction_config,
-            crdt_factory,
             key_rotation_interval,
         );
 
@@ -473,25 +453,20 @@ where
             request_tx,
             app_message_rx,
             event_tx,
-            cancel_token,
             cancel_guard,
             actor_handle: Some(actor_handle),
             group_id,
-            crdt,
         }
     }
 }
 
-impl<C, CS, D: ?Sized + Crdt> Group<C, CS, D>
+impl<C, CS> Group<C, CS>
 where
     C: MlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Send + Sync + 'static,
 {
     /// Add a member. Welcome is sent directly via the key package's [`KeyPackageExt`].
     /// Blocks until consensus is reached.
-    ///
-    /// The new member starts with an empty CRDT and catches up via compaction
-    /// and backfill from acceptors.
     ///
     /// # Errors
     ///
@@ -561,23 +536,13 @@ where
             .map_err(|_| Report::new(GroupError).attach("group actor dropped reply"))?
     }
 
-    #[must_use]
-    pub fn crdt(&self) -> &D {
-        &self.crdt
-    }
-
-    /// After mutating, call [`send_update`](Self::send_update) to broadcast.
-    pub fn crdt_mut(&mut self) -> &mut D {
-        &mut self.crdt
-    }
-
     /// Flush local CRDT changes and broadcast. No-op if no pending changes.
     ///
     /// # Errors
     ///
     /// Returns [`GroupError`] if flushing the CRDT or sending the message fails.
-    pub async fn send_update(&mut self) -> Result<(), Report<GroupError>> {
-        let update = self.crdt.flush_update().change_context(GroupError)?;
+    pub async fn send_update(&mut self, crdt: &mut impl Crdt) -> Result<(), Report<GroupError>> {
+        let update = crdt.flush_update().change_context(GroupError)?;
 
         let Some(data) = update else {
             return Ok(());
@@ -598,10 +563,10 @@ where
     }
 
     /// Non-blocking: drain and apply pending CRDT updates. Returns `true` if any applied.
-    pub fn sync(&mut self) -> bool {
+    pub fn sync(&mut self, crdt: &mut impl Crdt) -> bool {
         let mut applied = false;
         while let Ok(data) = self.app_message_rx.try_recv() {
-            if let Err(e) = self.crdt.apply(&data) {
+            if let Err(e) = crdt.apply(&data) {
                 tracing::warn!(?e, "failed to apply CRDT update");
             } else {
                 applied = true;
@@ -611,13 +576,36 @@ where
     }
 
     /// Blocks until a remote update arrives. Returns `None` if shutting down.
-    pub async fn wait_for_update(&mut self) -> Option<()> {
+    pub async fn wait_for_update(&mut self, crdt: &mut impl Crdt) -> Option<()> {
         let data = self.app_message_rx.recv().await?;
-        if let Err(e) = self.crdt.apply(&data) {
+        if let Err(e) = crdt.apply(&data) {
             tracing::warn!(?e, "failed to apply CRDT update");
         }
-        self.sync();
+        self.sync(crdt);
         Some(())
+    }
+
+    /// Snapshot the caller's CRDT and send it to the actor for encryption,
+    /// distribution to acceptors, and `CompactionComplete` consensus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError`] if snapshotting, encryption, or consensus fails.
+    pub async fn compact(&mut self, crdt: &impl Crdt, level: u8) -> Result<(), Report<GroupError>> {
+        let snapshot = crdt.snapshot().change_context(GroupError)?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.request_tx
+            .send(GroupRequest::CompactSnapshot {
+                snapshot,
+                level,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Report::new(GroupError).attach("group actor closed"))?;
+
+        reply_rx
+            .await
+            .map_err(|_| Report::new(GroupError).attach("group actor dropped reply"))?
     }
 
     /// Proposes adding an acceptor via consensus, then registers the group with it.
@@ -690,7 +678,7 @@ where
     /// Unlike `Drop`, this waits for actors to complete.
     pub async fn shutdown(mut self) {
         let _ = self.request_tx.send(GroupRequest::Shutdown).await;
-        self.cancel_token.cancel();
+        self.cancel_guard.disarm().cancel();
         if let Some(handle) = self.actor_handle.take() {
             let _ = handle.await;
         }

@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use universal_sync_core::GroupId;
 use universal_sync_proposer::{Group, GroupClient};
+use universal_sync_testing::YrsCrdt;
 use yrs::Transact;
 
 use crate::document::DocumentActor;
@@ -82,7 +83,6 @@ where
                 let _ = reply.send(self.get_key_package());
             }
             CoordinatorRequest::RecvWelcome { reply } => {
-                // If there's already a pending request, the old oneshot is dropped
                 self.pending_welcome_reply = Some(reply);
             }
             CoordinatorRequest::JoinDocumentBytes { welcome_b58, reply } => {
@@ -102,7 +102,8 @@ where
             .await
             .map_err(|e| format!("failed to create group: {e:?}"))?;
 
-        self.register_document(group)
+        let crdt = YrsCrdt::new();
+        self.register_document(group, crdt)
     }
 
     fn get_key_package(&self) -> Result<String, String> {
@@ -140,32 +141,38 @@ where
     }
 
     async fn join_with_welcome(&mut self, welcome_bytes: &[u8]) -> Result<DocumentInfo, String> {
-        let group = self
+        let join_info = self
             .group_client
             .join_group(welcome_bytes)
             .await
             .map_err(|e| format!("failed to join group: {e:?}"))?;
 
-        self.register_document(group)
+        let crdt = if let Some(snapshot) = join_info.snapshot {
+            YrsCrdt::from_snapshot(&snapshot, rand::random())
+                .map_err(|e| format!("failed to create CRDT from snapshot: {e:?}"))?
+        } else {
+            YrsCrdt::new()
+        };
+
+        self.register_document(join_info.group, crdt)
     }
 
-    fn register_document(&mut self, group: Group<C, CS>) -> Result<DocumentInfo, String> {
+    fn register_document(
+        &mut self,
+        group: Group<C, CS>,
+        crdt: YrsCrdt,
+    ) -> Result<DocumentInfo, String> {
         let group_id = group.group_id();
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
 
-        let group = group
-            .downcast::<universal_sync_testing::YrsCrdt>()
-            .ok_or("CRDT is not YrsCrdt")?;
-
         let text = {
-            let yrs = group.crdt();
-            let text_ref = yrs.doc().get_or_insert_text("doc");
-            let txn = yrs.doc().transact();
+            let text_ref = crdt.doc().get_or_insert_text("doc");
+            let txn = crdt.doc().transact();
             yrs::GetString::get_string(&text_ref, &txn)
         };
 
         let (doc_tx, doc_rx) = mpsc::channel(64);
-        let actor = DocumentActor::new(group, group_id, doc_rx, self.emitter.clone());
+        let actor = DocumentActor::new(group, crdt, group_id, doc_rx, self.emitter.clone());
         tokio::spawn(actor.run());
 
         self.doc_actors.insert(group_id, doc_tx);
@@ -185,6 +192,5 @@ where
         {
             warn!("document actor closed for group");
         }
-        // If not found, the oneshot inside `request` is dropped → caller sees RecvError
     }
 }

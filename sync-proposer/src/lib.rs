@@ -18,6 +18,6 @@ pub mod repl;
 pub use client::GroupClient;
 pub use connection::ConnectionManager;
 pub use connector::{ConnectorError, IrohConnection, IrohConnector};
-pub use group::{Group, GroupContext, GroupError, GroupEvent};
+pub use group::{Group, GroupContext, GroupError, GroupEvent, JoinInfo};
 pub use learner::{GroupLearner, LearnerError};
 pub use repl::ReplContext;

@@ -1,7 +1,7 @@
 //! Yrs (Yjs) CRDT implementation — wraps `yrs::Doc` for the [`Crdt`] trait.
 
 use error_stack::{Report, ResultExt};
-use universal_sync_core::{Crdt, CrdtError, CrdtFactory};
+use universal_sync_core::{Crdt, CrdtError};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
@@ -51,6 +51,15 @@ impl YrsCrdt {
         let txn = self.doc.transact();
         Ok(txn.encode_diff_v2(sv))
     }
+
+    /// # Errors
+    ///
+    /// Returns [`CrdtError`] if the snapshot bytes cannot be decoded.
+    pub fn from_snapshot(snapshot: &[u8], client_id: u64) -> Result<Self, Report<CrdtError>> {
+        let mut crdt = Self::with_client_id(client_id);
+        crdt.merge(snapshot)?;
+        Ok(crdt)
+    }
 }
 
 impl Default for YrsCrdt {
@@ -62,18 +71,6 @@ impl Default for YrsCrdt {
 impl Crdt for YrsCrdt {
     fn protocol_name(&self) -> &str {
         "yrs"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
-        self
     }
 
     fn apply(&mut self, operation: &[u8]) -> Result<(), Report<CrdtError>> {
@@ -106,36 +103,6 @@ impl Crdt for YrsCrdt {
         drop(txn);
         self.last_flushed_sv = current_sv;
         Ok(Some(update))
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct YrsCrdtFactory;
-
-impl YrsCrdtFactory {
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl CrdtFactory for YrsCrdtFactory {
-    fn type_id(&self) -> &str {
-        "yrs"
-    }
-
-    fn create(&self, client_id: u64) -> Box<dyn Crdt> {
-        Box::new(YrsCrdt::with_client_id(client_id))
-    }
-
-    fn from_snapshot(
-        &self,
-        snapshot: &[u8],
-        client_id: u64,
-    ) -> Result<Box<dyn Crdt>, Report<CrdtError>> {
-        let mut crdt = YrsCrdt::with_client_id(client_id);
-        crdt.merge(snapshot)?;
-        Ok(Box::new(crdt))
     }
 }
 
@@ -221,28 +188,29 @@ mod tests {
     }
 
     #[test]
-    fn test_yrs_factory() {
-        let factory = YrsCrdtFactory::new();
-        assert_eq!(CrdtFactory::type_id(&factory), "yrs");
-
-        let crdt = factory.create(1);
-        assert_eq!(Crdt::protocol_name(&*crdt), "yrs");
-
+    fn test_from_snapshot_inherent() {
+        let crdt = YrsCrdt::with_client_id(1);
+        {
+            let text = crdt.doc().get_or_insert_text("doc");
+            let mut txn = crdt.doc().transact_mut();
+            text.insert(&mut txn, 0, "Hello");
+        }
         let snapshot = crdt.snapshot().unwrap();
-        let crdt2 = factory.from_snapshot(&snapshot, 2).unwrap();
-        assert_eq!(Crdt::protocol_name(&*crdt2), "yrs");
+
+        let crdt2 = YrsCrdt::from_snapshot(&snapshot, 2).unwrap();
+        let text = crdt2.doc().get_or_insert_text("doc");
+        let txn = crdt2.doc().transact();
+        assert_eq!(text.get_string(&txn), "Hello");
     }
 
     #[test]
     fn test_compact_multiple_updates() {
-        let factory = YrsCrdtFactory::new();
-        let mut crdt = factory.create(1);
+        let mut crdt = YrsCrdt::with_client_id(1);
 
         let mut updates = Vec::new();
-        let insert_and_flush = |crdt: &mut Box<dyn Crdt>, pos: u32, text: &str| {
-            let yrs = crdt.as_any_mut().downcast_mut::<YrsCrdt>().unwrap();
-            let t = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
+        let insert_and_flush = |crdt: &mut YrsCrdt, pos: u32, text: &str| {
+            let t = crdt.doc().get_or_insert_text("doc");
+            let mut txn = crdt.doc().transact_mut();
             t.insert(&mut txn, pos, text);
             drop(txn);
             crdt.flush_update().unwrap().unwrap()
@@ -252,60 +220,17 @@ mod tests {
         updates.push(insert_and_flush(&mut crdt, 3, "bbb"));
         updates.push(insert_and_flush(&mut crdt, 6, "ccc"));
 
-        let refs: Vec<&[u8]> = updates.iter().map(|u| u.as_slice()).collect();
-        let compacted = factory.compact(None, &refs).unwrap();
-
-        let fresh = factory.from_snapshot(&compacted, 99).unwrap();
-        let yrs = fresh.as_any().downcast_ref::<YrsCrdt>().unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let txn = yrs.doc().transact();
+        let snapshot = crdt.snapshot().unwrap();
+        let fresh = YrsCrdt::from_snapshot(&snapshot, 99).unwrap();
+        let text = fresh.doc().get_or_insert_text("doc");
+        let txn = fresh.doc().transact();
         assert_eq!(text.get_string(&txn), "aaabbbccc");
     }
 
     #[test]
-    fn test_compact_with_base_snapshot() {
-        let factory = YrsCrdtFactory::new();
-        let mut crdt = factory.create(1);
-
-        // Create base content
-        {
-            let yrs = crdt.as_any_mut().downcast_mut::<YrsCrdt>().unwrap();
-            let t = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
-            t.insert(&mut txn, 0, "base");
-        }
-        let base = crdt.snapshot().unwrap();
-
-        // Create an incremental update
-        {
-            let yrs = crdt.as_any_mut().downcast_mut::<YrsCrdt>().unwrap();
-            let t = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
-            t.insert(&mut txn, 4, "+inc");
-        }
-        let inc = crdt.flush_update().unwrap().unwrap();
-
-        let compacted = factory.compact(Some(&base), &[&inc]).unwrap();
-
-        let fresh = factory.from_snapshot(&compacted, 99).unwrap();
-        let yrs = fresh.as_any().downcast_ref::<YrsCrdt>().unwrap();
-        let text = yrs.doc().get_or_insert_text("doc");
-        let txn = yrs.doc().transact();
-        assert_eq!(text.get_string(&txn), "base+inc");
-    }
-
-    #[test]
-    fn test_compact_empty_updates() {
-        let factory = YrsCrdtFactory::new();
-        let compacted = factory.compact(None, &[]).unwrap();
-        let _fresh = factory.from_snapshot(&compacted, 0).unwrap();
-    }
-
-    #[test]
     fn test_from_snapshot_empty_bytes_fails() {
-        let factory = YrsCrdtFactory::new();
         assert!(
-            factory.from_snapshot(&[], 0).is_err(),
+            YrsCrdt::from_snapshot(&[], 0).is_err(),
             "empty bytes should fail to decode as a yrs update"
         );
     }
@@ -340,7 +265,6 @@ mod tests {
         crdt1.merge(&update2).unwrap();
         crdt2.merge(&update1).unwrap();
 
-        // Both should converge
         let text1 = {
             let text = crdt1.doc().get_or_insert_text("doc");
             let txn = crdt1.doc().transact();
@@ -364,17 +288,13 @@ mod tests {
     fn test_echo_idempotent() {
         let mut alice = YrsCrdt::with_client_id(12345);
 
-        // Alice inserts "Hello"
         {
             let text = alice.doc().get_or_insert_text("doc");
             let mut txn = alice.doc().transact_mut();
             text.insert(&mut txn, 0, "Hello");
         }
 
-        // flush_update encodes a diff
         let diff = alice.flush_update().unwrap().unwrap();
-
-        // Echo: apply the same diff back to Alice
         alice.apply(&diff).unwrap();
 
         {
@@ -386,66 +306,50 @@ mod tests {
 
     #[test]
     fn test_two_peer_with_deterministic_ids() {
-        let factory = YrsCrdtFactory::new();
-        let alice_id: u64 = 111;
-        let bob_id: u64 = 222;
+        let mut alice_crdt = YrsCrdt::with_client_id(111);
+        let mut bob_crdt = YrsCrdt::with_client_id(222);
 
-        let mut alice_crdt = factory.create(alice_id);
-        let mut bob_crdt = factory.create(bob_id);
-
-        // Alice inserts "Hello"
         {
-            let yrs = alice_crdt.as_any_mut().downcast_mut::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
+            let text = alice_crdt.doc().get_or_insert_text("doc");
+            let mut txn = alice_crdt.doc().transact_mut();
             text.insert(&mut txn, 0, "Hello");
         }
         let alice_update = alice_crdt.flush_update().unwrap().unwrap();
 
-        // Bob applies Alice's update
         bob_crdt.apply(&alice_update).unwrap();
         {
-            let yrs = bob_crdt.as_any().downcast_ref::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let txn = yrs.doc().transact();
+            let text = bob_crdt.doc().get_or_insert_text("doc");
+            let txn = bob_crdt.doc().transact();
             assert_eq!(text.get_string(&txn), "Hello");
         }
 
-        // Alice receives echo
         alice_crdt.apply(&alice_update).unwrap();
         {
-            let yrs = alice_crdt.as_any().downcast_ref::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let txn = yrs.doc().transact();
+            let text = alice_crdt.doc().get_or_insert_text("doc");
+            let txn = alice_crdt.doc().transact();
             assert_eq!(text.get_string(&txn), "Hello", "echo should not duplicate");
         }
 
-        // Bob inserts " World"
         {
-            let yrs = bob_crdt.as_any_mut().downcast_mut::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let mut txn = yrs.doc().transact_mut();
+            let text = bob_crdt.doc().get_or_insert_text("doc");
+            let mut txn = bob_crdt.doc().transact_mut();
             text.insert(&mut txn, 5, " World");
         }
         let bob_update = bob_crdt.flush_update().unwrap().unwrap();
 
-        // Alice applies Bob's update
         alice_crdt.apply(&bob_update).unwrap();
         {
-            let yrs = alice_crdt.as_any().downcast_ref::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let txn = yrs.doc().transact();
+            let text = alice_crdt.doc().get_or_insert_text("doc");
+            let txn = alice_crdt.doc().transact();
             assert_eq!(text.get_string(&txn), "Hello World");
         }
 
-        // Alice also applies echo + bob in opposite order (all at once)
-        let mut alice2 = factory.create(alice_id);
+        let mut alice2 = YrsCrdt::with_client_id(111);
         alice2.apply(&bob_update).unwrap();
         alice2.apply(&alice_update).unwrap();
         {
-            let yrs = alice2.as_any().downcast_ref::<YrsCrdt>().unwrap();
-            let text = yrs.doc().get_or_insert_text("doc");
-            let txn = yrs.doc().transact();
+            let text = alice2.doc().get_or_insert_text("doc");
+            let txn = alice2.doc().transact();
             assert_eq!(text.get_string(&txn), "Hello World");
         }
     }

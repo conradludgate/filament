@@ -3,7 +3,6 @@
 //! Operations are sent as application messages, snapshots are included in
 //! Welcome messages for new members.
 
-use std::any::Any;
 use std::fmt;
 
 use error_stack::Report;
@@ -20,13 +19,9 @@ impl fmt::Display for CrdtError {
 
 impl std::error::Error for CrdtError {}
 
-/// Dyn-compatible CRDT that can be synchronized across group members.
+/// Trait for CRDTs that can be synchronized across group members.
 pub trait Crdt: Send + Sync + 'static {
     fn protocol_name(&self) -> &str;
-
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 
     /// # Errors
     ///
@@ -49,41 +44,6 @@ pub trait Crdt: Send + Sync + 'static {
     ///
     /// Returns [`CrdtError`] if encoding the diff fails.
     fn flush_update(&mut self) -> Result<Option<Vec<u8>>, Report<CrdtError>>;
-}
-
-/// Factory for creating CRDT instances (registered per group).
-#[allow(clippy::wrong_self_convention)]
-pub trait CrdtFactory: Send + Sync {
-    fn type_id(&self) -> &str;
-    fn create(&self, client_id: u64) -> Box<dyn Crdt>;
-    /// # Errors
-    ///
-    /// Returns [`CrdtError`] if the snapshot bytes cannot be decoded.
-    fn from_snapshot(
-        &self,
-        snapshot: &[u8],
-        client_id: u64,
-    ) -> Result<Box<dyn Crdt>, Report<CrdtError>>;
-
-    /// Merge an optional base snapshot with a series of updates into a single snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CrdtError`] if any snapshot/update cannot be decoded or applied.
-    fn compact(
-        &self,
-        base: Option<&[u8]>,
-        updates: &[&[u8]],
-    ) -> Result<Vec<u8>, Report<CrdtError>> {
-        let mut crdt = match base {
-            Some(b) => self.from_snapshot(b, 0)?,
-            None => self.create(0),
-        };
-        for update in updates {
-            crdt.apply(update)?;
-        }
-        crdt.snapshot()
-    }
 }
 
 /// Configuration for a single compaction level.
@@ -133,18 +93,6 @@ impl Crdt for NoCrdt {
         "none"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-
     fn apply(&mut self, _operation: &[u8]) -> Result<(), Report<CrdtError>> {
         Ok(())
     }
@@ -159,27 +107,6 @@ impl Crdt for NoCrdt {
 
     fn flush_update(&mut self) -> Result<Option<Vec<u8>>, Report<CrdtError>> {
         Ok(None)
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct NoCrdtFactory;
-
-impl CrdtFactory for NoCrdtFactory {
-    fn type_id(&self) -> &'static str {
-        "none"
-    }
-
-    fn create(&self, _client_id: u64) -> Box<dyn Crdt> {
-        Box::new(NoCrdt)
-    }
-
-    fn from_snapshot(
-        &self,
-        _snapshot: &[u8],
-        _client_id: u64,
-    ) -> Result<Box<dyn Crdt>, Report<CrdtError>> {
-        Ok(Box::new(NoCrdt))
     }
 }
 
@@ -199,19 +126,6 @@ mod tests {
         assert!(snapshot.is_empty());
 
         assert!(crdt.flush_update().unwrap().is_none());
-    }
-
-    #[test]
-    fn test_no_crdt_factory() {
-        let factory = NoCrdtFactory;
-
-        assert_eq!(CrdtFactory::type_id(&factory), "none");
-
-        let crdt = factory.create(0);
-        assert_eq!(Crdt::protocol_name(&*crdt), "none");
-
-        let crdt2 = factory.from_snapshot(b"ignored", 0).unwrap();
-        assert_eq!(Crdt::protocol_name(&*crdt2), "none");
     }
 
     #[test]
@@ -240,14 +154,6 @@ mod tests {
         ];
         assert_eq!(config.len(), 2);
         assert_eq!(config[1].threshold, 5);
-    }
-
-    #[test]
-    fn test_no_crdt_factory_compact() {
-        let factory = NoCrdtFactory;
-        let result = factory.compact(None, &[b"a", b"b"]).unwrap();
-        // NoCrdt compact produces an empty snapshot
-        assert!(result.is_empty());
     }
 
     #[test]

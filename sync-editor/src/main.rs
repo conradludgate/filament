@@ -15,9 +15,8 @@ use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tokio::sync::mpsc;
 use tracing::info;
-use universal_sync_core::{NoCrdtFactory, PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
+use universal_sync_core::{PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
 use universal_sync_proposer::GroupClient;
-use universal_sync_testing::YrsCrdtFactory;
 
 use crate::actor::CoordinatorActor;
 use crate::types::{AppState, CoordinatorRequest};
@@ -112,9 +111,7 @@ async fn setup_coordinator(
 
     info!(addr = ?endpoint.addr(), "iroh endpoint ready");
 
-    let mut group_client = GroupClient::new(client, secret_key, cipher_suite, endpoint);
-    group_client.register_crdt_factory(NoCrdtFactory);
-    group_client.register_crdt_factory(YrsCrdtFactory::new());
+    let group_client = GroupClient::new(client, secret_key, cipher_suite, endpoint);
 
     let coordinator = CoordinatorActor::new(group_client, coordinator_rx, app_handle);
     coordinator.run().await;
