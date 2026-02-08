@@ -594,3 +594,145 @@ async fn full_two_peer_sync() {
     assert_eq!(alice_text, "Hello World");
     assert_eq!(bob_text, "Hello World");
 }
+
+#[tokio::test]
+async fn two_member_unidirectional_sync() {
+    init_tracing();
+    let (_acceptor_task, acceptor_addr, _dir) = spawn_acceptor().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Spawn Alice's coordinator
+    let alice_client = test_yrs_group_client("alice-uni", test_endpoint().await);
+    let (alice_tx, _alice_events) = spawn_coordinator(alice_client);
+
+    // Alice creates a document
+    let doc_info = send_coord(&alice_tx, |reply| CoordinatorRequest::CreateDocument {
+        reply,
+    })
+    .await
+    .expect("alice create doc");
+    let alice_group_id = GroupId::from_slice(&bs58::decode(&doc_info.group_id).into_vec().unwrap());
+
+    // Alice adds the acceptor
+    let addr_b58 = bs58::encode(postcard::to_allocvec(&acceptor_addr).unwrap()).into_string();
+    send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddAcceptor {
+        addr_b58,
+        reply,
+    })
+    .await
+    .expect("add acceptor");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Spawn Bob's coordinator
+    let bob_client = test_yrs_group_client("bob-uni", test_endpoint().await);
+    let bob_kp = bob_client.generate_key_package().expect("bob kp");
+    let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
+    let (bob_tx, mut bob_events) = spawn_coordinator(bob_client);
+
+    // Bob starts waiting for a welcome
+    let bob_tx2 = bob_tx.clone();
+    let bob_welcome_handle = tokio::spawn(async move {
+        send_coord(&bob_tx2, |reply| CoordinatorRequest::RecvWelcome { reply }).await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Alice adds Bob as a member
+    send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::AddMember {
+        key_package_b58: bob_kp_b58,
+        reply,
+    })
+    .await
+    .expect("alice add bob");
+
+    let bob_doc_info = tokio::time::timeout(Duration::from_secs(10), bob_welcome_handle)
+        .await
+        .expect("bob welcome timeout")
+        .expect("bob task panicked")
+        .expect("bob join");
+
+    let bob_group_id =
+        GroupId::from_slice(&bs58::decode(&bob_doc_info.group_id).into_vec().unwrap());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Alice inserts "Hello"
+    send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::ApplyDelta {
+        delta: Delta::Insert {
+            position: 0,
+            text: "Hello".into(),
+        },
+        reply,
+    })
+    .await
+    .expect("alice insert Hello");
+
+    let bob_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = bob_events.recv().await.expect("bob event channel closed");
+            if !event.deltas.is_empty() {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("bob event timeout after Hello");
+    assert_eq!(bob_event.text, "Hello");
+
+    // Alice appends " World"
+    send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::ApplyDelta {
+        delta: Delta::Insert {
+            position: 5,
+            text: " World".into(),
+        },
+        reply,
+    })
+    .await
+    .expect("alice append World");
+
+    let bob_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = bob_events.recv().await.expect("bob event channel closed");
+            if !event.deltas.is_empty() {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("bob event timeout after World");
+    assert_eq!(bob_event.text, "Hello World");
+
+    // Alice deletes " World" (last 6 chars)
+    send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::ApplyDelta {
+        delta: Delta::Delete {
+            position: 5,
+            length: 6,
+        },
+        reply,
+    })
+    .await
+    .expect("alice delete World");
+
+    let bob_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = bob_events.recv().await.expect("bob event channel closed");
+            if !event.deltas.is_empty() {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("bob event timeout after delete");
+    assert_eq!(bob_event.text, "Hello");
+
+    // Verify both members have the same final text
+    let alice_text = send_coord_doc(&alice_tx, alice_group_id, |reply| DocRequest::GetText {
+        reply,
+    })
+    .await
+    .unwrap();
+    let bob_text = send_coord_doc(&bob_tx, bob_group_id, |reply| DocRequest::GetText { reply })
+        .await
+        .unwrap();
+
+    assert_eq!(alice_text, "Hello");
+    assert_eq!(bob_text, "Hello");
+}

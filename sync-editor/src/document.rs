@@ -233,6 +233,7 @@ where
                 }
             }
         }
+        self.crdt.mark_dirty();
         self.group
             .send_update(&mut self.crdt)
             .await

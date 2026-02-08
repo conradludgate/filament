@@ -9,6 +9,7 @@ pub struct YrsCrdt {
     doc: Doc,
     /// For computing diffs since the last flush
     last_flushed_sv: StateVector,
+    dirty: bool,
 }
 
 impl YrsCrdt {
@@ -19,6 +20,7 @@ impl YrsCrdt {
         Self {
             doc,
             last_flushed_sv,
+            dirty: false,
         }
     }
 
@@ -30,7 +32,12 @@ impl YrsCrdt {
         Self {
             doc,
             last_flushed_sv,
+            dirty: false,
         }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     #[must_use]
@@ -94,11 +101,12 @@ impl Crdt for YrsCrdt {
     }
 
     fn flush_update(&mut self) -> Result<Option<Vec<u8>>, Report<CrdtError>> {
-        let txn = self.doc.transact();
-        let current_sv = txn.state_vector();
-        if current_sv == self.last_flushed_sv {
+        if !self.dirty {
             return Ok(None);
         }
+        self.dirty = false;
+        let txn = self.doc.transact();
+        let current_sv = txn.state_vector();
         let update = txn.encode_diff_v2(&self.last_flushed_sv);
         drop(txn);
         self.last_flushed_sv = current_sv;
@@ -213,6 +221,7 @@ mod tests {
             let mut txn = crdt.doc().transact_mut();
             t.insert(&mut txn, pos, text);
             drop(txn);
+            crdt.mark_dirty();
             crdt.flush_update().unwrap().unwrap()
         };
 
@@ -294,6 +303,7 @@ mod tests {
             text.insert(&mut txn, 0, "Hello");
         }
 
+        alice.mark_dirty();
         let diff = alice.flush_update().unwrap().unwrap();
         alice.apply(&diff).unwrap();
 
@@ -314,6 +324,7 @@ mod tests {
             let mut txn = alice_crdt.doc().transact_mut();
             text.insert(&mut txn, 0, "Hello");
         }
+        alice_crdt.mark_dirty();
         let alice_update = alice_crdt.flush_update().unwrap().unwrap();
 
         bob_crdt.apply(&alice_update).unwrap();
@@ -335,6 +346,7 @@ mod tests {
             let mut txn = bob_crdt.doc().transact_mut();
             text.insert(&mut txn, 5, " World");
         }
+        bob_crdt.mark_dirty();
         let bob_update = bob_crdt.flush_update().unwrap().unwrap();
 
         alice_crdt.apply(&bob_update).unwrap();

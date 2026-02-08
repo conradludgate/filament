@@ -1121,6 +1121,7 @@ async fn test_crdt_operations_sent_and_received() {
     }
 
     // Send the update
+    alice_crdt.mark_dirty();
     alice_group
         .send_update(&mut alice_crdt)
         .await
@@ -1189,6 +1190,7 @@ async fn test_crdt_bidirectional_message_exchange() {
         let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 0, "Hello");
     }
+    alice_crdt.mark_dirty();
     alice_group
         .send_update(&mut alice_crdt)
         .await
@@ -1214,6 +1216,7 @@ async fn test_crdt_bidirectional_message_exchange() {
         let mut txn = bob_crdt.doc().transact_mut();
         text.insert(&mut txn, 5, " World");
     }
+    bob_crdt.mark_dirty();
     bob_group
         .send_update(&mut bob_crdt)
         .await
@@ -1268,6 +1271,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
         let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 0, "Initial content");
     }
+    alice_crdt.mark_dirty();
     alice_group
         .send_update(&mut alice_crdt)
         .await
@@ -1380,6 +1384,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
         let mut txn = alice_crdt.doc().transact_mut();
         text.insert(&mut txn, 15, " + update");
     }
+    alice_crdt.mark_dirty();
     alice_group
         .send_update(&mut alice_crdt)
         .await
@@ -1426,6 +1431,7 @@ async fn yrs_insert_and_send(
         let mut txn = crdt.doc().transact_mut();
         text_ref.insert(&mut txn, position, text);
     }
+    crdt.mark_dirty();
     group.send_update(crdt).await.expect("send update");
 }
 
