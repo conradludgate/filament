@@ -6,15 +6,15 @@
 use std::time::Duration;
 
 use filament_core::GroupId;
-use filament_editor::actor::CoordinatorActor;
-use filament_editor::document::DocumentActor;
-use filament_editor::types::{
+use filament_testing::{init_tracing, spawn_acceptor, test_endpoint, test_yrs_weaver_client};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::YrsCrdt;
+use crate::actor::CoordinatorActor;
+use crate::document::DocumentActor;
+use crate::types::{
     CoordinatorRequest, Delta, DocRequest, DocumentInfo, DocumentUpdatedPayload, EventEmitter,
 };
-use filament_testing::{
-    YrsCrdt, init_tracing, spawn_acceptor, test_endpoint, test_yrs_weaver_client,
-};
-use tokio::sync::{mpsc, oneshot};
 
 // =============================================================================
 // Mock event emitter
@@ -29,8 +29,8 @@ impl EventEmitter for MockEmitter {
     fn emit_document_updated(&self, payload: &DocumentUpdatedPayload) {
         let _ = self.tx.try_send(payload.clone());
     }
-    fn emit_group_state_changed(&self, _payload: &filament_editor::types::GroupStatePayload) {}
-    fn emit_awareness_changed(&self, _payload: &filament_editor::types::AwarenessPayload) {}
+    fn emit_group_state_changed(&self, _payload: &crate::types::GroupStatePayload) {}
+    fn emit_awareness_changed(&self, _payload: &crate::types::AwarenessPayload) {}
 }
 
 fn mock_emitter() -> (MockEmitter, mpsc::Receiver<DocumentUpdatedPayload>) {

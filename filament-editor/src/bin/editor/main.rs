@@ -3,8 +3,10 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod commands;
+
 use filament_core::PAXOS_ALPN;
-use filament_editor::actor::CoordinatorActor;
+use filament_editor::CoordinatorActor;
 use filament_editor::types::{AppState, CoordinatorRequest};
 use filament_weave::WeaverClient;
 use iroh::{Endpoint, SecretKey};
@@ -33,22 +35,22 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            filament_editor::commands::create_document,
-            filament_editor::commands::get_key_package,
-            filament_editor::commands::recv_welcome,
-            filament_editor::commands::join_document_bytes,
-            filament_editor::commands::apply_delta,
-            filament_editor::commands::get_document_text,
-            filament_editor::commands::add_member,
-            filament_editor::commands::add_spool,
-            filament_editor::commands::list_spools,
-            filament_editor::commands::list_peers,
-            filament_editor::commands::add_peer,
-            filament_editor::commands::remove_member,
-            filament_editor::commands::remove_spool,
-            filament_editor::commands::get_group_state,
-            filament_editor::commands::update_keys,
-            filament_editor::commands::update_cursor,
+            commands::create_document,
+            commands::get_key_package,
+            commands::recv_welcome,
+            commands::join_document_bytes,
+            commands::apply_delta,
+            commands::get_document_text,
+            commands::add_member,
+            commands::add_spool,
+            commands::list_spools,
+            commands::list_peers,
+            commands::add_peer,
+            commands::remove_member,
+            commands::remove_spool,
+            commands::get_group_state,
+            commands::update_keys,
+            commands::update_cursor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

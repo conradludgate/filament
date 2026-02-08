@@ -1,11 +1,10 @@
 //! Tauri command handlers — thin wrappers that forward to the coordinator actor.
 
 use filament_core::GroupId;
-use tokio::sync::oneshot;
-
-use crate::types::{
+use filament_editor::types::{
     AppState, CoordinatorRequest, Delta, DocRequest, DocumentInfo, GroupStatePayload, PeerEntry,
 };
+use tokio::sync::oneshot;
 
 async fn coord_request<T>(
     state: &AppState,

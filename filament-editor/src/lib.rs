@@ -1,9 +1,14 @@
 //! Filament Editor library — re-exports for integration tests.
 
-pub mod actor;
-pub mod commands;
-pub mod document;
+mod actor;
+mod document;
 pub mod types;
-pub mod yrs_crdt;
+mod yrs_crdt;
 
+pub use actor::CoordinatorActor;
 pub use yrs_crdt::{PeerAwareness, YrsCrdt};
+
+#[cfg(test)]
+mod tests {
+    mod actors;
+}
