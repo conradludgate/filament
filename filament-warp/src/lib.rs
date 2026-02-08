@@ -159,8 +159,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::hash_map::DefaultHasher;
+
+    use super::*;
 
     #[test]
     fn validation_error_display() {

@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use filament_core::GroupId;
 use filament_testing::YrsCrdt;
 use filament_weave::{Weaver, WeaverClient};
-use mls_rs::CipherSuiteProvider;
-use mls_rs::client_builder::MlsConfig;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use yrs::Transact;
@@ -18,14 +16,8 @@ use yrs::Transact;
 use crate::document::DocumentActor;
 use crate::types::{CoordinatorRequest, DocRequest, DocumentInfo, EventEmitter};
 
-pub struct CoordinatorActor<C, CS, E>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
-    E: EventEmitter,
-{
-    group_client: WeaverClient<C, CS>,
-    /// Split out of WeaverClient for non-blocking select
+pub struct CoordinatorActor<E: EventEmitter> {
+    group_client: WeaverClient,
     welcome_rx: mpsc::Receiver<Vec<u8>>,
     doc_actors: HashMap<GroupId, mpsc::Sender<DocRequest>>,
     request_rx: mpsc::Receiver<CoordinatorRequest>,
@@ -33,14 +25,9 @@ where
     emitter: E,
 }
 
-impl<C, CS, E> CoordinatorActor<C, CS, E>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
-    E: EventEmitter,
-{
+impl<E: EventEmitter> CoordinatorActor<E> {
     pub fn new(
-        mut group_client: WeaverClient<C, CS>,
+        mut group_client: WeaverClient,
         request_rx: mpsc::Receiver<CoordinatorRequest>,
         emitter: E,
     ) -> Self {
@@ -107,13 +94,10 @@ where
     }
 
     fn get_key_package(&self) -> Result<String, String> {
-        let kp = self
+        let bytes = self
             .group_client
             .generate_key_package()
             .map_err(|e| format!("failed to generate key package: {e:?}"))?;
-        let bytes = kp
-            .to_bytes()
-            .map_err(|e| format!("failed to serialize key package: {e:?}"))?;
         Ok(bs58::encode(bytes).into_string())
     }
 
@@ -158,11 +142,7 @@ where
         self.register_document(join_info.group, crdt)
     }
 
-    fn register_document(
-        &mut self,
-        group: Weaver<C, CS>,
-        crdt: YrsCrdt,
-    ) -> Result<DocumentInfo, String> {
+    fn register_document(&mut self, group: Weaver, crdt: YrsCrdt) -> Result<DocumentInfo, String> {
         let group_id = group.group_id();
         let group_id_b58 = bs58::encode(group_id.as_bytes()).into_string();
 

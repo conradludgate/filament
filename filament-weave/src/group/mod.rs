@@ -70,11 +70,7 @@ pub(crate) fn group_info_with_ext<C: mls_rs::client_builder::MlsConfig>(
     msg.to_bytes().change_context(WeaverError)
 }
 
-enum GroupRequest<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
+enum GroupRequest {
     GetContext {
         reply: oneshot::Sender<WeaverContext>,
     },
@@ -108,8 +104,6 @@ where
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     },
     Shutdown,
-    #[allow(dead_code)]
-    _Marker(std::marker::PhantomData<(C, CS)>),
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -223,13 +217,9 @@ pub struct WeaverContext {
 
 /// Returned by [`WeaverClient::join`] so the caller can construct the
 /// appropriate CRDT before starting to sync.
-pub struct JoinInfo<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
+pub struct JoinInfo {
     /// The newly joined group handle.
-    pub group: Weaver<C, CS>,
+    pub group: Weaver,
     /// Application protocol name stored in the group's MLS extensions.
     pub protocol_name: String,
     /// Optional CRDT snapshot from the most recent compaction. `None` if the
@@ -242,12 +232,8 @@ where
 /// All mutations are sent to a background actor. Drop cancels actors without waiting;
 /// use [`shutdown()`](Self::shutdown) for graceful termination.
 #[allow(clippy::struct_field_names)]
-pub struct Weaver<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    request_tx: mpsc::Sender<GroupRequest<C, CS>>,
+pub struct Weaver {
+    request_tx: mpsc::Sender<GroupRequest>,
     app_message_rx: mpsc::Receiver<Vec<u8>>,
     event_tx: broadcast::Sender<WeaverEvent>,
     cancel_guard: tokio_util::sync::DropGuard,
@@ -273,12 +259,8 @@ where
     }
 }
 
-impl<C, CS> Weaver<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    pub(crate) async fn create(
+impl Weaver {
+    pub(crate) async fn create<C, CS>(
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
@@ -288,7 +270,8 @@ where
         compaction_config: CompactionConfig,
     ) -> Result<Self, Report<WeaverError>>
     where
-        CS: Clone,
+        C: MlsConfig + Clone + Send + Sync + 'static,
+        CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
     {
         use crate::connector::register_group_with_addr;
 
@@ -358,15 +341,16 @@ where
     }
 
     #[allow(clippy::unused_async)]
-    pub(crate) async fn join(
+    pub(crate) async fn join<C, CS>(
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
         connection_manager: &ConnectionManager,
         welcome_bytes: &[u8],
-    ) -> Result<JoinInfo<C, CS>, Report<WeaverError>>
+    ) -> Result<JoinInfo, Report<WeaverError>>
     where
-        CS: Clone,
+        C: MlsConfig + Clone + Send + Sync + 'static,
+        CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
     {
         let (
             learner,
@@ -459,14 +443,18 @@ where
         })
     }
 
-    fn spawn_actors(
+    fn spawn_actors<C, CS>(
         learner: WeaverLearner<C, CS>,
         group_id: GroupId,
         endpoint: Endpoint,
         connection_manager: ConnectionManager,
         compaction_config: CompactionConfig,
         key_rotation_interval_secs: Option<u64>,
-    ) -> Self {
+    ) -> Self
+    where
+        C: MlsConfig + Clone + Send + Sync + 'static,
+        CS: CipherSuiteProvider + Send + Sync + 'static,
+    {
         let client_id = {
             let my_index = learner.group().current_member_index();
             learner
@@ -511,20 +499,20 @@ where
             client_id,
         }
     }
-}
 
-impl<C, CS> Weaver<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-{
-    /// Add a member. Welcome is sent directly via the key package's [`KeyPackageExt`].
+    /// Add a member using a serialised MLS key package.
+    /// Welcome is sent directly via the key package's [`KeyPackageExt`].
     /// Blocks until consensus is reached.
     ///
     /// # Errors
     ///
     /// Returns [`WeaverError`] if the key package is invalid or consensus fails.
-    pub async fn add_member(&mut self, key_package: MlsMessage) -> Result<(), Report<WeaverError>> {
+    pub async fn add_member(
+        &mut self,
+        key_package_bytes: &[u8],
+    ) -> Result<(), Report<WeaverError>> {
+        let key_package = MlsMessage::from_bytes(key_package_bytes).change_context(WeaverError)?;
+
         let member_addr = key_package
             .as_key_package()
             .ok_or_else(|| Report::new(WeaverError).attach("message is not a key package"))?

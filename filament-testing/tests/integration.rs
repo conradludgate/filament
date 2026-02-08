@@ -12,11 +12,14 @@ use filament_spool::{
     AcceptorMetrics, AcceptorRegistry, MetricsEncoder, SharedFjallStateStore, accept_connection,
 };
 use filament_testing::{
-    YrsCrdt, init_tracing, spawn_acceptor, test_cipher_suite, test_crypto_provider, test_endpoint,
-    test_identity_provider, test_weaver_client, test_yrs_weaver_client,
+    YrsCrdt, init_tracing, spawn_acceptor, test_endpoint, test_weaver_client,
+    test_yrs_weaver_client,
 };
 use filament_weave::WeaverEvent;
 use mls_rs::external_client::ExternalClient;
+use mls_rs::identity::basic::BasicIdentityProvider;
+use mls_rs::{CipherSuite, CryptoProvider};
+use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -94,12 +97,14 @@ async fn test_alice_adds_bob_with_group_api() {
     let acceptor_endpoint = test_endpoint().await;
     let acceptor_addr = acceptor_endpoint.addr();
 
-    let crypto = test_crypto_provider();
-    let cipher_suite = test_cipher_suite(&crypto);
+    let crypto = RustCryptoProvider::default();
+    let cipher_suite = crypto
+        .cipher_suite_provider(CipherSuite::CURVE25519_AES128)
+        .expect("cipher suite");
 
     let external_client = ExternalClient::builder()
         .crypto_provider(crypto.clone())
-        .identity_provider(test_identity_provider())
+        .identity_provider(BasicIdentityProvider::new())
         .extension_type(SYNC_EXTENSION_TYPE)
         .custom_proposal_types(Some(SYNC_PROPOSAL_TYPE))
         .build();
@@ -164,7 +169,7 @@ async fn test_alice_adds_bob_with_group_api() {
     let bob_key_package = bob.generate_key_package().expect("bob key package");
 
     alice_group
-        .add_member(bob_key_package)
+        .add_member(&bob_key_package)
         .await
         .expect("add bob");
 
@@ -234,8 +239,10 @@ async fn test_acceptor_add_remove() {
     let acceptor2_endpoint = test_endpoint().await;
     let acceptor2_addr = acceptor2_endpoint.addr();
 
-    let crypto = test_crypto_provider();
-    let cipher_suite = test_cipher_suite(&crypto);
+    let crypto = RustCryptoProvider::default();
+    let cipher_suite = crypto
+        .cipher_suite_provider(CipherSuite::CURVE25519_AES128)
+        .expect("cipher suite");
 
     // Setup acceptor 1
     let state_store1 = SharedFjallStateStore::open(acceptor1_dir.path())
@@ -246,7 +253,7 @@ async fn test_acceptor_add_remove() {
         let acceptor_endpoint = acceptor1_endpoint.clone();
         let external_client = ExternalClient::builder()
             .crypto_provider(crypto.clone())
-            .identity_provider(test_identity_provider())
+            .identity_provider(BasicIdentityProvider::new())
             .extension_type(SYNC_EXTENSION_TYPE)
             .custom_proposal_types(Some(SYNC_PROPOSAL_TYPE))
             .build();
@@ -283,7 +290,7 @@ async fn test_acceptor_add_remove() {
         let acceptor_endpoint = acceptor2_endpoint.clone();
         let external_client = ExternalClient::builder()
             .crypto_provider(crypto.clone())
-            .identity_provider(test_identity_provider())
+            .identity_provider(BasicIdentityProvider::new())
             .extension_type(SYNC_EXTENSION_TYPE)
             .custom_proposal_types(Some(SYNC_PROPOSAL_TYPE))
             .build();
@@ -444,7 +451,7 @@ async fn test_remove_member() {
     let bob_key_package = bob.generate_key_package().expect("bob key package");
 
     alice_group
-        .add_member(bob_key_package)
+        .add_member(&bob_key_package)
         .await
         .expect("add bob");
 
@@ -498,7 +505,7 @@ async fn test_three_member_group() {
     let bob_key_package = bob.generate_key_package().expect("bob key package");
 
     alice_group
-        .add_member(bob_key_package)
+        .add_member(&bob_key_package)
         .await
         .expect("add bob");
 
@@ -513,7 +520,7 @@ async fn test_three_member_group() {
     let carol_key_package = carol.generate_key_package().expect("carol key package");
 
     alice_group
-        .add_member(carol_key_package)
+        .add_member(&carol_key_package)
         .await
         .expect("add carol");
 
@@ -1066,7 +1073,7 @@ async fn test_yrs_crdt_snapshot_in_welcome() {
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob key package");
 
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join yrs group");
@@ -1106,7 +1113,7 @@ async fn test_crdt_operations_sent_and_received() {
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob key package");
 
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -1177,7 +1184,7 @@ async fn test_crdt_bidirectional_message_exchange() {
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob key package");
 
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -1290,7 +1297,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     // Add Bob — Bob starts with empty CRDT and catches up via backfill
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -1338,7 +1345,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     // Add Carol — she also catches up via backfill
     let mut carol = test_yrs_weaver_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
-    alice_group.add_member(carol_kp).await.expect("add carol");
+    alice_group.add_member(&carol_kp).await.expect("add carol");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -1424,10 +1431,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
 
 /// Helper: insert text into a Yrs CRDT group and send the update.
 async fn yrs_insert_and_send(
-    group: &mut filament_weave::Weaver<
-        impl mls_rs::client_builder::MlsConfig + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + 'static,
-    >,
+    group: &mut filament_weave::Weaver,
     crdt: &mut YrsCrdt,
     position: u32,
     text: &str,
@@ -1477,10 +1481,7 @@ async fn wait_for_event(
 
 /// Helper: poll until a joiner's CRDT text matches the expected value.
 async fn wait_for_sync(
-    group: &mut filament_weave::Weaver<
-        impl mls_rs::client_builder::MlsConfig + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + 'static,
-    >,
+    group: &mut filament_weave::Weaver,
     crdt: &mut YrsCrdt,
     expected: &str,
     timeout_secs: u64,
@@ -1522,10 +1523,7 @@ fn test_compaction_config(threshold: u32) -> Vec<CompactionLevel> {
 /// Helper: drive compaction by listening for CompactionNeeded events and calling compact.
 #[allow(dead_code)]
 async fn drive_compaction(
-    group: &mut filament_weave::Weaver<
-        impl mls_rs::client_builder::MlsConfig + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + 'static,
-    >,
+    group: &mut filament_weave::Weaver,
     crdt: &impl filament_core::Crdt,
     events: &mut tokio::sync::broadcast::Receiver<WeaverEvent>,
 ) {
@@ -1567,7 +1565,7 @@ async fn test_welcome_force_compaction_verified() {
     // Bob joins
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -1679,7 +1677,7 @@ async fn test_welcome_after_threshold_compaction() {
     // Now Bob joins — old L0s should be deleted, compacted snapshot remains
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -1741,7 +1739,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     // Bob joins — triggers force_compaction (L(max))
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -1775,7 +1773,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     // Carol joins — another force_compaction re-encrypts at Carol's epoch
     let mut carol = test_yrs_weaver_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
-    alice_group.add_member(carol_kp).await.expect("add carol");
+    alice_group.add_member(&carol_kp).await.expect("add carol");
 
     let welcome = carol.recv_welcome().await.expect("carol welcome");
     let join_info = carol.join(&welcome).await.expect("carol join");
@@ -1839,7 +1837,7 @@ async fn test_post_compaction_bidirectional() {
     // Bob joins — triggers compaction, clears update_buffer
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -1919,7 +1917,7 @@ async fn test_welcome_force_compaction_empty() {
     // Add Bob immediately — no writes, no snapshot
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -2132,7 +2130,7 @@ async fn test_multiple_compaction_rounds() {
     // New joiner should get the fully merged state
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2221,7 +2219,7 @@ async fn test_compaction_deletion_late_joiner() {
     // Late joiner should get the complete state
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2279,7 +2277,7 @@ async fn test_concurrent_writers_compaction() {
     // Add Bob
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2375,7 +2373,7 @@ async fn test_concurrent_writers_compaction() {
     // Carol joins — should get complete state from both writers
     let mut carol = test_yrs_weaver_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
-    alice_group.add_member(carol_kp).await.expect("add carol");
+    alice_group.add_member(&carol_kp).await.expect("add carol");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2469,7 +2467,7 @@ async fn test_key_update_then_compaction() {
     // Bob joins — should get all text across the key rotation
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2579,7 +2577,7 @@ async fn test_compaction_after_member_removal() {
     // Add Bob
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2645,7 +2643,7 @@ async fn test_compaction_after_member_removal() {
     // Carol joins — should get all text
     let mut carol = test_yrs_weaver_client("carol", test_endpoint().await);
     let carol_kp = carol.generate_key_package().expect("carol kp");
-    alice_group.add_member(carol_kp).await.expect("add carol");
+    alice_group.add_member(&carol_kp).await.expect("add carol");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2701,7 +2699,7 @@ async fn test_protocol_name_survives_join() {
     // Bob joins
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -2741,7 +2739,7 @@ async fn test_acceptor_list_in_group_info() {
     // Bob joins — should receive both acceptors from the welcome GroupInfoExt
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
@@ -2791,7 +2789,7 @@ async fn test_multi_acceptor_message_delivery() {
     // Bob joins and should sync the data via backfill from acceptors
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,
@@ -2852,7 +2850,7 @@ async fn test_empty_snapshot_join() {
     // and start with an empty CRDT, then catch up via backfill
     let mut bob = test_yrs_weaver_client("bob", test_endpoint().await);
     let bob_kp = bob.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
 
     let event = wait_for_event(
         &mut alice_events,

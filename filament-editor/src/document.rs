@@ -1,6 +1,6 @@
 //! Per-document actor.
 //!
-//! Each open document is managed by a [`DocumentActor`] that owns a [`Group`]
+//! Each open document is managed by a [`DocumentActor`] that owns a [`Weaver`]
 //! and a [`YrsCrdt`] separately — no mutexes.
 
 use std::sync::{Arc, Mutex};
@@ -8,8 +8,6 @@ use std::sync::{Arc, Mutex};
 use filament_core::GroupId;
 use filament_testing::YrsCrdt;
 use filament_weave::{Weaver, WeaverEvent};
-use mls_rs::client_builder::MlsConfig;
-use mls_rs::{CipherSuiteProvider, MlsMessage};
 use tokio::sync::{broadcast, mpsc};
 use yrs::{Any, GetString, Observable, Out, Text, Transact};
 
@@ -18,13 +16,8 @@ use crate::types::{
     GroupStatePayload, PeerEntry,
 };
 
-pub struct DocumentActor<C, CS, E>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Send + Sync + 'static,
-    E: EventEmitter,
-{
-    group: Weaver<C, CS>,
+pub struct DocumentActor<E: EventEmitter> {
+    group: Weaver,
     crdt: YrsCrdt,
     group_id_b58: String,
     request_rx: mpsc::Receiver<DocRequest>,
@@ -32,14 +25,9 @@ where
     emitter: E,
 }
 
-impl<C, CS, E> DocumentActor<C, CS, E>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
-    E: EventEmitter,
-{
+impl<E: EventEmitter> DocumentActor<E> {
     pub fn new(
-        group: Weaver<C, CS>,
+        group: Weaver,
         crdt: YrsCrdt,
         group_id: GroupId,
         request_rx: mpsc::Receiver<DocRequest>,
@@ -153,7 +141,6 @@ where
         self.group.shutdown().await;
     }
 
-    /// Returns `true` if shutdown was requested.
     async fn handle_request(&mut self, request: DocRequest) -> bool {
         match request {
             DocRequest::ApplyDelta {
@@ -276,10 +263,8 @@ where
         let kp_bytes = bs58::decode(key_package_b58)
             .into_vec()
             .map_err(|e| format!("invalid base58: {e}"))?;
-        let key_package =
-            MlsMessage::from_bytes(&kp_bytes).map_err(|e| format!("invalid key package: {e:?}"))?;
         self.group
-            .add_member(key_package)
+            .add_member(&kp_bytes)
             .await
             .map_err(|e| format!("failed to add member: {e:?}"))
     }
@@ -340,7 +325,7 @@ where
             .into_vec()
             .map_err(|e| format!("invalid base58: {e}"))?;
 
-        if let Ok(msg) = MlsMessage::from_bytes(&bytes)
+        if let Ok(msg) = mls_rs::MlsMessage::from_bytes(&bytes)
             && msg.as_key_package().is_some()
         {
             return self.add_member(input_b58).await;

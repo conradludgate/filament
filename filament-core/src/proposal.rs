@@ -158,7 +158,6 @@ impl Versioned for GroupProposal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filament_warp::Proposal as _;
 
     #[test]
     fn unsigned_proposal_roundtrip() {

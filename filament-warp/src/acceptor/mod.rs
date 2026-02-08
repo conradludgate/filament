@@ -151,9 +151,10 @@ impl<L: Learner> AcceptorMessage<L> {
 
 #[cfg(test)]
 mod tests {
+    use error_stack::Report;
+
     use super::*;
     use crate::{Proposal, Validated, ValidationError};
-    use error_stack::Report;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct TP {

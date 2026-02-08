@@ -8,13 +8,9 @@ mod commands;
 mod document;
 mod types;
 
-use filament_core::{PAXOS_ALPN, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE};
+use filament_core::PAXOS_ALPN;
 use filament_weave::WeaverClient;
 use iroh::{Endpoint, SecretKey};
-use mls_rs::identity::SigningIdentity;
-use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
-use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
-use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -71,33 +67,6 @@ async fn setup_coordinator(
     let iroh_key = SecretKey::generate(&mut rand::rng());
     info!(public_key = %iroh_key.public(), "iroh key generated");
 
-    let crypto = RustCryptoProvider::default();
-    let cipher_suite = crypto
-        .cipher_suite_provider(CipherSuite::CURVE25519_AES128)
-        .expect("cipher suite should be available");
-
-    let (secret_key, public_key) = cipher_suite
-        .signature_key_generate()
-        .expect("key generation should succeed");
-
-    // Use iroh public key as identity since it's already unique per instance
-    let credential = BasicCredential::new(iroh_key.public().as_bytes().to_vec());
-    let signing_identity = SigningIdentity::new(credential.into_credential(), public_key);
-
-    let client = Client::builder()
-        .crypto_provider(crypto)
-        .identity_provider(BasicIdentityProvider::new())
-        .signing_identity(
-            signing_identity,
-            secret_key.clone(),
-            CipherSuite::CURVE25519_AES128,
-        )
-        .extension_type(SYNC_EXTENSION_TYPE)
-        .custom_proposal_type(SYNC_PROPOSAL_TYPE)
-        .build();
-
-    info!("MLS client created");
-
     let transport_config = iroh::endpoint::QuicTransportConfig::builder()
         .keep_alive_interval(std::time::Duration::from_secs(5))
         .max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()))
@@ -105,14 +74,15 @@ async fn setup_coordinator(
 
     let endpoint = Endpoint::builder()
         .transport_config(transport_config)
-        .secret_key(iroh_key)
+        .secret_key(iroh_key.clone())
         .alpns(vec![PAXOS_ALPN.to_vec()])
         .bind()
         .await?;
 
     info!(addr = ?endpoint.addr(), "iroh endpoint ready");
 
-    let group_client = WeaverClient::new(client, secret_key, cipher_suite, endpoint);
+    let identity = iroh_key.public().as_bytes().to_vec();
+    let group_client = WeaverClient::new(identity, endpoint);
 
     let coordinator = CoordinatorActor::new(group_client, coordinator_rx, app_handle);
     coordinator.run().await;

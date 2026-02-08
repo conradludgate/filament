@@ -12,8 +12,7 @@
 //!
 //! # Typical flow
 //!
-//! 1. Create a [`WeaverClient`] with an MLS `Client`, signing key, cipher
-//!    suite, and iroh `Endpoint`.
+//! 1. Create a [`WeaverClient`] with an identity and iroh `Endpoint`.
 //! 2. Call [`WeaverClient::create`] or [`WeaverClient::join`] to obtain a
 //!    [`Weaver`] handle.
 //! 3. Send local CRDT changes with [`Weaver::send_update`] and receive

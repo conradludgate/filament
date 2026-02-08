@@ -266,9 +266,7 @@ mod tests {
         let result = core.handle_accepted(1, Some(200), 100);
         assert!(matches!(
             result,
-            AcceptPhaseResult::Rejected {
-                superseded_by: 200
-            }
+            AcceptPhaseResult::Rejected { superseded_by: 200 }
         ));
     }
 

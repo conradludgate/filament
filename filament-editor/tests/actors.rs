@@ -238,7 +238,7 @@ async fn doc_actor_remote_update_triggers_event() {
 
     let mut bob_client = test_yrs_weaver_client("bob-doc-event", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
-    alice_group.add_member(bob_kp).await.expect("add bob");
+    alice_group.add_member(&bob_kp).await.expect("add bob");
     let welcome = bob_client.recv_welcome().await.expect("bob welcome");
     let join_info = bob_client.join(&welcome).await.expect("bob join");
 
@@ -304,10 +304,7 @@ async fn doc_actor_remote_update_triggers_event() {
 /// Spawn a CoordinatorActor for testing.
 /// Returns the request sender and the event receiver.
 fn spawn_coordinator(
-    client: filament_weave::WeaverClient<
-        impl mls_rs::client_builder::MlsConfig + 'static,
-        impl mls_rs::CipherSuiteProvider + Clone + 'static,
-    >,
+    client: filament_weave::WeaverClient,
 ) -> (
     mpsc::Sender<CoordinatorRequest>,
     mpsc::Receiver<DocumentUpdatedPayload>,
@@ -457,7 +454,7 @@ async fn coordinator_join_via_welcome() {
 
     let bob_client = test_yrs_weaver_client("bob-coord", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
-    let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
+    let bob_kp_b58 = bs58::encode(bob_kp).into_string();
     let (bob_tx, _bob_events) = spawn_coordinator(bob_client);
 
     let bob_tx2 = bob_tx.clone();
@@ -527,7 +524,7 @@ async fn full_two_peer_sync() {
 
     let bob_client = test_yrs_weaver_client("bob-sync", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
-    let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
+    let bob_kp_b58 = bs58::encode(bob_kp).into_string();
     let (bob_tx, mut bob_events) = spawn_coordinator(bob_client);
 
     let bob_tx2 = bob_tx.clone();
@@ -649,7 +646,7 @@ async fn two_member_unidirectional_sync() {
     // Spawn Bob's coordinator
     let bob_client = test_yrs_weaver_client("bob-uni", test_endpoint().await);
     let bob_kp = bob_client.generate_key_package().expect("bob kp");
-    let bob_kp_b58 = bs58::encode(bob_kp.to_bytes().unwrap()).into_string();
+    let bob_kp_b58 = bs58::encode(bob_kp).into_string();
     let (bob_tx, mut bob_events) = spawn_coordinator(bob_client);
 
     // Bob starts waiting for a welcome

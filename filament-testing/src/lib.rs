@@ -11,105 +11,30 @@ use filament_spool::{
 };
 use filament_weave::WeaverClient;
 use iroh::{Endpoint, EndpointAddr, RelayMode};
-use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::external_client::ExternalClient;
-use mls_rs::identity::SigningIdentity;
-use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
-use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider};
+use mls_rs::identity::basic::BasicIdentityProvider;
+use mls_rs::{CipherSuite, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 pub use repl::ReplContext;
 use tempfile::TempDir;
 use tracing_subscriber::{EnvFilter, fmt};
 pub use yrs_crdt::{AWARENESS_TIMEOUT, YrsCrdt};
 
-pub const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
+const TEST_CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
 #[must_use]
-pub fn test_crypto_provider() -> RustCryptoProvider {
-    RustCryptoProvider::default()
-}
-
-/// # Panics
-/// Panics if the cipher suite is not available.
-#[must_use]
-pub fn test_cipher_suite(
-    crypto: &RustCryptoProvider,
-) -> <RustCryptoProvider as CryptoProvider>::CipherSuiteProvider {
-    crypto
-        .cipher_suite_provider(TEST_CIPHER_SUITE)
-        .expect("cipher suite should be available")
+pub fn test_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
+    WeaverClient::new(name.as_bytes().to_vec(), endpoint)
 }
 
 #[must_use]
-pub fn test_identity_provider() -> BasicIdentityProvider {
-    BasicIdentityProvider::new()
+pub fn test_repl_context(name: &str, endpoint: Endpoint) -> ReplContext {
+    ReplContext::new(test_weaver_client(name, endpoint))
 }
 
-pub type TestCipherSuiteProvider = <RustCryptoProvider as CryptoProvider>::CipherSuiteProvider;
-
-pub struct TestClientResult<C> {
-    pub client: Client<C>,
-    pub signer: SignatureSecretKey,
-    pub cipher_suite: TestCipherSuiteProvider,
-}
-
-/// # Panics
-/// Panics if key generation or client building fails.
+/// Alias for [`test_weaver_client`].
 #[must_use]
-pub fn test_client(name: &str) -> TestClientResult<impl mls_rs::client_builder::MlsConfig> {
-    let crypto = test_crypto_provider();
-    let cipher_suite = test_cipher_suite(&crypto);
-
-    let (secret_key, public_key) = cipher_suite
-        .signature_key_generate()
-        .expect("key generation should succeed");
-
-    let credential = BasicCredential::new(name.as_bytes().to_vec());
-    let signing_identity = SigningIdentity::new(credential.into_credential(), public_key);
-
-    let client = Client::builder()
-        .crypto_provider(crypto)
-        .identity_provider(test_identity_provider())
-        .signing_identity(signing_identity, secret_key.clone(), TEST_CIPHER_SUITE)
-        .extension_type(SYNC_EXTENSION_TYPE)
-        .custom_proposal_type(SYNC_PROPOSAL_TYPE)
-        .build();
-
-    TestClientResult {
-        client,
-        signer: secret_key,
-        cipher_suite,
-    }
-}
-
-/// # Panics
-/// Panics if key generation or client building fails.
-#[must_use]
-pub fn test_weaver_client(
-    name: &'static str,
-    endpoint: iroh::Endpoint,
-) -> WeaverClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
-    let result = test_client(name);
-    WeaverClient::new(result.client, result.signer, result.cipher_suite, endpoint)
-}
-
-/// # Panics
-/// Panics if key generation or client building fails.
-#[must_use]
-pub fn test_repl_context(
-    name: &'static str,
-    endpoint: iroh::Endpoint,
-) -> ReplContext<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
-    let client = test_weaver_client(name, endpoint);
-    ReplContext::new(client)
-}
-
-/// Alias for [`test_weaver_client`] (factory registration is no longer needed).
-#[must_use]
-pub fn test_yrs_weaver_client(
-    name: &'static str,
-    endpoint: Endpoint,
-) -> WeaverClient<impl mls_rs::client_builder::MlsConfig, TestCipherSuiteProvider> {
+pub fn test_yrs_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
     test_weaver_client(name, endpoint)
 }
 
@@ -154,8 +79,10 @@ pub async fn spawn_acceptor() -> (tokio::task::JoinHandle<()>, EndpointAddr, Tem
     let endpoint = test_endpoint().await;
     let addr = endpoint.addr();
 
-    let crypto = test_crypto_provider();
-    let cipher_suite = test_cipher_suite(&crypto);
+    let crypto = RustCryptoProvider::default();
+    let cipher_suite = crypto
+        .cipher_suite_provider(TEST_CIPHER_SUITE)
+        .expect("cipher suite should be available");
 
     let state_store = SharedFjallStateStore::open(temp_dir.path())
         .await
@@ -163,7 +90,7 @@ pub async fn spawn_acceptor() -> (tokio::task::JoinHandle<()>, EndpointAddr, Tem
 
     let external_client = ExternalClient::builder()
         .crypto_provider(crypto)
-        .identity_provider(test_identity_provider())
+        .identity_provider(BasicIdentityProvider::new())
         .extension_type(SYNC_EXTENSION_TYPE)
         .custom_proposal_types(Some(SYNC_PROPOSAL_TYPE))
         .build();

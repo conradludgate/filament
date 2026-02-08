@@ -40,7 +40,7 @@ where
     #[allow(dead_code)]
     endpoint: Endpoint,
     connection_manager: ConnectionManager,
-    request_rx: mpsc::Receiver<GroupRequest<C, CS>>,
+    request_rx: mpsc::Receiver<GroupRequest>,
     app_message_tx: mpsc::Sender<Vec<u8>>,
     event_tx: broadcast::Sender<WeaverEvent>,
     cancel_token: CancellationToken,
@@ -223,7 +223,7 @@ where
         group_id: GroupId,
         endpoint: Endpoint,
         connection_manager: ConnectionManager,
-        request_rx: mpsc::Receiver<GroupRequest<C, CS>>,
+        request_rx: mpsc::Receiver<GroupRequest>,
         app_message_tx: mpsc::Sender<Vec<u8>>,
         event_tx: broadcast::Sender<WeaverEvent>,
         cancel_token: CancellationToken,
@@ -413,7 +413,7 @@ where
     }
 
     /// Returns true if shutdown was requested.
-    async fn handle_request(&mut self, request: GroupRequest<C, CS>) -> bool {
+    async fn handle_request(&mut self, request: GroupRequest) -> bool {
         match request {
             GroupRequest::GetContext { reply } => {
                 let context = self.get_context();
@@ -455,7 +455,6 @@ where
             GroupRequest::Shutdown => {
                 return true;
             }
-            GroupRequest::_Marker(_) => unreachable!(),
         }
         false
     }
@@ -1751,7 +1750,7 @@ mod tests {
             .as_secs()
     }
 
-    use filament_core::{CompactionLevel, default_compaction_config};
+    use filament_core::CompactionLevel;
 
     /// Helper: 3-level config for tests (L0, L1 at threshold 10, L2 at threshold 5).
     fn test_config_3() -> CompactionConfig {

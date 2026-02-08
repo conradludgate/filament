@@ -1227,9 +1227,7 @@ mod tests {
         };
         let gid = GroupId::new([0xBB; 32]);
 
-        shared
-            .store_snapshot(&gid, Epoch(0), b"snap")
-            .unwrap();
+        shared.store_snapshot(&gid, Epoch(0), b"snap").unwrap();
         let (epoch, data) = shared.get_latest_snapshot(&gid).unwrap();
         assert_eq!(epoch, Epoch(0));
         assert_eq!(data, b"snap");
@@ -1288,9 +1286,7 @@ mod tests {
         let snap = gs.get_snapshot_at_or_before(Epoch(10));
         assert!(snap.is_some());
 
-        let deleted = gs
-            .delete_before_watermark(&StateVector::default())
-            .unwrap();
+        let deleted = gs.delete_before_watermark(&StateVector::default()).unwrap();
         assert_eq!(deleted, 0);
     }
 }

@@ -303,8 +303,7 @@ mod tests {
     fn test_handle_request_accept_success() {
         let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
         core.handle_request(AcceptorRequest::Prepare(100), |_| 1u64);
-        let resp =
-            core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
+        let resp = core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
         assert_eq!(resp.promised, Some(100));
         assert_eq!(resp.accepted, Some((100, "val".to_string())));
     }
@@ -313,8 +312,7 @@ mod tests {
     fn test_handle_request_accept_rejected() {
         let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
         core.handle_request(AcceptorRequest::Prepare(200), |_| 1u64);
-        let resp =
-            core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
+        let resp = core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
         assert_eq!(resp.for_proposal, 100);
         assert_eq!(resp.promised, Some(200));
         assert!(resp.accepted.is_none());

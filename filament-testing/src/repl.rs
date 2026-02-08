@@ -1,6 +1,4 @@
 //! REPL command handling for the proposer CLI
-//!
-//! This module provides an interactive REPL for managing MLS groups with Paxos consensus.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -8,28 +6,17 @@ use std::fmt::Write;
 use filament_core::{AcceptorId, GroupId};
 use filament_weave::{Weaver, WeaverClient};
 use iroh::EndpointAddr;
-use mls_rs::client_builder::MlsConfig;
-use mls_rs::{CipherSuiteProvider, MlsMessage};
 use tracing::info;
 
 /// REPL context holding all state
-pub struct ReplContext<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
-{
-    pub client: WeaverClient<C, CS>,
-    pub groups: HashMap<GroupId, Weaver<C, CS>>,
+pub struct ReplContext {
+    pub client: WeaverClient,
+    pub groups: HashMap<GroupId, Weaver>,
 }
 
-impl<C, CS> ReplContext<C, CS>
-where
-    C: MlsConfig + Clone + Send + Sync + 'static,
-    CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
-{
-    /// Create a new REPL context with the given client.
+impl ReplContext {
     #[must_use]
-    pub fn new(client: WeaverClient<C, CS>) -> Self {
+    pub fn new(client: WeaverClient) -> Self {
         Self {
             client,
             groups: HashMap::new(),
@@ -38,14 +25,10 @@ where
 
     /// Process any pending welcome messages in the background.
     ///
-    /// This should be called periodically (e.g., before each command) to
-    /// automatically join groups when welcome messages are received.
-    ///
     /// Returns a list of newly joined group IDs.
     pub async fn process_pending_welcomes(&mut self) -> Vec<GroupId> {
         let mut joined_groups = Vec::new();
 
-        // Process all pending welcomes
         while let Some(welcome_bytes) = self.client.try_recv_welcome() {
             match self.client.join(&welcome_bytes).await {
                 Ok(join_info) => {
@@ -69,7 +52,6 @@ where
     ///
     /// Returns an error string if the command fails.
     pub async fn execute(&mut self, line: &str) -> Result<String, String> {
-        // First, process any pending welcomes
         let joined = self.process_pending_welcomes().await;
         let mut output = String::new();
         if !joined.is_empty() {
@@ -149,7 +131,6 @@ where
                 if parts.len() < 3 {
                     return Err("Usage: send <group_id_hex> <message>".to_string());
                 }
-                // Join remaining parts as the message
                 let message = parts[2..].join(" ");
                 self.cmd_send_message(parts[1], &message).await
             }
@@ -165,7 +146,6 @@ where
             )),
         };
 
-        // Prepend any auto-join notifications to the result
         match result {
             Ok(cmd_output) => Ok(format!("{output}{cmd_output}")),
             Err(e) => Err(e),
@@ -201,14 +181,10 @@ Note: Welcome messages are received automatically in the background.
     }
 
     fn cmd_key_package(&self) -> Result<String, String> {
-        let kp = self
+        let bytes = self
             .client
             .generate_key_package()
             .map_err(|e| format!("Failed to generate key package: {e:?}"))?;
-
-        let bytes = kp
-            .to_bytes()
-            .map_err(|e| format!("Failed to serialize key package: {e:?}"))?;
 
         Ok(bs58::encode(bytes).into_string())
     }
@@ -286,8 +262,6 @@ Note: Welcome messages are received automatically in the background.
         let kp_bytes = bs58::decode(key_package_base58)
             .into_vec()
             .map_err(|e| format!("Invalid base58: {e}"))?;
-        let key_package =
-            MlsMessage::from_bytes(&kp_bytes).map_err(|e| format!("Invalid key package: {e:?}"))?;
 
         let group = self
             .groups
@@ -295,7 +269,7 @@ Note: Welcome messages are received automatically in the background.
             .ok_or_else(|| format!("Group not loaded: {group_id_hex}"))?;
 
         group
-            .add_member(key_package)
+            .add_member(&kp_bytes)
             .await
             .map_err(|e| format!("Failed to add member: {e:?}"))?;
 
@@ -456,7 +430,6 @@ Note: Welcome messages are received automatically in the background.
             .get_mut(&group_id)
             .ok_or_else(|| format!("Group not loaded: {group_id_hex}"))?;
 
-        // Use a short timeout to avoid blocking the REPL forever
         let result = timeout(
             Duration::from_secs(5),
             group.wait_for_update(&mut filament_core::NoCrdt),
@@ -470,8 +443,6 @@ Note: Welcome messages are received automatically in the background.
         }
     }
 }
-
-// Helper functions
 
 fn parse_group_id(b58_str: &str) -> Result<GroupId, String> {
     let bytes = bs58::decode(b58_str)
