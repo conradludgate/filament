@@ -29,7 +29,7 @@ pub(crate) async fn register_group_with_addr(
     let mut reader = FramedRead::new(recv, codec.clone());
     let mut writer = FramedWrite::new(send, codec);
 
-    let handshake = Handshake::CreateGroup(group_info.to_vec());
+    let handshake = Handshake::CreateGroup(bytes::Bytes::copy_from_slice(group_info));
     let handshake_bytes = postcard::to_allocvec(&handshake).change_context(ConnectorError)?;
     writer
         .send(handshake_bytes.into())

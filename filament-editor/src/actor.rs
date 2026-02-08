@@ -18,7 +18,7 @@ use crate::types::{CoordinatorRequest, DocRequest, DocumentInfo, EventEmitter};
 
 pub struct CoordinatorActor<E: EventEmitter> {
     group_client: WeaverClient,
-    welcome_rx: mpsc::Receiver<Vec<u8>>,
+    welcome_rx: mpsc::Receiver<bytes::Bytes>,
     doc_actors: HashMap<GroupId, mpsc::Sender<DocRequest>>,
     request_rx: mpsc::Receiver<CoordinatorRequest>,
     pending_welcome_reply: Option<oneshot::Sender<Result<DocumentInfo, String>>>,
@@ -108,7 +108,7 @@ impl<E: EventEmitter> CoordinatorActor<E> {
         self.join_with_welcome(&welcome_bytes).await
     }
 
-    async fn handle_welcome_received(&mut self, welcome_bytes: Vec<u8>) {
+    async fn handle_welcome_received(&mut self, welcome_bytes: bytes::Bytes) {
         match self.join_with_welcome(&welcome_bytes).await {
             Ok(doc_info) => {
                 if let Some(reply) = self.pending_welcome_reply.take() {

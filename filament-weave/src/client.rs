@@ -31,7 +31,7 @@ pub struct WeaverClient {
     signer: SignatureSecretKey,
     cipher_suite: WeaverCipherSuite,
     connection_manager: ConnectionManager,
-    welcome_rx: mpsc::Receiver<Vec<u8>>,
+    welcome_rx: mpsc::Receiver<bytes::Bytes>,
 }
 
 impl WeaverClient {
@@ -83,7 +83,7 @@ impl WeaverClient {
         }
     }
 
-    async fn welcome_acceptor_loop(endpoint: Endpoint, tx: mpsc::Sender<Vec<u8>>) {
+    async fn welcome_acceptor_loop(endpoint: Endpoint, tx: mpsc::Sender<bytes::Bytes>) {
         loop {
             match crate::group::wait_for_welcome(&endpoint).await {
                 Ok(welcome_bytes) => {
@@ -174,18 +174,18 @@ impl WeaverClient {
     }
 
     /// Receive the next welcome message, or wait for one. Returns `None` on shutdown.
-    pub async fn recv_welcome(&mut self) -> Option<Vec<u8>> {
+    pub async fn recv_welcome(&mut self) -> Option<bytes::Bytes> {
         self.welcome_rx.recv().await
     }
 
     /// Non-blocking variant of [`recv_welcome`](Self::recv_welcome).
-    pub fn try_recv_welcome(&mut self) -> Option<Vec<u8>> {
+    pub fn try_recv_welcome(&mut self) -> Option<bytes::Bytes> {
         self.welcome_rx.try_recv().ok()
     }
 
     /// Take the welcome receiver for use in a `select!` loop.
     /// After this, `recv_welcome`/`try_recv_welcome` will always return `None`.
-    pub fn take_welcome_rx(&mut self) -> mpsc::Receiver<Vec<u8>> {
+    pub fn take_welcome_rx(&mut self) -> mpsc::Receiver<bytes::Bytes> {
         let (_, empty_rx) = mpsc::channel(1);
         std::mem::replace(&mut self.welcome_rx, empty_rx)
     }

@@ -1,5 +1,6 @@
 //! Paxos [`Proposal`] implementation for MLS group operations.
 
+use bytes::Bytes;
 use filament_warp::Proposal;
 use serde::{Deserialize, Serialize};
 
@@ -75,13 +76,13 @@ impl UnsignedProposal {
     }
 
     #[must_use]
-    pub fn with_signature(self, signature: Vec<u8>) -> GroupProposal {
+    pub fn with_signature(self, signature: impl Into<Bytes>) -> GroupProposal {
         GroupProposal {
             member_id: self.member_id,
             epoch: self.epoch,
             attempt: self.attempt,
             message_hash: self.message_hash,
-            signature,
+            signature: signature.into(),
         }
     }
 }
@@ -95,7 +96,7 @@ pub struct GroupProposal {
     pub epoch: Epoch,
     pub attempt: Attempt,
     pub message_hash: [u8; 32],
-    pub signature: Vec<u8>,
+    pub signature: Bytes,
 }
 
 impl GroupProposal {

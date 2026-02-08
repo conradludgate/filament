@@ -99,7 +99,7 @@ enum GroupRequest {
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     },
     CompactSnapshot {
-        snapshot: Vec<u8>,
+        snapshot: bytes::Bytes,
         level: u8,
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     },
@@ -224,7 +224,7 @@ pub struct JoinInfo {
     pub protocol_name: String,
     /// Optional CRDT snapshot from the most recent compaction. `None` if the
     /// group has never been compacted; the device will catch up via backfill.
-    pub snapshot: Option<Vec<u8>>,
+    pub snapshot: Option<bytes::Bytes>,
 }
 
 /// Handle to a synchronized MLS group with automatic Paxos consensus.
@@ -639,7 +639,7 @@ impl Weaver {
         crdt: &impl Crdt,
         level: u8,
     ) -> Result<(), Report<WeaverError>> {
-        let snapshot = crdt.wire_snapshot().change_context(WeaverError)?;
+        let snapshot = bytes::Bytes::from(crdt.wire_snapshot().change_context(WeaverError)?);
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(GroupRequest::CompactSnapshot {
@@ -748,7 +748,9 @@ impl Weaver {
 
 /// Waits for an incoming welcome message on the endpoint.
 /// Should be called before the group leader calls `add_member`.
-pub(crate) async fn wait_for_welcome(endpoint: &Endpoint) -> Result<Vec<u8>, Report<WeaverError>> {
+pub(crate) async fn wait_for_welcome(
+    endpoint: &Endpoint,
+) -> Result<bytes::Bytes, Report<WeaverError>> {
     use futures::StreamExt;
     use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 

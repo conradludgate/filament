@@ -296,7 +296,7 @@ async fn run_peer_connection(
         epoch: current_round,
         attempt: filament_core::Attempt::default(),
         message_hash: [0u8; 32],
-        signature: vec![],
+        signature: bytes::Bytes::new(),
     };
 
     writer

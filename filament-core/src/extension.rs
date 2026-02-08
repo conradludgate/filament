@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use bytes::Bytes;
 use iroh::EndpointAddr;
 use mls_rs::extension::{ExtensionType, MlsCodecExtension};
 use mls_rs::group::proposal::MlsCustomProposal;
@@ -270,15 +271,18 @@ impl MlsCodecExtension for LeafNodeExt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfoExt {
     pub acceptors: Vec<EndpointAddr>,
-    pub snapshot: Vec<u8>,
+    pub snapshot: Bytes,
 }
 
 impl GroupInfoExt {
     #[must_use]
-    pub fn new(acceptors: impl IntoIterator<Item = EndpointAddr>, snapshot: Vec<u8>) -> Self {
+    pub fn new(
+        acceptors: impl IntoIterator<Item = EndpointAddr>,
+        snapshot: impl Into<Bytes>,
+    ) -> Self {
         Self {
             acceptors: acceptors.into_iter().collect(),
-            snapshot,
+            snapshot: snapshot.into(),
         }
     }
 
@@ -505,7 +509,7 @@ mod tests {
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupInfoExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
-        assert_eq!(decoded.snapshot, b"crdt snapshot data");
+        assert_eq!(decoded.snapshot, &b"crdt snapshot data"[..]);
         assert_eq!(decoded.acceptors.len(), 2);
     }
 

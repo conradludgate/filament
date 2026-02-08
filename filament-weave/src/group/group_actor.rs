@@ -642,7 +642,7 @@ where
         };
 
         let ciphertext = match mls_message.to_bytes().change_context(WeaverError) {
-            Ok(bytes) => bytes,
+            Ok(bytes) => bytes::Bytes::from(bytes),
             Err(e) => {
                 let _ = reply.send(Err(e));
                 return;
@@ -997,7 +997,7 @@ where
 
         let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
 
-        let handshake = Handshake::SendWelcome(welcome.to_vec());
+        let handshake = Handshake::SendWelcome(bytes::Bytes::copy_from_slice(welcome));
         let handshake_bytes = postcard::to_stdvec(&handshake).change_context(WeaverError)?;
 
         framed
@@ -1506,7 +1506,7 @@ where
 
     async fn handle_compact_snapshot(
         &mut self,
-        snapshot: Vec<u8>,
+        snapshot: bytes::Bytes,
         level: u8,
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     ) {
@@ -1587,7 +1587,7 @@ where
         };
 
         let ciphertext = match mls_message.to_bytes() {
-            Ok(bytes) => bytes,
+            Ok(bytes) => bytes::Bytes::from(bytes),
             Err(e) => {
                 tracing::warn!(?e, "failed to serialize compacted message");
                 return false;

@@ -8,7 +8,7 @@ futures = "0.3"
 scopeguard = "1"
 turmoil = { version = "0.7", features = ["unstable-fs"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
-bytes = "1"
+bytes = { version = "1", features = ["serde"] }
 rand = "0.9"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
@@ -16,7 +16,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 pin-project-lite = "0.2"
-fjall = { version = "3", default-features = false, features = ["metrics"] }
+fjall = { version = "3", default-features = false, features = ["metrics", "bytes_1"] }
 tempfile = "3"
 iroh = "0.96"
 mls-rs-crypto-rustcrypto = { version = "0.20", default-features = false }

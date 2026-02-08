@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use bytes::Bytes;
 use mls_rs::MlsMessage;
 use serde::{Deserialize, Serialize};
 
@@ -63,14 +64,14 @@ pub enum Handshake {
         since_epoch: Epoch,
     },
     /// Register a new group with serialized `GroupInfo` bytes.
-    CreateGroup(Vec<u8>),
+    CreateGroup(Bytes),
     /// Join an existing group's message stream.
     ///
     /// Includes the subscriber's fingerprint so the acceptor can filter out
     /// messages originally sent by this member.
     JoinMessages(GroupId, MemberFingerprint),
     /// Deliver a serialized MLS `Welcome` message.
-    SendWelcome(Vec<u8>),
+    SendWelcome(Bytes),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +171,7 @@ pub struct MessageId {
 /// Encrypted application message (MLS `PrivateMessage` ciphertext).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EncryptedAppMessage {
-    pub ciphertext: Vec<u8>,
+    pub ciphertext: Bytes,
 }
 
 /// Authenticated data carried alongside an MLS application message.
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn test_encrypted_app_message_roundtrip() {
         let msg = EncryptedAppMessage {
-            ciphertext: vec![1, 2, 3, 4, 5],
+            ciphertext: Bytes::from_static(&[1, 2, 3, 4, 5]),
         };
         let bytes = postcard::to_allocvec(&msg).unwrap();
         let decoded: EncryptedAppMessage = postcard::from_bytes(&bytes).unwrap();
@@ -444,7 +445,7 @@ mod tests {
                 seq: 1,
             },
             message: EncryptedAppMessage {
-                ciphertext: vec![10, 20],
+                ciphertext: Bytes::from_static(&[10, 20]),
             },
         };
         let bytes = postcard::to_allocvec(&send).unwrap();
@@ -596,9 +597,9 @@ mod tests {
     #[test]
     fn handshake_variants_roundtrip() {
         let variants: Vec<Handshake> = vec![
-            Handshake::CreateGroup(vec![1, 2, 3]),
+            Handshake::CreateGroup(Bytes::from_static(&[1, 2, 3])),
             Handshake::JoinMessages(GroupId::new([0; 32]), MemberFingerprint([1; 8])),
-            Handshake::SendWelcome(vec![4, 5, 6]),
+            Handshake::SendWelcome(Bytes::from_static(&[4, 5, 6])),
         ];
         for h in variants {
             let bytes = postcard::to_allocvec(&h).unwrap();

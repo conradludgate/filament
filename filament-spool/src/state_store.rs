@@ -97,11 +97,19 @@ type GroupBroadcasts = RwLock<HashMap<[u8; 32], broadcast::Sender<(GroupProposal
 type MessageBroadcasts =
     RwLock<HashMap<[u8; 32], broadcast::Sender<(MessageId, EncryptedAppMessage)>>>;
 
+const SNAPSHOT_CACHE_CAPACITY: usize = 512;
+const ACCEPTED_CACHE_CAPACITY: usize = 4096;
+const MESSAGE_CACHE_CAPACITY: usize = 16384;
+
 pub(crate) struct FjallStateStore {
     db: Database,
     keyspaces_cache: RwLock<HashMap<GroupId, GroupKeyspaces>>,
     broadcasts: GroupBroadcasts,
     message_broadcasts: MessageBroadcasts,
+    snapshot_cache: quick_cache::sync::Cache<(GroupId, Epoch), bytes::Bytes>,
+    latest_epoch: RwLock<HashMap<GroupId, Epoch>>,
+    accepted_cache: quick_cache::sync::Cache<(GroupId, Epoch), Arc<(GroupProposal, GroupMessage)>>,
+    message_cache: quick_cache::sync::Cache<MessageId, Arc<EncryptedAppMessage>>,
 }
 
 impl FjallStateStore {
@@ -120,6 +128,10 @@ impl FjallStateStore {
             keyspaces_cache: RwLock::new(HashMap::new()),
             broadcasts: RwLock::new(HashMap::new()),
             message_broadcasts: RwLock::new(HashMap::new()),
+            snapshot_cache: quick_cache::sync::Cache::new(SNAPSHOT_CACHE_CAPACITY),
+            latest_epoch: RwLock::new(HashMap::new()),
+            accepted_cache: quick_cache::sync::Cache::new(ACCEPTED_CACHE_CAPACITY),
+            message_cache: quick_cache::sync::Cache::new(MESSAGE_CACHE_CAPACITY),
         })
     }
 
@@ -200,6 +212,8 @@ impl FjallStateStore {
 
         self.db.persist(PersistMode::SyncAll)?;
 
+        self.message_cache.insert(*id, Arc::new(msg.clone()));
+
         if let Ok(broadcasts) = self.message_broadcasts.read()
             && let Some(tx) = broadcasts.get(group_id.as_bytes())
         {
@@ -226,8 +240,13 @@ impl FjallStateStore {
                 let covered = state_vector
                     .get(&msg_id.sender)
                     .is_some_and(|&hw| msg_id.seq <= hw);
-                if !covered && let Some(msg) = Self::deserialize_app_message(&value) {
-                    messages.push((msg_id, msg));
+                if !covered {
+                    if let Some(cached) = self.message_cache.get(&msg_id) {
+                        messages.push((msg_id, (*cached).clone()));
+                    } else if let Some(msg) = Self::deserialize_app_message(&value) {
+                        self.message_cache.insert(msg_id, Arc::new(msg.clone()));
+                        messages.push((msg_id, msg));
+                    }
                 }
             }
         }
@@ -254,6 +273,7 @@ impl FjallStateStore {
                     .is_some_and(|&hw| msg_id.seq <= hw)
             {
                 ks.messages.remove(&*key)?;
+                self.message_cache.remove(&msg_id);
                 deleted += 1;
             }
         }
@@ -294,10 +314,17 @@ impl FjallStateStore {
         group_id: &GroupId,
         epoch: Epoch,
     ) -> Option<(GroupProposal, GroupMessage)> {
+        if let Some(cached) = self.accepted_cache.get(&(*group_id, epoch)) {
+            return Some((*cached).clone());
+        }
+
         let ks = self.get_keyspaces(group_id);
         let key = Self::build_epoch_key(epoch);
         let bytes = ks.accepted.get(key).ok()??;
-        Self::decode_slim_accepted(&bytes, epoch)
+        let result = Self::decode_slim_accepted(&bytes, epoch)?;
+        self.accepted_cache
+            .insert((*group_id, epoch), Arc::new(result.clone()));
+        Some(result)
     }
 
     fn decode_slim_accepted(bytes: &[u8], epoch: Epoch) -> Option<(GroupProposal, GroupMessage)> {
@@ -313,7 +340,7 @@ impl FjallStateStore {
             epoch,
             attempt: slim.attempt,
             message_hash,
-            signature: slim.signature,
+            signature: bytes::Bytes::from(slim.signature),
         };
         Some((proposal, slim.message))
     }
@@ -343,7 +370,7 @@ impl FjallStateStore {
         let slim = SlimAccepted {
             member_id: proposal.member_id,
             attempt: proposal.attempt,
-            signature: proposal.signature.clone(),
+            signature: proposal.signature.to_vec(),
             message: message.clone(),
         };
         let data = postcard::to_allocvec(&slim).expect("serialization should not fail");
@@ -351,6 +378,12 @@ impl FjallStateStore {
 
         ks.accepted.insert(key, &value)?;
         self.db.persist(PersistMode::SyncAll)?;
+
+        self.accepted_cache.insert(
+            (*group_id, proposal.epoch),
+            Arc::new((proposal.clone(), message.clone())),
+        );
+
         Ok(())
     }
 
@@ -370,7 +403,13 @@ impl FjallStateStore {
                 if epoch < from_epoch || epoch.0 == PROMISED_SENTINEL_EPOCH {
                     return None;
                 }
-                Self::decode_slim_accepted(&value, epoch)
+                if let Some(cached) = self.accepted_cache.get(&(*group_id, epoch)) {
+                    return Some((*cached).clone());
+                }
+                let result = Self::decode_slim_accepted(&value, epoch)?;
+                self.accepted_cache
+                    .insert((*group_id, epoch), Arc::new(result.clone()));
+                Some(result)
             })
             .collect()
     }
@@ -414,17 +453,36 @@ impl FjallStateStore {
         let ks = self.get_keyspaces(group_id);
         let key = Self::build_epoch_key(epoch);
         ks.snapshots.insert(key, snapshot_bytes)?;
+
+        self.snapshot_cache.insert(
+            (*group_id, epoch),
+            bytes::Bytes::copy_from_slice(snapshot_bytes),
+        );
+        let mut latest = self.latest_epoch.write().unwrap();
+        if latest.get(group_id).is_none_or(|&e| epoch > e) {
+            latest.insert(*group_id, epoch);
+        }
+
         Ok(())
     }
 
-    fn get_latest_snapshot_sync(&self, group_id: &GroupId) -> Option<(Epoch, Vec<u8>)> {
-        let ks = self.get_keyspaces(group_id);
+    fn get_latest_snapshot_sync(&self, group_id: &GroupId) -> Option<(Epoch, bytes::Bytes)> {
+        if let Some(&epoch) = self.latest_epoch.read().unwrap().get(group_id)
+            && let Some(cached) = self.snapshot_cache.get(&(*group_id, epoch))
+        {
+            return Some((epoch, cached));
+        }
 
+        let ks = self.get_keyspaces(group_id);
         for guard in ks.snapshots.iter().rev() {
             if let Ok((key, value)) = guard.into_inner()
                 && let Some(epoch) = Self::parse_epoch_from_key(&key)
             {
-                return Some((epoch, value.to_vec()));
+                let cached = bytes::Bytes::from(value);
+                self.snapshot_cache
+                    .insert((*group_id, epoch), cached.clone());
+                self.latest_epoch.write().unwrap().insert(*group_id, epoch);
+                return Some((epoch, cached));
             }
         }
         None
@@ -435,15 +493,22 @@ impl FjallStateStore {
         &self,
         group_id: &GroupId,
         epoch: Epoch,
-    ) -> Option<(Epoch, Vec<u8>)> {
+    ) -> Option<(Epoch, bytes::Bytes)> {
+        if let Some(cached) = self.snapshot_cache.get(&(*group_id, epoch)) {
+            return Some((epoch, cached));
+        }
+
         let ks = self.get_keyspaces(group_id);
         let target_key = Self::build_epoch_key(epoch);
 
         for guard in ks.snapshots.range(..=target_key.as_slice()).rev() {
             if let Ok((key, value)) = guard.into_inner()
-                && let Some(epoch) = Self::parse_epoch_from_key(&key)
+                && let Some(found_epoch) = Self::parse_epoch_from_key(&key)
             {
-                return Some((epoch, value.to_vec()));
+                let cached = bytes::Bytes::from(value);
+                self.snapshot_cache
+                    .insert((*group_id, found_epoch), cached.clone());
+                return Some((found_epoch, cached));
             }
         }
         None
@@ -486,8 +551,11 @@ impl FjallStateStore {
             }
         }
 
-        for key in to_delete {
-            ks.snapshots.remove(&key)?;
+        for key in &to_delete {
+            ks.snapshots.remove(key)?;
+            if let Some(epoch) = Self::parse_epoch_from_key(key) {
+                self.snapshot_cache.remove(&(*group_id, epoch));
+            }
         }
 
         Ok(())
@@ -563,7 +631,7 @@ impl SharedFjallStateStore {
     }
 
     #[must_use]
-    pub fn get_latest_snapshot(&self, group_id: &GroupId) -> Option<(Epoch, Vec<u8>)> {
+    pub fn get_latest_snapshot(&self, group_id: &GroupId) -> Option<(Epoch, bytes::Bytes)> {
         self.inner.get_latest_snapshot_sync(group_id)
     }
 
@@ -645,13 +713,13 @@ impl GroupStateStore {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn get_latest_snapshot(&self) -> Option<(Epoch, Vec<u8>)> {
+    pub(crate) fn get_latest_snapshot(&self) -> Option<(Epoch, bytes::Bytes)> {
         self.inner.get_latest_snapshot_sync(&self.group_id)
     }
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn get_snapshot_at_or_before(&self, epoch: Epoch) -> Option<(Epoch, Vec<u8>)> {
+    pub(crate) fn get_snapshot_at_or_before(&self, epoch: Epoch) -> Option<(Epoch, bytes::Bytes)> {
         self.inner
             .get_snapshot_at_or_before_sync(&self.group_id, epoch)
     }
@@ -856,7 +924,7 @@ mod tests {
             epoch,
             attempt: Attempt(0),
             message_hash: [0u8; 32],
-            signature: vec![1, 2, 3, 4],
+            signature: bytes::Bytes::from_static(&[1, 2, 3, 4]),
         }
     }
 
@@ -883,7 +951,7 @@ mod tests {
         assert_eq!(decoded.0.member_id, MemberId(5));
         assert_eq!(decoded.0.epoch, epoch);
         assert_eq!(decoded.0.attempt, Attempt(3));
-        assert_eq!(decoded.0.signature, vec![10, 20, 30]);
+        assert_eq!(decoded.0.signature, &[10, 20, 30][..]);
 
         let message_bytes = postcard::to_allocvec(&message).expect("serialization should not fail");
         let expected_hash: [u8; 32] = Sha256::digest(&message_bytes).into();
@@ -974,19 +1042,19 @@ mod tests {
 
         let (epoch, bytes) = store.get_latest_snapshot_sync(&gid).unwrap();
         assert_eq!(epoch, Epoch(10));
-        assert_eq!(bytes, b"snap10");
+        assert_eq!(bytes, &b"snap10"[..]);
 
         let (epoch, bytes) = store
             .get_snapshot_at_or_before_sync(&gid, Epoch(7))
             .unwrap();
         assert_eq!(epoch, Epoch(5));
-        assert_eq!(bytes, b"snap5");
+        assert_eq!(bytes, &b"snap5"[..]);
 
         let (epoch, bytes) = store
             .get_snapshot_at_or_before_sync(&gid, Epoch(5))
             .unwrap();
         assert_eq!(epoch, Epoch(5));
-        assert_eq!(bytes, b"snap5");
+        assert_eq!(bytes, &b"snap5"[..]);
 
         assert!(
             store
@@ -1084,7 +1152,7 @@ mod tests {
             seq: 2,
         };
         let msg = EncryptedAppMessage {
-            ciphertext: vec![10, 20],
+            ciphertext: bytes::Bytes::from_static(&[10, 20]),
         };
 
         store.store_app_message(&gid, &id1, &msg).unwrap();
@@ -1109,7 +1177,7 @@ mod tests {
         let sender_a = MemberFingerprint([10u8; 8]);
         let sender_b = MemberFingerprint([20u8; 8]);
         let msg = EncryptedAppMessage {
-            ciphertext: vec![1],
+            ciphertext: bytes::Bytes::from_static(&[1]),
         };
 
         for seq in 1..=5 {
@@ -1230,7 +1298,7 @@ mod tests {
         shared.store_snapshot(&gid, Epoch(0), b"snap").unwrap();
         let (epoch, data) = shared.get_latest_snapshot(&gid).unwrap();
         assert_eq!(epoch, Epoch(0));
-        assert_eq!(data, b"snap");
+        assert_eq!(data, &b"snap"[..]);
 
         let sender = MemberFingerprint([1u8; 8]);
         let id = MessageId {
@@ -1239,7 +1307,7 @@ mod tests {
             seq: 1,
         };
         let msg = EncryptedAppMessage {
-            ciphertext: vec![42],
+            ciphertext: bytes::Bytes::from_static(&[42]),
         };
         shared.store_app_message(&gid, &id, &msg).unwrap();
 
@@ -1330,12 +1398,256 @@ mod tests {
         gs.store_snapshot(Epoch(0), b"snap").unwrap();
         let (epoch, data) = gs.get_latest_snapshot().unwrap();
         assert_eq!(epoch, Epoch(0));
-        assert_eq!(data, b"snap");
+        assert_eq!(data, &b"snap"[..]);
 
         let snap = gs.get_snapshot_at_or_before(Epoch(10));
         assert!(snap.is_some());
 
         let deleted = gs.delete_before_watermark(&StateVector::default()).unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn snapshot_cache_hit_avoids_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE0; 32]);
+
+        store
+            .store_snapshot_sync(&gid, Epoch(5), b"cached_snap")
+            .unwrap();
+
+        let (epoch, data) = store.get_latest_snapshot_sync(&gid).unwrap();
+        assert_eq!(epoch, Epoch(5));
+        assert_eq!(data, &b"cached_snap"[..]);
+
+        assert!(store.snapshot_cache.get(&(gid, Epoch(5))).is_some());
+        assert_eq!(
+            *store.latest_epoch.read().unwrap().get(&gid).unwrap(),
+            Epoch(5)
+        );
+    }
+
+    #[test]
+    fn snapshot_cache_updates_on_newer_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE1; 32]);
+
+        store.store_snapshot_sync(&gid, Epoch(1), b"snap1").unwrap();
+        store.store_snapshot_sync(&gid, Epoch(5), b"snap5").unwrap();
+
+        assert_eq!(
+            *store.latest_epoch.read().unwrap().get(&gid).unwrap(),
+            Epoch(5)
+        );
+
+        let (epoch, data) = store.get_latest_snapshot_sync(&gid).unwrap();
+        assert_eq!(epoch, Epoch(5));
+        assert_eq!(data, &b"snap5"[..]);
+
+        assert!(store.snapshot_cache.get(&(gid, Epoch(1))).is_some());
+        assert!(store.snapshot_cache.get(&(gid, Epoch(5))).is_some());
+    }
+
+    #[test]
+    fn snapshot_cache_at_or_before_exact_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE2; 32]);
+
+        store.store_snapshot_sync(&gid, Epoch(3), b"snap3").unwrap();
+        store.store_snapshot_sync(&gid, Epoch(7), b"snap7").unwrap();
+
+        let (epoch, data) = store
+            .get_snapshot_at_or_before_sync(&gid, Epoch(7))
+            .unwrap();
+        assert_eq!(epoch, Epoch(7));
+        assert_eq!(data, &b"snap7"[..]);
+
+        let (epoch, data) = store
+            .get_snapshot_at_or_before_sync(&gid, Epoch(5))
+            .unwrap();
+        assert_eq!(epoch, Epoch(3));
+        assert_eq!(data, &b"snap3"[..]);
+    }
+
+    #[test]
+    fn snapshot_prune_removes_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE3; 32]);
+
+        for e in 0..=20 {
+            store
+                .store_snapshot_sync(&gid, Epoch(e), format!("snap{e}").as_bytes())
+                .unwrap();
+        }
+
+        for e in 0..=20 {
+            assert!(store.snapshot_cache.get(&(gid, Epoch(e))).is_some());
+        }
+
+        store.prune_snapshots_sync(&gid, Epoch(20)).unwrap();
+
+        assert!(store.snapshot_cache.get(&(gid, Epoch(20))).is_some());
+        assert!(store.snapshot_cache.get(&(gid, Epoch(0))).is_some());
+        assert!(store.snapshot_cache.get(&(gid, Epoch(3))).is_none());
+    }
+
+    #[test]
+    fn accepted_cache_set_get_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE4; 32]);
+        let message = make_test_message();
+        let proposal = make_test_proposal(Epoch(10));
+
+        store.set_accepted_sync(&gid, &proposal, &message).unwrap();
+
+        assert!(store.accepted_cache.get(&(gid, Epoch(10))).is_some());
+
+        let (loaded, _) = store.get_accepted_sync(&gid, Epoch(10)).unwrap();
+        assert_eq!(loaded.epoch, Epoch(10));
+        assert_eq!(loaded.member_id, proposal.member_id);
+    }
+
+    #[test]
+    fn accepted_cache_populated_on_range_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE5; 32]);
+        let message = make_test_message();
+
+        for e in 0..5 {
+            let proposal = make_test_proposal(Epoch(e));
+            store.set_accepted_sync(&gid, &proposal, &message).unwrap();
+        }
+
+        for e in 0..5 {
+            assert!(store.accepted_cache.get(&(gid, Epoch(e))).is_some());
+        }
+
+        let from_2 = store.get_accepted_from_sync(&gid, Epoch(2));
+        assert_eq!(from_2.len(), 3);
+    }
+
+    #[test]
+    fn message_cache_store_and_retrieve() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE6; 32]);
+        let sender = MemberFingerprint([0xAA; 8]);
+        let id = MessageId {
+            group_id: gid,
+            sender,
+            seq: 1,
+        };
+        let msg = EncryptedAppMessage {
+            ciphertext: bytes::Bytes::from_static(&[1, 2, 3]),
+        };
+
+        store.store_app_message(&gid, &id, &msg).unwrap();
+
+        assert!(store.message_cache.get(&id).is_some());
+        assert_eq!(
+            store.message_cache.get(&id).unwrap().ciphertext,
+            &[1, 2, 3][..]
+        );
+
+        let msgs = store.get_messages_after(&gid, &StateVector::default());
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].1.ciphertext, &[1, 2, 3][..]);
+    }
+
+    #[test]
+    fn message_cache_delete_removes_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE7; 32]);
+        let sender = MemberFingerprint([0xBB; 8]);
+        let msg = EncryptedAppMessage {
+            ciphertext: bytes::Bytes::from_static(&[1]),
+        };
+
+        for seq in 1..=3 {
+            let id = MessageId {
+                group_id: gid,
+                sender,
+                seq,
+            };
+            store.store_app_message(&gid, &id, &msg).unwrap();
+        }
+
+        for seq in 1..=3 {
+            let id = MessageId {
+                group_id: gid,
+                sender,
+                seq,
+            };
+            assert!(store.message_cache.get(&id).is_some());
+        }
+
+        let mut watermark = StateVector::default();
+        watermark.insert(sender, 2);
+        let deleted = store.delete_before_watermark(&gid, &watermark).unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(
+            store
+                .message_cache
+                .get(&MessageId {
+                    group_id: gid,
+                    sender,
+                    seq: 1
+                })
+                .is_none()
+        );
+        assert!(
+            store
+                .message_cache
+                .get(&MessageId {
+                    group_id: gid,
+                    sender,
+                    seq: 2
+                })
+                .is_none()
+        );
+        assert!(
+            store
+                .message_cache
+                .get(&MessageId {
+                    group_id: gid,
+                    sender,
+                    seq: 3
+                })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn snapshot_cache_cold_read_populates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let gid = GroupId::new([0xE8; 32]);
+
+        {
+            let ks = store.get_keyspaces(&gid);
+            let key = FjallStateStore::build_epoch_key(Epoch(3));
+            ks.snapshots.insert(key, b"direct_snap").unwrap();
+        }
+
+        assert!(store.snapshot_cache.get(&(gid, Epoch(3))).is_none());
+        assert!(store.latest_epoch.read().unwrap().get(&gid).is_none());
+
+        let (epoch, data) = store.get_latest_snapshot_sync(&gid).unwrap();
+        assert_eq!(epoch, Epoch(3));
+        assert_eq!(data, &b"direct_snap"[..]);
+
+        assert!(store.snapshot_cache.get(&(gid, Epoch(3))).is_some());
+        assert_eq!(
+            *store.latest_epoch.read().unwrap().get(&gid).unwrap(),
+            Epoch(3)
+        );
     }
 }

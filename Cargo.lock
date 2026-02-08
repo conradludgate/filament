@@ -1779,6 +1779,7 @@ name = "filament-editor"
 version = "0.1.0"
 dependencies = [
  "bs58",
+ "bytes",
  "filament-core",
  "filament-spool",
  "filament-testing",
@@ -1819,6 +1820,7 @@ dependencies = [
  "mls-rs-crypto-rustcrypto",
  "pin-project-lite",
  "postcard",
+ "quick_cache",
  "rand 0.9.2",
  "serde",
  "serde_json",
@@ -3514,6 +3516,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b875f1dfe14f557f805b167fb9b0fc54c5560c7a4bd6ae02535b2846f276a8cb"
 dependencies = [
  "byteorder-lite",
+ "bytes",
  "byteview",
  "crossbeam-skiplist",
  "enum_dispatch",
@@ -5088,8 +5091,10 @@ version = "0.6.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ada44a88ef953a3294f6eb55d2007ba44646015e18613d2f213016379203ef3"
 dependencies = [
+ "ahash",
  "equivalent",
  "hashbrown 0.16.1",
+ "parking_lot",
 ]
 
 [[package]]

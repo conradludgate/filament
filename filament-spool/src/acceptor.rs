@@ -220,7 +220,7 @@ where
             })?;
 
             let sig_bytes: [u8; Signature::LENGTH] =
-                proposal.signature.as_slice().try_into().map_err(|_| {
+                proposal.signature.as_ref().try_into().map_err(|_| {
                     tracing::debug!("invalid signature length");
                     Report::new(ValidationError).attach({
                         format!(
