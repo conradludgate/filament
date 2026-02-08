@@ -518,6 +518,102 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    #[test]
+    fn group_id_from_array() {
+        let bytes = [7u8; 32];
+        let id: GroupId = bytes.into();
+        assert_eq!(id.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn group_id_as_ref() {
+        let id = GroupId::new([3u8; 32]);
+        let r: &[u8] = id.as_ref();
+        assert_eq!(r, &[3u8; 32]);
+    }
+
+    #[test]
+    fn member_fingerprint_as_ref() {
+        let fp = MemberFingerprint([0xAB; 8]);
+        let r: &[u8] = fp.as_ref();
+        assert_eq!(r, &[0xAB; 8]);
+        assert_eq!(fp.as_bytes(), &[0xAB; 8]);
+    }
+
+    #[test]
+    fn auth_data_from_bytes_versioned() {
+        let ad = AuthData::update(10);
+        let bytes = ad.serialize_versioned(1).unwrap();
+        let decoded = AuthData::from_bytes_versioned(&bytes, 1).unwrap();
+        assert_eq!(decoded.seq(), 10);
+        assert!(AuthData::from_bytes_versioned(&bytes, 99).is_err());
+    }
+
+    #[test]
+    fn message_request_versioned_roundtrip() {
+        let req = MessageRequest::Subscribe {
+            state_vector: BTreeMap::new(),
+        };
+        let bytes = req.serialize_versioned(1).unwrap();
+        let decoded = MessageRequest::deserialize_versioned(1, &bytes).unwrap();
+        assert!(matches!(decoded, MessageRequest::Subscribe { .. }));
+        assert!(MessageRequest::deserialize_versioned(99, &bytes).is_err());
+    }
+
+    #[test]
+    fn message_response_versioned_roundtrip() {
+        let resp = MessageResponse::Stored;
+        let bytes = resp.serialize_versioned(1).unwrap();
+        let decoded = MessageResponse::deserialize_versioned(1, &bytes).unwrap();
+        assert!(matches!(decoded, MessageResponse::Stored));
+        assert!(MessageResponse::deserialize_versioned(99, &bytes).is_err());
+    }
+
+    #[test]
+    fn message_response_versioned_unknown_serialize() {
+        let resp = MessageResponse::Stored;
+        assert!(resp.serialize_versioned(99).is_err());
+        let req = MessageRequest::Subscribe {
+            state_vector: BTreeMap::new(),
+        };
+        assert!(req.serialize_versioned(99).is_err());
+    }
+
+    #[test]
+    fn handshake_response_roundtrip() {
+        for variant in [
+            HandshakeResponse::Ok,
+            HandshakeResponse::GroupNotFound,
+            HandshakeResponse::InvalidGroupInfo("bad".into()),
+            HandshakeResponse::Error("err".into()),
+        ] {
+            let bytes = postcard::to_allocvec(&variant).unwrap();
+            let _decoded: HandshakeResponse = postcard::from_bytes(&bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn handshake_variants_roundtrip() {
+        let variants: Vec<Handshake> = vec![
+            Handshake::CreateGroup(vec![1, 2, 3]),
+            Handshake::JoinMessages(GroupId::new([0; 32]), MemberFingerprint([1; 8])),
+            Handshake::SendWelcome(vec![4, 5, 6]),
+        ];
+        for h in variants {
+            let bytes = postcard::to_allocvec(&h).unwrap();
+            let _decoded: Handshake = postcard::from_bytes(&bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn stream_type_roundtrip() {
+        for st in [StreamType::Proposals, StreamType::Messages] {
+            let bytes = postcard::to_allocvec(&st).unwrap();
+            let decoded: StreamType = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded, st);
+        }
+    }
 }
 
 mod mls_bytes {

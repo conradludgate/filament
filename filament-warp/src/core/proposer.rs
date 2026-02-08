@@ -218,3 +218,115 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Core = ProposerCore<u64, u64, String, u32>;
+
+    #[test]
+    fn handle_promise_rejected_by_higher() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        let result = core.handle_promise(1, 200, None, |p| *p);
+        assert!(matches!(
+            result,
+            PreparePhaseResult::Rejected {
+                superseded_by: 200,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn handle_promise_ignores_lower_key() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        let result = core.handle_promise(1, 50, None, |p| *p);
+        assert!(matches!(result, PreparePhaseResult::Pending));
+    }
+
+    #[test]
+    fn handle_promise_adopts_highest_accepted() {
+        let mut core: Core = ProposerCore::new(100, "mine".to_string(), 1);
+        let result = core.handle_promise(1, 100, Some((90, "theirs".to_string())), |p| *p);
+        match result {
+            PreparePhaseResult::Quorum { value } => assert_eq!(value, "theirs"),
+            _ => panic!("expected Quorum"),
+        }
+    }
+
+    #[test]
+    fn handle_accepted_superseded_by_higher() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        // Move to accepting phase
+        core.handle_promise(1, 100, None, |p| *p);
+        core.handle_promise(2, 100, None, |p| *p);
+        assert!(core.is_accepting());
+
+        let result = core.handle_accepted(1, Some(200), 100);
+        assert!(matches!(
+            result,
+            AcceptPhaseResult::Rejected {
+                superseded_by: 200
+            }
+        ));
+    }
+
+    #[test]
+    fn handle_accepted_lower_key_pending() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        core.handle_promise(1, 100, None, |p| *p);
+        core.handle_promise(2, 100, None, |p| *p);
+
+        let result = core.handle_accepted(1, Some(50), 100);
+        assert!(matches!(result, AcceptPhaseResult::Pending));
+    }
+
+    #[test]
+    fn handle_accepted_none_key_pending() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        core.handle_promise(1, 100, None, |p| *p);
+        core.handle_promise(2, 100, None, |p| *p);
+
+        let result = core.handle_accepted(1, None, 100);
+        assert!(matches!(result, AcceptPhaseResult::Pending));
+    }
+
+    #[test]
+    fn handle_accepted_wrong_phase() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 3);
+        let result = core.handle_accepted(1, Some(100), 100);
+        assert!(matches!(result, AcceptPhaseResult::Pending));
+    }
+
+    #[test]
+    fn handle_promise_wrong_phase() {
+        let mut core: Core = ProposerCore::new(100, "val".to_string(), 1);
+        core.handle_promise(1, 100, None, |p| *p);
+        assert!(core.is_accepting());
+        let result = core.handle_promise(2, 100, None, |p| *p);
+        assert!(matches!(result, PreparePhaseResult::Pending));
+    }
+
+    #[test]
+    fn proposer_phase_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let phases: Vec<ProposerPhase<u64, u64, String, u32>> = vec![
+            ProposerPhase::Preparing {
+                promises: BTreeMap::new(),
+            },
+            ProposerPhase::Accepting {
+                accepts: std::collections::BTreeSet::new(),
+            },
+            ProposerPhase::Learned,
+            ProposerPhase::Failed { superseded_by: 42 },
+        ];
+        for phase in &phases {
+            let mut h = DefaultHasher::new();
+            phase.hash(&mut h);
+            let _ = h.finish();
+        }
+    }
+}

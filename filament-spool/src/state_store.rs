@@ -1193,4 +1193,104 @@ mod tests {
         assert_eq!(version, 1);
         assert_eq!(decoded, legacy.as_slice());
     }
+
+    #[test]
+    fn shared_store_group_storage_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let shared = SharedFjallStateStore {
+            inner: Arc::new(store),
+        };
+        let gid = GroupId::new([0xAA; 32]);
+        let sizes = shared.group_storage_sizes(&gid);
+        assert_eq!(sizes.accepted_bytes, 0);
+        assert_eq!(sizes.messages_bytes, 0);
+        assert_eq!(sizes.snapshots_bytes, 0);
+    }
+
+    #[test]
+    fn shared_store_database_accessible() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let shared = SharedFjallStateStore {
+            inner: Arc::new(store),
+        };
+        let _db = shared.database();
+    }
+
+    #[test]
+    fn shared_store_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let shared = SharedFjallStateStore {
+            inner: Arc::new(store),
+        };
+        let gid = GroupId::new([0xBB; 32]);
+
+        shared
+            .store_snapshot(&gid, Epoch(0), b"snap")
+            .unwrap();
+        let (epoch, data) = shared.get_latest_snapshot(&gid).unwrap();
+        assert_eq!(epoch, Epoch(0));
+        assert_eq!(data, b"snap");
+
+        let sender = MemberFingerprint([1u8; 8]);
+        let id = MessageId {
+            group_id: gid,
+            sender,
+            seq: 1,
+        };
+        let msg = EncryptedAppMessage {
+            ciphertext: vec![42],
+        };
+        shared.store_app_message(&gid, &id, &msg).unwrap();
+
+        let msgs = shared.get_messages_after(&gid, &StateVector::default());
+        assert_eq!(msgs.len(), 1);
+
+        let groups = shared.list_groups();
+        assert!(groups.contains(&gid));
+
+        let deleted = shared
+            .delete_before_watermark(&gid, &StateVector::default())
+            .unwrap();
+        assert_eq!(deleted, 0);
+
+        let _rx = shared.subscribe_messages(&gid);
+    }
+
+    #[test]
+    fn group_state_store_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+        let shared = SharedFjallStateStore {
+            inner: Arc::new(store),
+        };
+        let gid = GroupId::new([0xCC; 32]);
+        let gs = shared.for_group(gid);
+
+        let message = make_test_message();
+        let proposal = make_test_proposal(Epoch(0));
+
+        shared
+            .inner
+            .set_accepted_sync(&gid, &proposal, &message)
+            .unwrap();
+
+        let accepted = gs.get_accepted_from(Epoch(0));
+        assert_eq!(accepted.len(), 1);
+
+        gs.store_snapshot(Epoch(0), b"snap").unwrap();
+        let (epoch, data) = gs.get_latest_snapshot().unwrap();
+        assert_eq!(epoch, Epoch(0));
+        assert_eq!(data, b"snap");
+
+        let snap = gs.get_snapshot_at_or_before(Epoch(10));
+        assert!(snap.is_some());
+
+        let deleted = gs
+            .delete_before_watermark(&StateVector::default())
+            .unwrap();
+        assert_eq!(deleted, 0);
+    }
 }

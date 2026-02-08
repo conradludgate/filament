@@ -389,4 +389,145 @@ mod tests {
 
         assert!(!proposer.is_proposing());
     }
+
+    #[test]
+    fn test_default_proposer() {
+        let proposer: Proposer<TestLearner> = Proposer::default();
+        assert!(!proposer.is_proposing());
+    }
+
+    #[test]
+    fn test_receive_no_active_proposal() {
+        let mut proposer: Proposer<TestLearner> = Proposer::new();
+        let learner = TestLearner {
+            node_id: 1,
+            round: 0,
+            acceptors: vec![100],
+        };
+        let response = AcceptorMessage {
+            promised: TestProposal {
+                node: 1,
+                round: 0,
+                attempt: 0,
+            },
+            accepted: None,
+        };
+        let result = proposer.receive(&learner, 100, response);
+        assert!(matches!(result, ProposeResult::Continue(msgs) if msgs.is_empty()));
+    }
+
+    #[test]
+    fn test_accept_phase_rejection() {
+        let mut proposer: Proposer<TestLearner> = Proposer::new();
+        let learner = TestLearner {
+            node_id: 1,
+            round: 0,
+            acceptors: vec![100],
+        };
+        let message = TestMessage("hello".into());
+
+        proposer.propose(&learner, 0, message.clone());
+
+        // Promise succeeds → moves to accept phase
+        let promise_response = AcceptorMessage {
+            promised: TestProposal {
+                node: 1,
+                round: 0,
+                attempt: 0,
+            },
+            accepted: None,
+        };
+        let result = proposer.receive(&learner, 100, promise_response);
+        assert!(matches!(result, ProposeResult::Continue(msgs) if !msgs.is_empty()));
+
+        // Accept response shows a higher proposal → rejected
+        let accept_response = AcceptorMessage {
+            promised: TestProposal {
+                node: 2,
+                round: 0,
+                attempt: 5,
+            },
+            accepted: Some((
+                TestProposal {
+                    node: 2,
+                    round: 0,
+                    attempt: 5,
+                },
+                TestMessage("other".into()),
+            )),
+        };
+        let result = proposer.receive(&learner, 100, accept_response);
+        match result {
+            ProposeResult::Rejected { superseded_by } => {
+                assert_eq!(superseded_by.attempt(), 5);
+            }
+            _ => panic!("expected Rejected"),
+        }
+        assert!(!proposer.is_proposing());
+    }
+
+    #[test]
+    fn test_receive_after_learned() {
+        let mut proposer: Proposer<TestLearner> = Proposer::new();
+        let learner = TestLearner {
+            node_id: 1,
+            round: 0,
+            acceptors: vec![100],
+        };
+        let message = TestMessage("hello".into());
+
+        proposer.propose(&learner, 0, message.clone());
+
+        // Promise
+        let r = proposer.receive(
+            &learner,
+            100,
+            AcceptorMessage {
+                promised: TestProposal {
+                    node: 1,
+                    round: 0,
+                    attempt: 0,
+                },
+                accepted: None,
+            },
+        );
+        assert!(matches!(r, ProposeResult::Continue(_)));
+
+        // Accept → Learned
+        let r = proposer.receive(
+            &learner,
+            100,
+            AcceptorMessage {
+                promised: TestProposal {
+                    node: 1,
+                    round: 0,
+                    attempt: 0,
+                },
+                accepted: Some((
+                    TestProposal {
+                        node: 1,
+                        round: 0,
+                        attempt: 0,
+                    },
+                    message.clone(),
+                )),
+            },
+        );
+        assert!(matches!(r, ProposeResult::Learned { .. }));
+
+        // Another receive after learned → no active proposal
+        let r = proposer.receive(
+            &learner,
+            100,
+            AcceptorMessage {
+                promised: TestProposal {
+                    node: 1,
+                    round: 0,
+                    attempt: 0,
+                },
+                accepted: None,
+            },
+        );
+        assert!(matches!(r, ProposeResult::Continue(msgs) if msgs.is_empty()));
+    }
 }

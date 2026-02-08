@@ -271,4 +271,52 @@ mod tests {
         assert!(!core.accepted.contains_key(&1));
         assert_eq!(core.promised.get(&1), Some(&100));
     }
+
+    #[test]
+    fn test_get_empty() {
+        let core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        let (promised, accepted) = core.get(1);
+        assert!(promised.is_none());
+        assert!(accepted.is_none());
+    }
+
+    #[test]
+    fn test_get_after_prepare_and_accept() {
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        core.prepare(1, 100);
+        core.accept(1, 100, "hi".to_string());
+        let (promised, accepted) = core.get(1);
+        assert_eq!(promised, Some(100));
+        assert_eq!(accepted, Some((100, "hi".to_string())));
+    }
+
+    #[test]
+    fn test_handle_request_prepare() {
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        let resp = core.handle_request(AcceptorRequest::Prepare(100), |p| *p / 10);
+        assert_eq!(resp.for_proposal, 100);
+        assert_eq!(resp.promised, Some(100));
+        assert!(resp.accepted.is_none());
+    }
+
+    #[test]
+    fn test_handle_request_accept_success() {
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        core.handle_request(AcceptorRequest::Prepare(100), |_| 1u64);
+        let resp =
+            core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
+        assert_eq!(resp.promised, Some(100));
+        assert_eq!(resp.accepted, Some((100, "val".to_string())));
+    }
+
+    #[test]
+    fn test_handle_request_accept_rejected() {
+        let mut core: AcceptorCore<u64, u64, String> = AcceptorCore::new();
+        core.handle_request(AcceptorRequest::Prepare(200), |_| 1u64);
+        let resp =
+            core.handle_request(AcceptorRequest::Accept(100, "val".to_string()), |_| 1u64);
+        assert_eq!(resp.for_proposal, 100);
+        assert_eq!(resp.promised, Some(200));
+        assert!(resp.accepted.is_none());
+    }
 }

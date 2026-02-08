@@ -148,3 +148,158 @@ impl<L: Learner> AcceptorMessage<L> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Proposal, Validated, ValidationError};
+    use error_stack::Report;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TP {
+        node: u32,
+        round: u64,
+        attempt: u32,
+    }
+
+    impl Proposal for TP {
+        type NodeId = u32;
+        type RoundId = u64;
+        type AttemptId = u32;
+        fn node_id(&self) -> u32 {
+            self.node
+        }
+        fn round(&self) -> u64 {
+            self.round
+        }
+        fn attempt(&self) -> u32 {
+            self.attempt
+        }
+        fn next_attempt(a: u32) -> u32 {
+            a + 1
+        }
+    }
+
+    struct TL;
+    impl Learner for TL {
+        type Proposal = TP;
+        type Message = String;
+        type Error = std::io::Error;
+        type AcceptorId = u32;
+        fn node_id(&self) -> u32 {
+            0
+        }
+        fn current_round(&self) -> u64 {
+            0
+        }
+        fn acceptors(&self) -> impl IntoIterator<Item = u32, IntoIter: ExactSizeIterator> {
+            vec![]
+        }
+        fn propose(&self, _a: u32) -> TP {
+            TP {
+                node: 0,
+                round: 0,
+                attempt: 0,
+            }
+        }
+        fn validate(&self, _: &TP) -> Result<Validated, Report<ValidationError>> {
+            Ok(Validated::assert_valid())
+        }
+        async fn apply(&mut self, _: TP, _: String) -> Result<(), std::io::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn round_state_default() {
+        let rs = RoundState::<TL>::default();
+        assert!(rs.promised.is_none());
+        assert!(rs.accepted.is_none());
+    }
+
+    #[test]
+    fn round_state_clone() {
+        let rs = RoundState::<TL> {
+            promised: Some(TP {
+                node: 1,
+                round: 2,
+                attempt: 3,
+            }),
+            accepted: Some((
+                TP {
+                    node: 1,
+                    round: 2,
+                    attempt: 3,
+                },
+                "hello".to_string(),
+            )),
+        };
+        let cloned = rs.clone();
+        assert_eq!(cloned.promised, rs.promised);
+        assert_eq!(cloned.accepted, rs.accepted);
+    }
+
+    #[test]
+    fn acceptor_request_clone() {
+        let req: AcceptorRequest<TL> = AcceptorRequest::Prepare(TP {
+            node: 1,
+            round: 0,
+            attempt: 0,
+        });
+        let cloned = req.clone();
+        assert!(matches!(cloned, AcceptorRequest::Prepare(_)));
+
+        let req2: AcceptorRequest<TL> = AcceptorRequest::Accept(
+            TP {
+                node: 1,
+                round: 0,
+                attempt: 0,
+            },
+            "msg".to_string(),
+        );
+        let cloned2 = req2.clone();
+        assert!(matches!(cloned2, AcceptorRequest::Accept(_, _)));
+    }
+
+    #[test]
+    fn acceptor_message_debug_and_clone() {
+        let msg: AcceptorMessage<TL> = AcceptorMessage {
+            promised: TP {
+                node: 1,
+                round: 0,
+                attempt: 0,
+            },
+            accepted: None,
+        };
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("AcceptorMessage"));
+
+        let cloned = msg.clone();
+        assert_eq!(cloned.promised, msg.promised);
+    }
+
+    #[test]
+    fn acceptor_message_from_round_state() {
+        let rs = RoundState::<TL> {
+            promised: Some(TP {
+                node: 1,
+                round: 2,
+                attempt: 3,
+            }),
+            accepted: None,
+        };
+        let msg = AcceptorMessage::from_round_state(rs);
+        assert_eq!(msg.promised.node, 1);
+        assert!(msg.accepted.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "response must have a promised proposal")]
+    fn acceptor_message_from_round_state_panics_without_promise() {
+        let rs = RoundState::<TL> {
+            promised: None,
+            accepted: None,
+        };
+        let _ = AcceptorMessage::from_round_state(rs);
+    }
+}

@@ -309,4 +309,34 @@ mod tests {
         codec.set_protocol_version(2);
         assert_eq!(codec.protocol_version(), 2);
     }
+
+    #[test]
+    fn postcard_codec_clone() {
+        let codec = PostcardCodec::<String>::new();
+        let mut cloned = codec.clone();
+        let mut buf = BytesMut::new();
+        cloned.encode("hello".to_string(), &mut buf).unwrap();
+        let decoded: String = cloned.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(decoded, "hello");
+    }
+
+    #[test]
+    fn postcard_codec_default() {
+        let mut codec = PostcardCodec::<u32>::default();
+        let mut buf = BytesMut::new();
+        codec.encode(42u32, &mut buf).unwrap();
+        let decoded = codec.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(decoded, 42);
+    }
+
+    #[test]
+    fn versioned_codec_wrap() {
+        use tokio_util::codec::LengthDelimitedCodec;
+        let inner = LengthDelimitedCodec::new();
+        let mut codec: VersionedCodec<MessageResponse> = VersionedCodec::wrap(inner, 1);
+        let mut buf = BytesMut::new();
+        codec.encode(MessageResponse::Stored, &mut buf).unwrap();
+        let decoded = codec.decode(&mut buf).unwrap().unwrap();
+        assert!(matches!(decoded, MessageResponse::Stored));
+    }
 }

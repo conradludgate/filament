@@ -156,3 +156,61 @@ where
         + Stream<Item = Result<AcceptorMessage<L>, L::Error>>,
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+
+    #[test]
+    fn validation_error_display() {
+        assert_eq!(ValidationError.to_string(), "proposal validation failed");
+        let _: &dyn std::error::Error = &ValidationError;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct P {
+        node: u32,
+        round: u64,
+        attempt: u32,
+    }
+
+    impl Proposal for P {
+        type NodeId = u32;
+        type RoundId = u64;
+        type AttemptId = u32;
+        fn node_id(&self) -> u32 {
+            self.node
+        }
+        fn round(&self) -> u64 {
+            self.round
+        }
+        fn attempt(&self) -> u32 {
+            self.attempt
+        }
+        fn next_attempt(a: u32) -> u32 {
+            a + 1
+        }
+    }
+
+    fn hash_of(k: &ProposalKey<P>) -> u64 {
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        k.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn proposal_key_hash_eq() {
+        let k1 = ProposalKey::<P>::new(1, 2, 3);
+        let k2 = ProposalKey::<P>::new(1, 2, 3);
+        assert_eq!(hash_of(&k1), hash_of(&k2));
+    }
+
+    #[test]
+    fn proposal_key_hash_ne() {
+        let k1 = ProposalKey::<P>::new(1, 2, 3);
+        let k2 = ProposalKey::<P>::new(1, 2, 4);
+        assert_ne!(hash_of(&k1), hash_of(&k2));
+    }
+}

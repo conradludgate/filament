@@ -154,3 +154,71 @@ impl Versioned for GroupProposal {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filament_warp::Proposal as _;
+
+    #[test]
+    fn unsigned_proposal_roundtrip() {
+        let p = UnsignedProposal::new(MemberId(1), Epoch(2), Attempt(3), [0xAA; 32]);
+        let bytes = p.to_bytes();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn unsigned_for_sync_has_zero_hash() {
+        let p = UnsignedProposal::for_sync(MemberId(1), Epoch(0), Attempt(0));
+        assert_eq!(p.message_hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn group_proposal_is_sync() {
+        let sync = UnsignedProposal::for_sync(MemberId(1), Epoch(0), Attempt(0))
+            .with_signature(vec![1, 2, 3]);
+        assert!(sync.is_sync());
+
+        let non_sync = UnsignedProposal::new(MemberId(1), Epoch(0), Attempt(0), [1u8; 32])
+            .with_signature(vec![1, 2, 3]);
+        assert!(!non_sync.is_sync());
+    }
+
+    #[test]
+    fn group_proposal_unsigned_roundtrip() {
+        let gp = UnsignedProposal::new(MemberId(5), Epoch(10), Attempt(2), [0xBB; 32])
+            .with_signature(vec![9, 8, 7]);
+        let unsigned = gp.unsigned();
+        assert_eq!(unsigned.member_id, MemberId(5));
+        assert_eq!(unsigned.epoch, Epoch(10));
+        assert_eq!(unsigned.attempt, Attempt(2));
+        assert_eq!(unsigned.message_hash, [0xBB; 32]);
+    }
+
+    #[test]
+    fn proposal_trait_impls() {
+        let gp = UnsignedProposal::new(MemberId(1), Epoch(5), Attempt(3), [0; 32])
+            .with_signature(vec![]);
+        assert_eq!(gp.node_id(), MemberId(1));
+        assert_eq!(gp.round(), Epoch(5));
+        assert_eq!(gp.attempt(), Attempt(3));
+        assert_eq!(GroupProposal::next_attempt(Attempt(3)), Attempt(4));
+    }
+
+    #[test]
+    fn versioned_roundtrip() {
+        let gp = UnsignedProposal::new(MemberId(1), Epoch(0), Attempt(0), [0; 32])
+            .with_signature(vec![1, 2]);
+        let bytes = gp.serialize_versioned(1).unwrap();
+        let decoded = GroupProposal::deserialize_versioned(1, &bytes).unwrap();
+        assert_eq!(decoded.member_id, MemberId(1));
+    }
+
+    #[test]
+    fn versioned_unknown_version() {
+        let gp = UnsignedProposal::new(MemberId(1), Epoch(0), Attempt(0), [0; 32])
+            .with_signature(vec![]);
+        assert!(gp.serialize_versioned(99).is_err());
+        assert!(GroupProposal::deserialize_versioned(99, &[0]).is_err());
+    }
+}

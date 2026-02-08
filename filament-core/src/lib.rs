@@ -78,3 +78,60 @@ pub fn load_secret_key(path: impl AsRef<Path>) -> Result<[u8; 32], Report<KeyLoa
         Report::new(KeyLoadError).attach(format!("expected 32 bytes, got {}", v.len()))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_load_error_display() {
+        assert_eq!(KeyLoadError.to_string(), "failed to load secret key");
+        let _: &dyn std::error::Error = &KeyLoadError;
+    }
+
+    #[test]
+    fn load_secret_key_raw_bytes() {
+        let dir = std::env::temp_dir().join("filament_test_raw_key");
+        let key = [42u8; 32];
+        std::fs::write(&dir, key).unwrap();
+        let loaded = load_secret_key(&dir).unwrap();
+        assert_eq!(loaded, key);
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn load_secret_key_base58() {
+        let dir = std::env::temp_dir().join("filament_test_b58_key");
+        let key = [1u8; 32];
+        let encoded = bs58::encode(key).into_string();
+        std::fs::write(&dir, encoded).unwrap();
+        let loaded = load_secret_key(&dir).unwrap();
+        assert_eq!(loaded, key);
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn load_secret_key_missing_file() {
+        let result = load_secret_key("/tmp/nonexistent_filament_key_file");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_secret_key_invalid_base58() {
+        let dir = std::env::temp_dir().join("filament_test_bad_b58");
+        std::fs::write(&dir, "not-valid-base58!!!").unwrap();
+        let result = load_secret_key(&dir);
+        assert!(result.is_err());
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn load_secret_key_wrong_length_base58() {
+        let dir = std::env::temp_dir().join("filament_test_short_b58");
+        let short = bs58::encode([1u8; 16]).into_string();
+        std::fs::write(&dir, short).unwrap();
+        let result = load_secret_key(&dir);
+        assert!(result.is_err());
+        std::fs::remove_file(&dir).ok();
+    }
+}

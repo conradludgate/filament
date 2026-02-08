@@ -157,3 +157,51 @@ impl OperationContext {
         operation: "processing MLS message",
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connector_error_display() {
+        assert_eq!(ConnectorError.to_string(), "connection failed");
+        // Also covers std::error::Error impl
+        let _: &dyn std::error::Error = &ConnectorError;
+    }
+
+    #[test]
+    fn group_context_display() {
+        let ctx = GroupContext::new(GroupId::new([0xAB; 32]));
+        let s = ctx.to_string();
+        assert!(s.starts_with("group: "));
+    }
+
+    #[test]
+    fn acceptor_context_display() {
+        let ctx = AcceptorContext::new(AcceptorId([0xCD; 32]));
+        let s = ctx.to_string();
+        assert!(s.starts_with("acceptor: "));
+    }
+
+    #[test]
+    fn epoch_context_display() {
+        let ctx = EpochContext::new(Epoch(42));
+        assert_eq!(ctx.to_string(), "epoch: 42");
+    }
+
+    #[test]
+    fn member_context_display() {
+        let ctx = MemberContext::new(MemberId(7));
+        assert_eq!(ctx.to_string(), "member index: 7");
+    }
+
+    #[test]
+    fn operation_context_display() {
+        let ctx = OperationContext::new("testing");
+        assert_eq!(ctx.to_string(), "while testing");
+        assert_eq!(
+            OperationContext::CREATING_GROUP.to_string(),
+            "while creating group"
+        );
+    }
+}
