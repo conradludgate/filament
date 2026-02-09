@@ -138,6 +138,7 @@ impl<L: Learner> Clone for AcceptorMessage<L> {
 impl<L: Learner> AcceptorMessage<L> {
     /// # Panics
     /// Panics if `promised` is None, which should never happen for valid responses.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn from_round_state(state: RoundState<L>) -> Self {
         Self {

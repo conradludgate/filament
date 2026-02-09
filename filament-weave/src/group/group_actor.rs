@@ -458,6 +458,21 @@ where
         false
     }
 
+    /// Probabilistic leader election for compaction: hash the epoch and level
+    /// to pick one member from the roster. Returns true if this member is the
+    /// chosen compactor, giving an expected collision rate of ~1/N.
+    fn should_drive_compaction(&self, level: u8) -> bool {
+        let member_count = self.learner.group().roster().members().len();
+        if member_count == 0 {
+            return false;
+        }
+        let my_index = self.learner.group().current_member_index() as usize;
+        let epoch = self.learner.mls_epoch().0;
+
+        let hash = xxhash_rust::xxh3::xxh3_64(&[&epoch.to_le_bytes()[..], &[level]].concat());
+        hash % (member_count as u64) == (my_index % member_count) as u64
+    }
+
     fn get_context(&self) -> WeaverContext {
         let mls_context = self.learner.group().context();
         let my_index = self.learner.group().current_member_index();
@@ -680,6 +695,7 @@ where
         if !self.acceptor_txs.is_empty()
             && let Some(level) = self.compaction_state.cascade_target()
             && !self.compaction_state.has_active_claim(level)
+            && self.should_drive_compaction(level)
         {
             let _ = self.event_tx.send(WeaverEvent::CompactionNeeded {
                 level,

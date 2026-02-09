@@ -70,16 +70,18 @@ where
         match self.state.promise(proposal).await {
             Ok(()) => {
                 trace!(round = ?proposal.round(), "promised");
-                let state = self.state.get(proposal.round()).await;
-                Ok(PromiseOutcome::Promised(AcceptorMessage::from_round_state(
-                    state,
-                )))
+                let accepted = self.state.get(proposal.round()).await.accepted;
+                Ok(PromiseOutcome::Promised(AcceptorMessage {
+                    promised: proposal.clone(),
+                    accepted,
+                }))
             }
             Err(round_state) => {
                 trace!(round = ?proposal.round(), "promise rejected - outdated");
-                Ok(PromiseOutcome::Outdated(AcceptorMessage::from_round_state(
-                    round_state,
-                )))
+                Ok(PromiseOutcome::Outdated(AcceptorMessage {
+                    promised: round_state.promised.unwrap_or_else(|| proposal.clone()),
+                    accepted: round_state.accepted,
+                }))
             }
         }
     }
@@ -98,16 +100,18 @@ where
         match self.state.accept(proposal, message).await {
             Ok(()) => {
                 trace!(round = ?proposal.round(), "accepted");
-                let state = self.state.get(proposal.round()).await;
-                Ok(AcceptOutcome::Accepted(AcceptorMessage::from_round_state(
-                    state,
-                )))
+                let accepted = self.state.get(proposal.round()).await.accepted;
+                Ok(AcceptOutcome::Accepted(AcceptorMessage {
+                    promised: proposal.clone(),
+                    accepted,
+                }))
             }
             Err(round_state) => {
                 trace!(round = ?proposal.round(), "accept rejected - outdated");
-                Ok(AcceptOutcome::Outdated(AcceptorMessage::from_round_state(
-                    round_state,
-                )))
+                Ok(AcceptOutcome::Outdated(AcceptorMessage {
+                    promised: round_state.promised.unwrap_or_else(|| proposal.clone()),
+                    accepted: round_state.accepted,
+                }))
             }
         }
     }

@@ -39,6 +39,10 @@ documented in `.cursor/rules/paxos.mdc`.
 
 See [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md).
 
+### Acceptor Promise Race
+
+See [ACCEPTOR-PROMISE-RACE.md](ACCEPTOR-PROMISE-RACE.md).
+
 ### Proposer Crash Recovery
 
 See [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md).
@@ -62,6 +66,14 @@ it and must receive N first. This interacts with the commit catch-up gap.
 MLS retains old epoch keys, so messages encrypted with epoch N can be
 decrypted after advancing to epoch N+1. Messages that fail to decrypt are
 buffered (up to 10 attempts) and retried after epoch advances.
+
+### Out-of-Order Application Messages
+
+The `out_of_order` feature is enabled on mls-rs. This allows the MLS
+secret tree to store intermediate keys when messages arrive out of order
+within the same epoch (up to `MAX_RATCHET_BACK_HISTORY = 1024` skipped
+generations per sender). Without this feature, receiving generation N
+before generation M (where M < N) permanently destroys key M.
 
 ## CRDT & Application Messages
 
@@ -118,6 +130,10 @@ See [KEY-ROTATION.md](KEY-ROTATION.md).
 
 ## Compaction & Offline Recovery
 
+### Compaction Leader Election
+
+See [COMPACTION-LEADER-ELECTION.md](COMPACTION-LEADER-ELECTION.md).
+
 Compacted snapshots are stored as regular messages with `AuthData::Compaction`
 metadata. When old messages are deleted via `delete_before_watermark`, the
 compacted snapshot remains. Devices backfill with their `StateVector`, receive
@@ -170,6 +186,10 @@ All issues identified in this review have been implemented.
 | Issue | Severity | Status | Document |
 |-------|----------|--------|----------|
 | No proactive commit catch-up on proposer reconnect | **High** | **Implemented** | [COMMIT-CATCHUP.md](COMMIT-CATCHUP.md) |
+| Acceptor promise sentinel TOCTOU panic | **High** | **Implemented** | [ACCEPTOR-PROMISE-RACE.md](ACCEPTOR-PROMISE-RACE.md) |
+| All members drive compaction simultaneously | **Medium** | **Implemented** | [COMPACTION-LEADER-ELECTION.md](COMPACTION-LEADER-ELECTION.md) |
 | Removed member edits silently dropped | **Medium** | **Implemented** | [REMOVED-MEMBER-EDITS.md](REMOVED-MEMBER-EDITS.md) |
+| Out-of-order app messages cause permanent key loss | **Medium** | **Implemented** | mls-rs `out_of_order` feature enabled |
+| Pending message retries only on epoch advance | **Low** | **Implemented** | — |
 | Backoff is linear, no jitter, max 3 retries | **Low** | **Implemented** | [BACKOFF-AND-CONTENTION.md](BACKOFF-AND-CONTENTION.md) |
 | No time-based key rotation floor | **Low** | **Implemented** | [KEY-ROTATION.md](KEY-ROTATION.md) |
