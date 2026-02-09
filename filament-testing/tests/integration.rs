@@ -1876,19 +1876,14 @@ async fn test_concurrent_writers_compaction() {
     // Wait for Bob to stabilize
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Alice writes 20 messages → triggers compaction
+    // Alice writes 20 messages then compacts
     for i in 0..20 {
         yrs_insert_and_send(&mut alice_group, &mut alice_crdt, i * 2, "A+").await;
     }
-
-    // Wait for Alice's CompactionNeeded and handle it
-    let compaction_event = wait_for_event(
-        &mut alice_events,
-        |e| matches!(e, WeaverEvent::CompactionNeeded { .. }),
-        10,
-    )
-    .await;
-    handle_compaction_event(&mut alice_group, &mut alice_crdt, &compaction_event).await;
+    alice_group
+        .force_compact(&mut alice_crdt, 1)
+        .await
+        .expect("alice compact");
 
     // Wait for Alice's compaction to fire
     wait_for_event(
@@ -1901,22 +1896,17 @@ async fn test_concurrent_writers_compaction() {
     // Wait for Bob to sync Alice's updates + compaction epoch advance
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
-    // Now Bob writes 20 messages → triggers his own compaction
-    let mut bob_events = bob_group.subscribe();
+    // Now Bob writes 20 messages then compacts
     for i in 0..20 {
         yrs_insert_and_send(&mut bob_group, &mut bob_crdt, i * 2, "B+").await;
     }
+    bob_group
+        .force_compact(&mut bob_crdt, 1)
+        .await
+        .expect("bob compact");
 
-    // Wait for Bob's CompactionNeeded and handle it
-    let compaction_event = wait_for_event(
-        &mut bob_events,
-        |e| matches!(e, WeaverEvent::CompactionNeeded { .. }),
-        10,
-    )
-    .await;
-    handle_compaction_event(&mut bob_group, &mut bob_crdt, &compaction_event).await;
-
-    // Wait for Bob's compaction
+    // Wait for Bob's compaction to be committed
+    let mut bob_events = bob_group.subscribe();
     wait_for_event(
         &mut bob_events,
         |e| matches!(e, WeaverEvent::CompactionCompleted { .. }),
