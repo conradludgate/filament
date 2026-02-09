@@ -324,11 +324,6 @@ impl MlsCodecExtension for GroupInfoExt {
 pub enum SyncProposal {
     AcceptorAdd(AcceptorId),
     AcceptorRemove(AcceptorId),
-    CompactionClaim {
-        level: u8,
-        watermark: BTreeMap<MemberFingerprint, u64>,
-        deadline: u64,
-    },
     CompactionComplete {
         level: u8,
         watermark: BTreeMap<MemberFingerprint, u64>,
@@ -344,19 +339,6 @@ impl SyncProposal {
     #[must_use]
     pub fn acceptor_remove(id: AcceptorId) -> Self {
         Self::AcceptorRemove(id)
-    }
-
-    #[must_use]
-    pub fn compaction_claim(
-        level: u8,
-        watermark: BTreeMap<MemberFingerprint, u64>,
-        deadline: u64,
-    ) -> Self {
-        Self::CompactionClaim {
-            level,
-            watermark,
-            deadline,
-        }
     }
 
     #[must_use]
@@ -538,18 +520,6 @@ mod tests {
     fn sync_proposal_acceptor_remove_roundtrip() {
         let id = AcceptorId::from_bytes([42u8; 32]);
         let proposal = SyncProposal::acceptor_remove(id);
-
-        let custom = proposal.to_custom_proposal().unwrap();
-        let decoded = SyncProposal::from_custom_proposal(&custom).unwrap();
-        assert_eq!(decoded, proposal);
-    }
-
-    #[test]
-    fn sync_proposal_compaction_claim_roundtrip() {
-        let mut watermark = BTreeMap::new();
-        watermark.insert(MemberFingerprint([1u8; 8]), 42);
-        watermark.insert(MemberFingerprint([2u8; 8]), 100);
-        let proposal = SyncProposal::compaction_claim(1, watermark, 1_700_000_000);
 
         let custom = proposal.to_custom_proposal().unwrap();
         let decoded = SyncProposal::from_custom_proposal(&custom).unwrap();

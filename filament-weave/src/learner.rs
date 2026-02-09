@@ -184,7 +184,7 @@ where
                         tracing::debug!(?id, "removing acceptor");
                         self.remove_acceptor(&id);
                     }
-                    _ => {}
+                    SyncProposal::CompactionComplete { .. } => {}
                 }
             }
         }

@@ -105,6 +105,7 @@ enum GroupRequest {
     CompactSnapshot {
         snapshot: bytes::Bytes,
         level: u8,
+        force: bool,
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     },
     GenerateExternalGroupInfo {
@@ -174,9 +175,6 @@ pub enum WeaverEvent {
     ExtensionsUpdated,
     /// The MLS epoch advanced after a commit was applied.
     EpochAdvanced { epoch: u64 },
-    /// A compaction lease was claimed at this level. Another device is
-    /// compacting; no action required.
-    CompactionClaimed { level: u8 },
     /// Compaction finished at this level. Superseded messages will be
     /// garbage-collected by acceptors.
     CompactionCompleted { level: u8 },
@@ -862,6 +860,7 @@ impl Weaver {
             .send(GroupRequest::CompactSnapshot {
                 snapshot,
                 level,
+                force,
                 reply: reply_tx,
             })
             .await

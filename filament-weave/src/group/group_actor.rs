@@ -85,27 +85,9 @@ struct WelcomeToSend {
     reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
 }
 
-/// Tracks an active compaction claim at a given level.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct ActiveCompactionClaim {
-    /// Who claimed the compaction.
-    claimer: MemberFingerprint,
-    /// The level being compacted.
-    level: u8,
-    /// The watermark (state vector) at the time of the claim.
-    watermark: StateVector,
-    /// When the claim expires (unix seconds).
-    deadline: u64,
-    /// Whether this is our own claim.
-    is_ours: bool,
-}
-
 /// Tracks compaction state for the group.
 #[derive(Debug, Default)]
 struct CompactionState {
-    /// Active claim per level (only one compaction at a time per level).
-    active_claims: HashMap<u8, ActiveCompactionClaim>,
     /// Per-level counters: `counts[N]` is the number of entries produced at
     /// level N-1 since the last compaction *into* level N. Index 0 is unused.
     counts: Vec<u64>,
@@ -118,33 +100,10 @@ struct CompactionState {
 impl CompactionState {
     fn new() -> Self {
         Self {
-            active_claims: HashMap::new(),
             counts: vec![0, 0],
             last_compacted_watermark: StateVector::new(),
             max_compacted_level: 0,
         }
-    }
-
-    /// Returns true if there is an active, non-expired claim at the given level.
-    fn has_active_claim(&self, level: u8) -> bool {
-        self.active_claims.get(&level).is_some_and(|claim| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            now < claim.deadline
-        })
-    }
-
-    /// Remove expired claims.
-    #[allow(dead_code)]
-    fn prune_expired_claims(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        self.active_claims.retain(|_, claim| now < claim.deadline);
     }
 
     /// Record that one entry was produced at `level` (L0 message sent, or
@@ -201,11 +160,6 @@ impl CompactionState {
 
 const MAX_PROPOSAL_RETRIES: u32 = 6;
 const PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Default deadline for compaction claims (seconds from now).
-// Deadline for optimistic compaction claims (kept for future use)
-#[allow(dead_code)]
-const COMPACTION_DEADLINE_SECS: u64 = 120;
-
 fn exponential_backoff_duration(retries: u32) -> std::time::Duration {
     const BASE_MS: u64 = 10;
     const MAX_EXPONENT: u32 = 6;
@@ -434,9 +388,11 @@ where
             GroupRequest::CompactSnapshot {
                 snapshot,
                 level,
+                force,
                 reply,
             } => {
-                self.handle_compact_snapshot(snapshot, level, reply).await;
+                self.handle_compact_snapshot(snapshot, level, force, reply)
+                    .await;
             }
             GroupRequest::GenerateExternalGroupInfo { reply } => {
                 let result = blocking(|| {
@@ -461,18 +417,24 @@ where
         false
     }
 
-    /// Probabilistic leader election for compaction: hash the epoch and level
-    /// to pick one member from the roster. Returns true if this member is the
-    /// chosen compactor, giving an expected collision rate of ~1/N.
+    /// Probabilistic leader election for compaction: hash the state vector
+    /// (divided by `COMPACTION_BASE`) and level to pick one member from the
+    /// roster. The chosen compactor rotates as more messages are sent.
     fn should_drive_compaction(&self, level: u8) -> bool {
         let member_count = self.learner.group().roster().members().len();
         if member_count == 0 {
             return false;
         }
         let my_index = self.learner.group().current_member_index() as usize;
-        let epoch = self.learner.mls_epoch().0;
 
-        let hash = xxhash_rust::xxh3::xxh3_64(&[&epoch.to_le_bytes()[..], &[level]].concat());
+        let divisor = u64::from(COMPACTION_BASE);
+        let mut hasher_input = Vec::new();
+        hasher_input.push(level);
+        for (fp, &seq) in &self.state_vector {
+            hasher_input.extend_from_slice(&fp.0);
+            hasher_input.extend_from_slice(&(seq / divisor).to_le_bytes());
+        }
+        let hash = xxhash_rust::xxh3::xxh3_64(&hasher_input);
         hash % (member_count as u64) == (my_index % member_count) as u64
     }
 
@@ -698,7 +660,6 @@ where
 
         if !self.acceptor_txs.is_empty()
             && let Some(level) = self.compaction_state.cascade_target()
-            && !self.compaction_state.has_active_claim(level)
             && self.should_drive_compaction(level)
         {
             let _ = self.event_tx.send(WeaverEvent::CompactionNeeded {
@@ -1316,12 +1277,13 @@ where
 
         for proposal_info in applied_proposals {
             let event = match &proposal_info.proposal {
-                MlsProposal::Add(add_proposal) => {
-                    let _ = add_proposal;
-                    let level = self.compaction_state.max_compacted_level.max(1);
-                    let _ = self
-                        .event_tx
-                        .send(WeaverEvent::CompactionNeeded { level, force: true });
+                MlsProposal::Add(_) => {
+                    if committer_fingerprint == Some(self.own_fingerprint) {
+                        let level = self.compaction_state.max_compacted_level.max(1);
+                        let _ = self
+                            .event_tx
+                            .send(WeaverEvent::CompactionNeeded { level, force: true });
+                    }
                     WeaverEvent::MemberAdded { index: 0 }
                 }
                 MlsProposal::Remove(remove_proposal) => WeaverEvent::MemberRemoved {
@@ -1355,7 +1317,7 @@ where
     fn process_custom_proposal(
         &mut self,
         custom: &mls_rs::group::proposal::CustomProposal,
-        committer_fingerprint: Option<MemberFingerprint>,
+        _committer_fingerprint: Option<MemberFingerprint>,
         new_acceptors: &mut Vec<AcceptorId>,
     ) -> WeaverEvent {
         let Ok(proposal) = SyncProposal::from_custom_proposal(custom) else {
@@ -1377,42 +1339,12 @@ where
                 self.connected_acceptors.remove(&id);
                 WeaverEvent::SpoolRemoved { id }
             }
-            SyncProposal::CompactionClaim {
-                level,
-                watermark,
-                deadline,
-            } => {
-                tracing::info!(
-                    level,
-                    deadline,
-                    watermark_entries = watermark.len(),
-                    "received CompactionClaim"
-                );
-
-                let is_ours = committer_fingerprint.is_some_and(|fp| fp == self.own_fingerprint);
-
-                let active_claim = ActiveCompactionClaim {
-                    claimer: committer_fingerprint.unwrap_or(self.own_fingerprint),
-                    level,
-                    watermark: watermark.clone(),
-                    deadline,
-                    is_ours,
-                };
-
-                self.compaction_state
-                    .active_claims
-                    .insert(level, active_claim);
-
-                WeaverEvent::CompactionClaimed { level }
-            }
             SyncProposal::CompactionComplete { level, watermark } => {
                 tracing::info!(
                     level,
                     watermark_entries = watermark.len(),
                     "received CompactionComplete"
                 );
-
-                self.compaction_state.active_claims.remove(&level);
 
                 for (fp, &seq) in &watermark {
                     let hw = self
@@ -1543,8 +1475,20 @@ where
         &mut self,
         snapshot: bytes::Bytes,
         level: u8,
+        force: bool,
         reply: oneshot::Sender<Result<(), Report<WeaverError>>>,
     ) {
+        if !force
+            && self
+                .compaction_state
+                .cascade_target()
+                .is_none_or(|t| t < level)
+        {
+            tracing::debug!(level, "skipping compaction: no longer needed at this level");
+            let _ = reply.send(Ok(()));
+            return;
+        }
+
         let watermark = self.state_vector.clone();
 
         if !self.encrypt_and_send_to_acceptors(&snapshot, level, &watermark) {
@@ -1704,140 +1648,17 @@ where
             }
         }
     }
-
-    /// Build and submit a `CompactionClaim` commit through Paxos consensus.
-    /// Currently unused — kept for future optimistic locking support.
-    #[allow(dead_code)]
-    async fn submit_compaction_claim(&mut self, level: u8) {
-        let watermark = self.state_vector.clone();
-        let deadline = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            + COMPACTION_DEADLINE_SECS;
-
-        let proposal = SyncProposal::compaction_claim(level, watermark, deadline);
-
-        let custom_proposal = match proposal.to_custom_proposal() {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(?e, "failed to encode CompactionClaim proposal");
-                return;
-            }
-        };
-
-        let result = blocking(|| {
-            self.learner
-                .group_mut()
-                .commit_builder()
-                .custom_proposal(custom_proposal)
-                .build()
-                .change_context(WeaverError)
-        });
-
-        match result {
-            Ok(commit_output) => {
-                let message = GroupMessage::new(commit_output.commit_message);
-                let (reply_tx, reply_rx) = oneshot::channel();
-                self.start_proposal(message, reply_tx).await;
-
-                // We don't block waiting for the reply; the compaction coordination
-                // is driven by observing CompactionClaimed events in process_commit_effect.
-                // Spawn a background task to log the result.
-                tokio::spawn(async move {
-                    match reply_rx.await {
-                        Ok(Ok(())) => tracing::debug!("compaction claim commit accepted"),
-                        Ok(Err(e)) => tracing::warn!(?e, "compaction claim commit failed"),
-                        Err(_) => tracing::debug!("compaction claim reply dropped"),
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::warn!(?e, "failed to build compaction claim commit");
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_claim(level: u8, deadline: u64) -> ActiveCompactionClaim {
-        ActiveCompactionClaim {
-            claimer: MemberFingerprint([0u8; 8]),
-            level,
-            watermark: StateVector::default(),
-            deadline,
-            is_ours: false,
-        }
-    }
-
-    fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-
-    #[test]
-    fn compaction_state_no_active_claims() {
-        let state = CompactionState::new();
-        assert!(!state.has_active_claim(1));
-        assert!(!state.has_active_claim(2));
-    }
-
-    #[test]
-    fn compaction_state_active_claim_not_expired() {
-        let mut state = CompactionState::new();
-        state
-            .active_claims
-            .insert(1, make_claim(1, now_secs() + 60));
-        assert!(state.has_active_claim(1));
-        assert!(!state.has_active_claim(2));
-    }
-
-    #[test]
-    fn compaction_state_expired_claim() {
-        let mut state = CompactionState::new();
-        state.active_claims.insert(1, make_claim(1, now_secs() - 1));
-        assert!(!state.has_active_claim(1));
-    }
-
-    #[test]
-    fn compaction_state_prune_expired() {
-        let mut state = CompactionState::new();
-        state.active_claims.insert(1, make_claim(1, now_secs() - 1));
-        state
-            .active_claims
-            .insert(2, make_claim(2, now_secs() + 60));
-        assert_eq!(state.active_claims.len(), 2);
-
-        state.prune_expired_claims();
-        assert_eq!(state.active_claims.len(), 1);
-        assert!(state.active_claims.contains_key(&2));
-    }
-
-    #[test]
-    fn compaction_state_multiple_levels() {
-        let mut state = CompactionState::new();
-        state
-            .active_claims
-            .insert(1, make_claim(1, now_secs() + 60));
-        state
-            .active_claims
-            .insert(2, make_claim(2, now_secs() + 60));
-        assert!(state.has_active_claim(1));
-        assert!(state.has_active_claim(2));
-        assert!(!state.has_active_claim(3));
-    }
-
     #[test]
     fn compaction_state_initial_values() {
         let state = CompactionState::new();
         assert_eq!(state.counts, vec![0, 0]);
         assert!(state.last_compacted_watermark.is_empty());
-        assert!(state.active_claims.is_empty());
         assert_eq!(state.max_compacted_level, 0);
     }
 

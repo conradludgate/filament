@@ -432,7 +432,6 @@ where
                             }
                         }
                     }
-                    SyncProposal::CompactionClaim { .. } => {}
                 }
             }
         }
