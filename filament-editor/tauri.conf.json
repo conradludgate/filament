@@ -7,11 +7,11 @@
     "frontendDist": "./ui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": {
-      "script": "PATH=\"/opt/homebrew/bin:$PATH\" npm run dev",
+      "script": "npm run dev",
       "cwd": "./ui"
     },
     "beforeBuildCommand": {
-      "script": "PATH=\"/opt/homebrew/bin:$PATH\" npm run build",
+      "script": "npm run build",
       "cwd": "./ui"
     }
   },

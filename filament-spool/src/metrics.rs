@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use measured::label::{LabelGroupVisitor, LabelName, LabelValue, LabelVisitor};
+use fjall::AbstractTree;
+use measured::label::{LabelGroupVisitor, LabelName, LabelValue, LabelVisitor, NoLabels};
 use measured::metric::MetricEncoding;
 use measured::metric::gauge::GaugeState;
 use measured::metric::group::Encoding;
@@ -81,9 +82,19 @@ where
     fn collect_group_into(&self, enc: &mut Enc) -> Result<(), Enc::Err> {
         const NAME: &MetricName = MetricName::from_str("disk_bytes");
 
-        enc.write_help(NAME, "disk space used by storage keyspaces")?;
+        enc.write_help(NAME, "data stored in storage keyspaces")?;
 
         let db = self.state_store.database();
+
+        const TOTAL_NAME: &MetricName = MetricName::from_str("total_disk_bytes");
+        enc.write_help(TOTAL_NAME, "total disk space used by the database")?;
+        #[allow(clippy::cast_possible_wrap)]
+        measured::metric::gauge::write_gauge(
+            enc,
+            TOTAL_NAME,
+            NoLabels,
+            db.disk_space().unwrap_or(0) as i64,
+        )?;
         let names = db.list_keyspace_names();
 
         let mut totals = [0u64; 3];
@@ -103,7 +114,7 @@ where
             if let Some(kind) = kind
                 && let Ok(ks) = db.keyspace(name, fjall::KeyspaceCreateOptions::default)
             {
-                totals[kind as usize] += ks.disk_space();
+                totals[kind as usize] += ks.disk_space() + ks.tree.active_memtable().size();
             }
         }
 

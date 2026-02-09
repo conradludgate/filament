@@ -14,7 +14,7 @@ use filament_core::{
 use filament_warp::acceptor::RoundState;
 use filament_warp::core::decision;
 use filament_warp::{AcceptorStateStore, Learner, Proposal};
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
+use fjall::{AbstractTree, Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -65,6 +65,13 @@ struct GroupKeyspaces {
     snapshots: Keyspace,
 }
 
+/// Returns disk_space + active memtable size for a keyspace.
+/// `Keyspace::disk_space()` only counts flushed SSTable segments; unflushed
+/// memtable data (which can be the majority for small/new keyspaces) is excluded.
+fn keyspace_data_size(ks: &Keyspace) -> u64 {
+    ks.disk_space() + ks.tree.active_memtable().size()
+}
+
 impl GroupKeyspaces {
     fn open(db: &Database, group_id: &GroupId) -> Result<Self, fjall::Error> {
         let prefix = group_keyspace_prefix(group_id);
@@ -80,9 +87,9 @@ impl GroupKeyspaces {
 
     pub fn disk_space(&self) -> GroupStorageSizes {
         GroupStorageSizes {
-            accepted_bytes: self.accepted.disk_space(),
-            messages_bytes: self.messages.disk_space(),
-            snapshots_bytes: self.snapshots.disk_space(),
+            accepted_bytes: keyspace_data_size(&self.accepted),
+            messages_bytes: keyspace_data_size(&self.messages),
+            snapshots_bytes: keyspace_data_size(&self.snapshots),
         }
     }
 }
