@@ -63,15 +63,21 @@ pub enum Handshake {
         group_id: GroupId,
         since_epoch: Epoch,
     },
-    /// Register a new group with serialized `GroupInfo` bytes.
-    CreateGroup(Bytes),
+    /// Register a new group with a `GroupInfo` MLS message.
+    CreateGroup {
+        #[serde(with = "mls_bytes")]
+        group_info: MlsMessage,
+    },
     /// Join an existing group's message stream.
     ///
     /// Includes the subscriber's fingerprint so the acceptor can filter out
     /// messages originally sent by this member.
     JoinMessages(GroupId, MemberFingerprint),
-    /// Deliver a serialized MLS `Welcome` message.
-    SendWelcome(Bytes),
+    /// Deliver an MLS `Welcome` message.
+    SendWelcome {
+        #[serde(with = "mls_bytes")]
+        welcome: MlsMessage,
+    },
     /// Fetch the ratchet tree for an external commit join.
     ///
     /// The `confirmed_transcript_hash` is used to verify epoch consistency
@@ -81,7 +87,12 @@ pub enum Handshake {
         confirmed_transcript_hash: Bytes,
     },
     /// Submit an external commit to join a group.
-    ExternalCommit { group_id: GroupId, commit: Bytes },
+    ///
+    /// The spool extracts the group ID from the MLS message.
+    ExternalCommit {
+        #[serde(with = "mls_bytes")]
+        commit: MlsMessage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +356,8 @@ pub enum MessageResponse {
 
 #[cfg(test)]
 mod tests {
+    use mls_rs::ExtensionList;
+
     use super::*;
 
     #[test]
@@ -607,20 +620,51 @@ mod tests {
         }
     }
 
+    fn test_mls_message() -> MlsMessage {
+        use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
+        use mls_rs::identity::SigningIdentity;
+        use mls_rs::{CipherSuite, CipherSuiteProvider, CryptoProvider};
+        use mls_rs_crypto_rustcrypto::RustCryptoProvider;
+
+        let crypto = RustCryptoProvider::default();
+        let cs = crypto
+            .cipher_suite_provider(CipherSuite::CURVE25519_AES128)
+            .unwrap();
+        let (sk, pk) = cs.signature_key_generate().unwrap();
+        let cred = BasicCredential::new(b"test".to_vec());
+        let id = SigningIdentity::new(cred.into_credential(), pk);
+
+        let client = mls_rs::Client::builder()
+            .crypto_provider(crypto)
+            .identity_provider(BasicIdentityProvider::new())
+            .signing_identity(id, sk, CipherSuite::CURVE25519_AES128)
+            .build();
+
+        client
+            .generate_key_package_message(ExtensionList::default(), ExtensionList::default(), None)
+            .unwrap()
+    }
+
     #[test]
     fn handshake_variants_roundtrip() {
+        let msg = test_mls_message();
         let variants: Vec<Handshake> = vec![
-            Handshake::CreateGroup(Bytes::from_static(&[1, 2, 3])),
+            Handshake::JoinProposals {
+                group_id: GroupId::new([0; 32]),
+                since_epoch: Epoch(1),
+            },
+            Handshake::CreateGroup {
+                group_info: msg.clone(),
+            },
             Handshake::JoinMessages(GroupId::new([0; 32]), MemberFingerprint([1; 8])),
-            Handshake::SendWelcome(Bytes::from_static(&[4, 5, 6])),
+            Handshake::SendWelcome {
+                welcome: msg.clone(),
+            },
             Handshake::FetchTree {
                 group_id: GroupId::new([7; 32]),
                 confirmed_transcript_hash: Bytes::from_static(&[8, 9]),
             },
-            Handshake::ExternalCommit {
-                group_id: GroupId::new([11; 32]),
-                commit: Bytes::from_static(&[12, 13]),
-            },
+            Handshake::ExternalCommit { commit: msg },
         ];
         for h in variants {
             let bytes = postcard::to_allocvec(&h).unwrap();

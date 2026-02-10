@@ -168,12 +168,8 @@ where
     /// Returns [`RegistryError`] if parsing, observing, or persisting the group fails.
     pub fn create_group(
         &self,
-        group_info_bytes: &[u8],
+        mls_message: MlsMessage,
     ) -> Result<(GroupId, GroupAcceptor<C, CS>, GroupStateStore), Report<RegistryError>> {
-        let mls_message = MlsMessage::from_bytes(group_info_bytes)
-            .change_context(RegistryError)
-            .attach("failed to parse MLS message")?;
-
         let acceptors = mls_message
             .as_group_info()
             .map(|gi| Self::extract_acceptors_from_extensions(gi.extensions()))
@@ -281,15 +277,15 @@ where
     /// is invalid, or applying the commit fails.
     pub async fn apply_external_commit(
         &self,
-        group_id: &GroupId,
-        commit_bytes: &[u8],
+        mls_message: MlsMessage,
     ) -> Result<(), Report<RegistryError>> {
-        let mls_message = MlsMessage::from_bytes(commit_bytes)
-            .change_context(RegistryError)
-            .attach("failed to parse MLS external commit")?;
+        let group_id = mls_message
+            .group_id()
+            .map(GroupId::from_slice)
+            .ok_or_else(|| Report::new(RegistryError).attach("MLS message has no group_id"))?;
 
         let (mut acceptor, state) = self
-            .get_group(group_id)
+            .get_group(&group_id)
             .ok_or_else(|| Report::new(RegistryError).attach("group not found"))?;
 
         let message = filament_core::GroupMessage::new(mls_message);
@@ -307,7 +303,7 @@ where
             .attach("failed to store accepted commit")?;
 
         let new_epoch = acceptor.current_round();
-        self.notify_epoch_learned(group_id, new_epoch);
+        self.notify_epoch_learned(&group_id, new_epoch);
 
         if let Ok(snapshot_bytes) = acceptor.snapshot_bytes() {
             let _ = state.store_snapshot(new_epoch, &snapshot_bytes);

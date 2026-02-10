@@ -11,8 +11,8 @@ use filament_warp::acceptor::{AcceptorHandler, run_acceptor_with_epoch_waiter};
 use filament_warp::{AcceptorMessage, AcceptorRequest, Learner};
 use futures::{SinkExt, StreamExt};
 use iroh::endpoint::{Incoming, RecvStream, SendStream};
-use mls_rs::CipherSuiteProvider;
 use mls_rs::external_client::builder::MlsConfig as ExternalMlsConfig;
+use mls_rs::{CipherSuiteProvider, MlsMessage};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, instrument, warn};
 
@@ -159,7 +159,7 @@ where
             group_id,
             since_epoch,
         } => handle_proposal_stream(group_id, None, since_epoch, reader, writer, registry).await,
-        Handshake::CreateGroup(group_info) => {
+        Handshake::CreateGroup { group_info } => {
             handle_proposal_stream(
                 GroupId::from_slice(&[0; 32]),
                 Some(group_info),
@@ -173,15 +173,15 @@ where
         Handshake::JoinMessages(group_id, subscriber) => {
             handle_message_stream(group_id, subscriber, reader, writer, registry).await
         }
-        Handshake::SendWelcome(_) => {
+        Handshake::SendWelcome { .. } => {
             Err(Report::new(ConnectorError).attach("acceptors do not handle welcome messages"))
         }
         Handshake::FetchTree {
             group_id,
             confirmed_transcript_hash,
         } => handle_fetch_tree(group_id, confirmed_transcript_hash, writer, registry).await,
-        Handshake::ExternalCommit { group_id, commit } => {
-            handle_external_commit(group_id, commit, writer, registry).await
+        Handshake::ExternalCommit { commit } => {
+            handle_external_commit(commit, writer, registry).await
         }
     }
 }
@@ -189,7 +189,7 @@ where
 #[instrument(skip_all, name = "proposal_stream", fields(?group_id))]
 async fn handle_proposal_stream<C, CS>(
     mut group_id: GroupId,
-    create_group_info: Option<bytes::Bytes>,
+    create_group_info: Option<MlsMessage>,
     since_epoch: Epoch,
     reader: FramedRead<RecvStream, LengthDelimitedCodec>,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
@@ -200,7 +200,7 @@ where
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
     let (acceptor, state) = if let Some(group_info) = create_group_info {
-        match registry.create_group(&group_info) {
+        match registry.create_group(group_info) {
             Ok((id, acceptor, state)) => {
                 group_id = id;
                 (acceptor, state)
@@ -440,8 +440,7 @@ where
 }
 
 async fn handle_external_commit<C, CS>(
-    group_id: GroupId,
-    commit_bytes: bytes::Bytes,
+    commit: MlsMessage,
     mut writer: FramedWrite<SendStream, LengthDelimitedCodec>,
     registry: AcceptorRegistry<C, CS>,
 ) -> Result<(), Report<ConnectorError>>
@@ -449,13 +448,11 @@ where
     C: ExternalMlsConfig + Clone + Send + Sync + 'static,
     CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
 {
-    let result = registry
-        .apply_external_commit(&group_id, &commit_bytes)
-        .await;
+    let result = registry.apply_external_commit(commit).await;
     let response = match result {
         Ok(()) => HandshakeResponse::Ok,
         Err(e) => {
-            warn!(?group_id, ?e, "external commit rejected");
+            warn!(?e, "external commit rejected");
             HandshakeResponse::Error(format!("{e:?}"))
         }
     };

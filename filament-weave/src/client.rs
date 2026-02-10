@@ -11,7 +11,7 @@ use mls_rs::client_builder::{BaseConfig, WithCryptoProvider, WithIdentityProvide
 use mls_rs::crypto::SignatureSecretKey;
 use mls_rs::identity::SigningIdentity;
 use mls_rs::identity::basic::{BasicCredential, BasicIdentityProvider};
-use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList};
+use mls_rs::{CipherSuite, CipherSuiteProvider, Client, CryptoProvider, ExtensionList, MlsMessage};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tokio::sync::mpsc;
 
@@ -275,11 +275,8 @@ impl WeaverClient {
         .await?;
 
         // Submit external commit to spool.
-        let resp = send_handshake(Handshake::ExternalCommit {
-            group_id: metadata.group_id,
-            commit: commit_bytes.into(),
-        })
-        .await?;
+        let commit = MlsMessage::from_bytes(&commit_bytes).change_context(WeaverError)?;
+        let resp = send_handshake(Handshake::ExternalCommit { commit }).await?;
 
         match resp {
             HandshakeResponse::Ok => {}

@@ -62,16 +62,15 @@ pub(crate) fn group_info_ext_list(
     extensions
 }
 
-/// Create a serialised `GroupInfo` message with a [`GroupInfoExt`] extension.
+/// Create a `GroupInfo` MLS message with a [`GroupInfoExt`] extension.
 pub(crate) fn group_info_with_ext<C: mls_rs::client_builder::MlsConfig>(
     group: &mls_rs::Group<C>,
     acceptors: impl IntoIterator<Item = AcceptorId>,
-) -> Result<Vec<u8>, Report<WeaverError>> {
+) -> Result<MlsMessage, Report<WeaverError>> {
     let extensions = group_info_ext_list(acceptors, None);
-    let msg = group
+    group
         .group_info_message_internal(extensions, true)
-        .change_context(WeaverError)?;
-    msg.to_bytes().change_context(WeaverError)
+        .change_context(WeaverError)
 }
 
 /// Metadata extracted from a serialized `GroupInfo` for external commit joining.
@@ -321,7 +320,7 @@ impl Weaver {
 
         let protocol_name = protocol_name.to_owned();
 
-        let (learner, group_id, group_info_bytes) = blocking(|| {
+        let (learner, group_id, group_info) = blocking(|| {
             let mut group_context_extensions = mls_rs::ExtensionList::default();
             group_context_extensions
                 .set_from(GroupContextExt::new(&protocol_name, Some(86400)))
@@ -344,7 +343,7 @@ impl Weaver {
             let learner =
                 WeaverLearner::new(group, signer, cipher_suite, acceptors.iter().copied());
 
-            let group_info_bytes = if acceptors.is_empty() {
+            let group_info = if acceptors.is_empty() {
                 None
             } else {
                 Some(
@@ -353,14 +352,14 @@ impl Weaver {
                 )
             };
 
-            Ok::<_, Report<WeaverError>>((learner, group_id, group_info_bytes))
+            Ok::<_, Report<WeaverError>>((learner, group_id, group_info))
         })?;
 
         let endpoint = connection_manager.endpoint();
 
-        if let Some(group_info_bytes) = group_info_bytes {
+        if let Some(group_info) = group_info {
             for id in acceptors {
-                register_group(endpoint, id, &group_info_bytes)
+                register_group(endpoint, id, group_info.clone())
                     .await
                     .change_context(WeaverError)?;
             }
@@ -949,7 +948,10 @@ pub(crate) async fn wait_for_welcome(
         postcard::from_bytes(&handshake_bytes).change_context(WeaverError)?;
 
     match handshake {
-        Handshake::SendWelcome(welcome) => Ok(welcome),
+        Handshake::SendWelcome { welcome } => {
+            let bytes = welcome.to_bytes().change_context(WeaverError)?;
+            Ok(bytes.into())
+        }
         _ => {
             Err(Report::new(WeaverError)
                 .attach("expected SendWelcome handshake, got something else"))

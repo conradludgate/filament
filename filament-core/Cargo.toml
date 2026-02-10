@@ -25,3 +25,6 @@ bytes.workspace = true
 iroh.workspace = true
 # Optional CRDT implementations
 yrs = { version = "0.25", optional = true }
+
+[dev-dependencies]
+mls-rs-crypto-rustcrypto.workspace = true

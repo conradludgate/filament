@@ -339,15 +339,11 @@ where
         use crate::connector::register_group;
 
         let acceptors = self.learner.acceptors().iter().copied();
-        let group_info_bytes = blocking(|| group_info_with_ext(self.learner.group(), acceptors))?;
+        let group_info = blocking(|| group_info_with_ext(self.learner.group(), acceptors))?;
 
-        register_group(
-            self.connection_manager.endpoint(),
-            acceptor_id,
-            &group_info_bytes,
-        )
-        .await
-        .change_context(WeaverError)?;
+        register_group(self.connection_manager.endpoint(), acceptor_id, group_info)
+            .await
+            .change_context(WeaverError)?;
 
         Ok(())
     }
@@ -997,7 +993,8 @@ where
 
         let mut framed = FramedWrite::new(send, LengthDelimitedCodec::new());
 
-        let handshake = Handshake::SendWelcome(bytes::Bytes::copy_from_slice(welcome));
+        let welcome = MlsMessage::from_bytes(welcome).change_context(WeaverError)?;
+        let handshake = Handshake::SendWelcome { welcome };
         let handshake_bytes = postcard::to_stdvec(&handshake).change_context(WeaverError)?;
 
         framed

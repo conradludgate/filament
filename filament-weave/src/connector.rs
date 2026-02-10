@@ -8,14 +8,20 @@ use filament_core::{
 };
 use futures::{SinkExt, StreamExt};
 use iroh::{Endpoint, PublicKey};
+use mls_rs::MlsMessage;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 /// Register a new group with an acceptor via discovery.
 pub(crate) async fn register_group(
     endpoint: &Endpoint,
     acceptor_id: &AcceptorId,
-    group_info: &[u8],
+    group_info: MlsMessage,
 ) -> Result<GroupId, Report<ConnectorError>> {
+    let group_id = group_info
+        .group_id()
+        .map(GroupId::from_slice)
+        .ok_or_else(|| Report::new(ConnectorError).attach("not a GroupInfo message"))?;
+
     let public_key = PublicKey::from_bytes(acceptor_id.as_bytes())
         .expect("AcceptorId should be a valid public key");
     let conn = endpoint
@@ -31,7 +37,7 @@ pub(crate) async fn register_group(
     let mut reader = FramedRead::new(recv, codec.clone());
     let mut writer = FramedWrite::new(send, codec);
 
-    let handshake = Handshake::CreateGroup(bytes::Bytes::copy_from_slice(group_info));
+    let handshake = Handshake::CreateGroup { group_info };
     let handshake_bytes = postcard::to_allocvec(&handshake).change_context(ConnectorError)?;
     writer
         .send(handshake_bytes.into())
@@ -49,7 +55,7 @@ pub(crate) async fn register_group(
         .attach("invalid handshake response")?;
 
     match response {
-        HandshakeResponse::Ok => Ok(GroupId::from_slice(group_info)),
+        HandshakeResponse::Ok => Ok(group_id),
         HandshakeResponse::GroupNotFound => {
             Err(Report::new(ConnectorError).attach("unexpected: group not found"))
         }
