@@ -417,25 +417,37 @@ where
         false
     }
 
-    /// Probabilistic leader election for compaction: hash the state vector
-    /// (divided by `COMPACTION_BASE`) and level to pick one member from the
-    /// roster. The chosen compactor rotates as more messages are sent.
+    /// Rendezvous hashing for compaction leader election. Each member is
+    /// scored with `xxh3(member_fingerprint || level || state_vector / COMPACTION_BASE)`.
+    /// The member with the highest score is the elected compactor.
+    /// The chosen compactor rotates as the state vector advances.
     fn should_drive_compaction(&self, level: u8) -> bool {
-        let member_count = self.learner.group().roster().members().len();
-        if member_count == 0 {
+        let roster = self.learner.group().roster();
+        let members = roster.members();
+        if members.is_empty() {
             return false;
         }
-        let my_index = self.learner.group().current_member_index() as usize;
+        let my_index = self.learner.group().current_member_index();
 
         let divisor = u64::from(COMPACTION_BASE);
-        let mut hasher_input = Vec::new();
-        hasher_input.push(level);
+        let mut key = Vec::new();
+        key.push(level);
         for (fp, &seq) in &self.state_vector {
-            hasher_input.extend_from_slice(&fp.0);
-            hasher_input.extend_from_slice(&(seq / divisor).to_le_bytes());
+            key.extend_from_slice(&fp.0);
+            key.extend_from_slice(&(seq / divisor).to_le_bytes());
         }
-        let hash = xxhash_rust::xxh3::xxh3_64(&hasher_input);
-        hash % (member_count as u64) == (my_index % member_count) as u64
+
+        let winner = members
+            .iter()
+            .max_by_key(|member| {
+                let fp = fingerprint_of_member(&self.group_id, member);
+                let mut buf = Vec::with_capacity(fp.0.len() + key.len());
+                buf.extend_from_slice(&fp.0);
+                buf.extend_from_slice(&key);
+                xxhash_rust::xxh3::xxh3_64(&buf)
+            })
+            .map(|m| m.index);
+        winner == Some(my_index)
     }
 
     fn get_context(&self) -> WeaverContext {
@@ -1502,9 +1514,9 @@ where
         self.compaction_state.reset_counts_up_to(level);
         self.compaction_state.record_entry(usize::from(level));
 
-        self.submit_compaction_complete(level, watermark).await;
-
         let _ = reply.send(Ok(()));
+
+        self.submit_compaction_complete(level, watermark).await;
     }
 
     async fn maybe_trigger_key_rotation(&mut self) {

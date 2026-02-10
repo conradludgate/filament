@@ -39,29 +39,18 @@ Location: `filament-weave/src/group/group_actor.rs`, `filament-weave/src/group/m
 ### Leader Election (threshold compaction)
 
 Before emitting `CompactionNeeded`, the group actor calls
-`should_drive_compaction(level)` which deterministically picks one member
-using the state vector:
+`should_drive_compaction(level)` which uses rendezvous hashing (Highest
+Random Weight) to elect a single compactor:
 
-```rust
-fn should_drive_compaction(&self, level: u8) -> bool {
-    let member_count = roster().members().len();
-    let my_index = current_member_index() as usize;
-    let divisor = u64::from(COMPACTION_BASE);
-    let mut hasher_input = Vec::new();
-    hasher_input.push(level);
-    for (fp, &seq) in &self.state_vector {
-        hasher_input.extend_from_slice(&fp.0);
-        hasher_input.extend_from_slice(&(seq / divisor).to_le_bytes());
-    }
-    let hash = xxhash_rust::xxh3::xxh3_64(&hasher_input);
-    hash % (member_count as u64) == (my_index % member_count) as u64
-}
-```
-
-- Hashes `(level, state_vector / COMPACTION_BASE)` to pick a slot
-- `BTreeMap` iteration gives sorted key order so all weavers produce the same hash
+- A key is built from `(level, state_vector / COMPACTION_BASE)` where the
+  state vector is a sorted `BTreeMap`, so all weavers produce the same key
+- Each roster member is scored: `xxh3(member_fingerprint || key)`
+- The member with the highest score wins
 - The chosen compactor rotates roughly every `COMPACTION_BASE` messages
   from any member, with no extra bookkeeping
+
+This follows the same rendezvous hashing pattern used for acceptor
+selection in `rendezvous.rs`.
 
 ### Add compaction gating
 
