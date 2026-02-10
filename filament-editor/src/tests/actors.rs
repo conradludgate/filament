@@ -252,11 +252,7 @@ async fn doc_actor_remote_update_triggers_event() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (bob_doc_tx, mut bob_event_rx) = {
-        let bob_crdt = if let Some(snapshot) = join_info.snapshot {
-            YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-        } else {
-            YrsCrdt::new()
-        };
+        let bob_crdt = YrsCrdt::new();
         let (tx, rx) = mpsc::channel(64);
         let (emitter, event_rx) = mock_emitter();
         let actor = DocumentActor::new(

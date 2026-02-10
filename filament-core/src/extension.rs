@@ -11,7 +11,6 @@
 
 use std::collections::BTreeMap;
 
-use bytes::Bytes;
 use mls_rs::extension::{ExtensionType, MlsCodecExtension};
 use mls_rs::group::proposal::MlsCustomProposal;
 use mls_rs::mls_rs_codec::{self as mls_rs_codec, MlsDecode, MlsEncode, MlsSize};
@@ -254,27 +253,21 @@ impl MlsCodecExtension for LeafNodeExt {
     }
 }
 
-/// Current acceptor list and CRDT snapshot (group info extension).
+/// Current acceptor list (group info extension).
 ///
-/// Sent in Welcome messages so joiners can discover acceptors and optionally
-/// bootstrap their CRDT state.
+/// Sent in Welcome messages so joiners can discover acceptors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfoExt {
     pub acceptors: Vec<AcceptorId>,
-    pub snapshot: Bytes,
     #[serde(default)]
     pub invited_by: Option<MemberFingerprint>,
 }
 
 impl GroupInfoExt {
     #[must_use]
-    pub fn new(
-        acceptors: impl IntoIterator<Item = AcceptorId>,
-        snapshot: impl Into<Bytes>,
-    ) -> Self {
+    pub fn new(acceptors: impl IntoIterator<Item = AcceptorId>) -> Self {
         Self {
             acceptors: acceptors.into_iter().collect(),
-            snapshot: snapshot.into(),
             invited_by: None,
         }
     }
@@ -471,23 +464,21 @@ mod tests {
     #[test]
     fn group_info_ext_roundtrip() {
         let ids = vec![test_acceptor_id(1), test_acceptor_id(2)];
-        let ext = GroupInfoExt::new(ids, b"crdt snapshot data".to_vec());
+        let ext = GroupInfoExt::new(ids);
 
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupInfoExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
-        assert_eq!(decoded.snapshot, &b"crdt snapshot data"[..]);
         assert_eq!(decoded.acceptors.len(), 2);
     }
 
     #[test]
-    fn group_info_ext_no_snapshot() {
-        let ext = GroupInfoExt::new(Vec::<AcceptorId>::new(), vec![]);
+    fn group_info_ext_empty() {
+        let ext = GroupInfoExt::new(Vec::<AcceptorId>::new());
 
         let encoded = ext.mls_encode_to_vec().unwrap();
         let decoded = GroupInfoExt::mls_decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ext, decoded);
-        assert!(decoded.snapshot.is_empty());
     }
 
     #[test]
@@ -495,7 +486,7 @@ mod tests {
         let id1 = test_acceptor_id(1);
         let id2 = test_acceptor_id(2);
 
-        let ext = GroupInfoExt::new(vec![id1, id2], vec![]);
+        let ext = GroupInfoExt::new(vec![id1, id2]);
         let ids = ext.acceptor_ids();
 
         assert_eq!(ids.len(), 2);

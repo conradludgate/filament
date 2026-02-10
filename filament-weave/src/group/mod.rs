@@ -51,7 +51,7 @@ pub(crate) fn group_info_ext_list(
     acceptors: impl IntoIterator<Item = AcceptorId>,
     invited_by: Option<filament_core::MemberFingerprint>,
 ) -> mls_rs::ExtensionList {
-    let mut ext = GroupInfoExt::new(acceptors, vec![]);
+    let mut ext = GroupInfoExt::new(acceptors);
     if let Some(fp) = invited_by {
         ext = ext.with_invited_by(fp);
     }
@@ -228,9 +228,6 @@ pub struct JoinInfo {
     pub group: Weaver,
     /// Application protocol name stored in the group's MLS extensions.
     pub protocol_name: String,
-    /// Optional CRDT snapshot from the most recent compaction. `None` if the
-    /// group has never been compacted; the device will catch up via backfill.
-    pub snapshot: Option<bytes::Bytes>,
 }
 
 /// Handle to a synchronized MLS group with automatic Paxos consensus.
@@ -348,66 +345,54 @@ impl Weaver {
         C: MlsConfig + Clone + Send + Sync + 'static,
         CS: CipherSuiteProvider + Clone + Send + Sync + 'static,
     {
-        let (learner, group_id, protocol_name, crdt_snapshot_opt, key_rotation_interval_secs) =
-            blocking(|| {
-                let welcome = MlsMessage::from_bytes(welcome_bytes)
-                    .change_context(WeaverError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+        let (learner, group_id, protocol_name, key_rotation_interval_secs) = blocking(|| {
+            let welcome = MlsMessage::from_bytes(welcome_bytes)
+                .change_context(WeaverError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let (group, info) = client
-                    .join_group(None, &welcome, None)
-                    .change_context(WeaverError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let (group, info) = client
+                .join_group(None, &welcome, None)
+                .change_context(WeaverError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let mls_group_id = group.context().group_id.clone();
-                let group_id = GroupId::from_slice(&mls_group_id);
+            let mls_group_id = group.context().group_id.clone();
+            let group_id = GroupId::from_slice(&mls_group_id);
 
-                let group_info_ext = info
-                    .group_info_extensions
-                    .get_as::<GroupInfoExt>()
-                    .change_context(WeaverError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let group_info_ext = info
+                .group_info_extensions
+                .get_as::<GroupInfoExt>()
+                .change_context(WeaverError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let acceptor_ids: Vec<AcceptorId> = group_info_ext
-                    .as_ref()
-                    .map(|e| e.acceptors.clone())
-                    .unwrap_or_default();
+            let acceptor_ids: Vec<AcceptorId> = group_info_ext
+                .as_ref()
+                .map(|e| e.acceptors.clone())
+                .unwrap_or_default();
 
-                let crdt_snapshot_opt = group_info_ext.map(|e| e.snapshot);
+            let group_ctx = group
+                .context()
+                .extensions
+                .get_as::<GroupContextExt>()
+                .change_context(WeaverError)
+                .attach(OperationContext::JOINING_GROUP)?;
 
-                let group_ctx = group
-                    .context()
-                    .extensions
-                    .get_as::<GroupContextExt>()
-                    .change_context(WeaverError)
-                    .attach(OperationContext::JOINING_GROUP)?;
+            let protocol_name = group_ctx
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |e| e.protocol_name.clone());
 
-                let protocol_name = group_ctx
-                    .as_ref()
-                    .map_or_else(|| "none".to_owned(), |e| e.protocol_name.clone());
+            let key_rotation_interval_secs = group_ctx
+                .as_ref()
+                .and_then(|e| e.key_rotation_interval_secs);
 
-                let key_rotation_interval_secs = group_ctx
-                    .as_ref()
-                    .and_then(|e| e.key_rotation_interval_secs);
+            let learner = WeaverLearner::new(group, signer, cipher_suite, acceptor_ids);
 
-                let learner = WeaverLearner::new(group, signer, cipher_suite, acceptor_ids);
-
-                Ok::<_, Report<WeaverError>>((
-                    learner,
-                    group_id,
-                    protocol_name,
-                    crdt_snapshot_opt,
-                    key_rotation_interval_secs,
-                ))
-            })?;
-
-        let snapshot = match crdt_snapshot_opt {
-            Some(s) if !s.is_empty() => Some(s),
-            _ => {
-                tracing::info!("joining group without CRDT snapshot, will catch up via backfill");
-                None
-            }
-        };
+            Ok::<_, Report<WeaverError>>((
+                learner,
+                group_id,
+                protocol_name,
+                key_rotation_interval_secs,
+            ))
+        })?;
 
         let group = Self::spawn_actors(
             learner,
@@ -420,7 +405,6 @@ impl Weaver {
         Ok(JoinInfo {
             group,
             protocol_name,
-            snapshot,
         })
     }
 
@@ -511,7 +495,6 @@ impl Weaver {
         let join_info = JoinInfo {
             group,
             protocol_name,
-            snapshot: None,
         };
 
         Ok((join_info, commit_bytes))

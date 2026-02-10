@@ -771,11 +771,7 @@ async fn test_crdt_operations_sent_and_received() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -842,11 +838,7 @@ async fn test_crdt_bidirectional_message_exchange() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -961,11 +953,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Bob catches up via backfill (compaction sends snapshot to acceptors)
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1004,11 +992,7 @@ async fn test_crdt_late_joiner_snapshot_and_messages() {
     let welcome = carol.recv_welcome().await.expect("carol welcome");
     let join_info = carol.join(&welcome).await.expect("carol join");
     let mut carol_group = join_info.group;
-    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut carol_crdt = YrsCrdt::new();
 
     // Carol catches up via backfill
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1211,11 +1195,7 @@ async fn test_welcome_force_compaction_verified() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Handle CompactionNeeded event
     let compaction_event = wait_for_event(
@@ -1318,11 +1298,7 @@ async fn test_welcome_after_threshold_compaction() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Bob catches up via backfill (force_compaction re-encrypts)
     let expected: String = "abc".repeat(20);
@@ -1368,11 +1344,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Handle CompactionNeeded event
     let compaction_event = wait_for_event(
@@ -1397,11 +1369,7 @@ async fn test_welcome_reencryption_sequential_joiners() {
     let welcome = carol.recv_welcome().await.expect("carol welcome");
     let join_info = carol.join(&welcome).await.expect("carol join");
     let mut carol_group = join_info.group;
-    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut carol_crdt = YrsCrdt::new();
 
     // Handle CompactionNeeded event for Carol
     let compaction_event = wait_for_event(
@@ -1456,11 +1424,7 @@ async fn test_post_compaction_bidirectional() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Handle CompactionNeeded event
     let compaction_event = wait_for_event(
@@ -1532,11 +1496,7 @@ async fn test_welcome_force_compaction_empty() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Handle CompactionNeeded from member add
     let event = wait_for_event(
@@ -1734,11 +1694,7 @@ async fn test_multiple_compaction_rounds() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     let expected: String = "abc".repeat(20) + &"xyz".repeat(20);
     wait_for_sync(&mut bob_group, &mut bob_crdt, &expected, 10).await;
@@ -1814,11 +1770,7 @@ async fn test_compaction_deletion_late_joiner() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     let expected = yrs_get_text(&alice_crdt);
     wait_for_sync(&mut bob_group, &mut bob_crdt, &expected, 10).await;
@@ -1867,11 +1819,7 @@ async fn test_concurrent_writers_compaction() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Wait for Bob to stabilize
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1941,11 +1889,7 @@ async fn test_concurrent_writers_compaction() {
     let welcome = carol.recv_welcome().await.expect("carol welcome");
     let join_info = carol.join(&welcome).await.expect("carol join");
     let mut carol_group = join_info.group;
-    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut carol_crdt = YrsCrdt::new();
 
     wait_for_sync(&mut carol_group, &mut carol_crdt, &alice_text, 10).await;
 
@@ -2027,11 +1971,7 @@ async fn test_key_update_then_compaction() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     let expected = yrs_get_text(&alice_crdt);
     assert!(
@@ -2187,11 +2127,7 @@ async fn test_compaction_after_member_removal() {
     let welcome = carol.recv_welcome().await.expect("carol welcome");
     let join_info = carol.join(&welcome).await.expect("carol join");
     let mut carol_group = join_info.group;
-    let mut carol_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut carol_crdt = YrsCrdt::new();
 
     let expected = yrs_get_text(&alice_crdt);
     assert!(
@@ -2326,11 +2262,7 @@ async fn test_multi_acceptor_message_delivery() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     let expected = yrs_get_text(&alice_crdt);
     assert!(!expected.is_empty(), "alice should have text");
@@ -2461,11 +2393,7 @@ async fn test_empty_snapshot_join() {
     let welcome = bob.recv_welcome().await.expect("bob welcome");
     let join_info = bob.join(&welcome).await.expect("bob join");
     let mut bob_group = join_info.group;
-    let mut bob_crdt = if let Some(snapshot) = join_info.snapshot {
-        YrsCrdt::from_snapshot(&snapshot, 0).expect("from snapshot")
-    } else {
-        YrsCrdt::new()
-    };
+    let mut bob_crdt = YrsCrdt::new();
 
     // Bob should start empty
     let bob_text = yrs_get_text(&bob_crdt);

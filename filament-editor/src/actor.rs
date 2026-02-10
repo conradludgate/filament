@@ -129,12 +129,7 @@ impl<E: EventEmitter> CoordinatorActor<E> {
             .map_err(|e| format!("external join failed: {e:?}"))?;
 
         let client_id = join_info.group.client_id().0;
-        let crdt = if let Some(snapshot) = join_info.snapshot {
-            YrsCrdt::from_snapshot(&snapshot, client_id)
-                .map_err(|e| format!("failed to create CRDT from snapshot: {e:?}"))?
-        } else {
-            YrsCrdt::with_client_id(client_id)
-        };
+        let crdt = YrsCrdt::with_client_id(client_id);
 
         self.register_document(join_info.group, crdt)
     }
@@ -163,12 +158,7 @@ impl<E: EventEmitter> CoordinatorActor<E> {
             .map_err(|e| format!("failed to join group: {e:?}"))?;
 
         let client_id = join_info.group.client_id().0;
-        let crdt = if let Some(snapshot) = join_info.snapshot {
-            YrsCrdt::from_snapshot(&snapshot, client_id)
-                .map_err(|e| format!("failed to create CRDT from snapshot: {e:?}"))?
-        } else {
-            YrsCrdt::with_client_id(client_id)
-        };
+        let crdt = YrsCrdt::with_client_id(client_id);
 
         self.register_document(join_info.group, crdt)
     }
