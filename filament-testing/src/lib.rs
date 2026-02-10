@@ -9,7 +9,7 @@ pub use filament_editor::{PeerAwareness, YrsCrdt};
 use filament_spool::{
     AcceptorMetrics, AcceptorRegistry, MetricsEncoder, SharedFjallStateStore, accept_connection,
 };
-use filament_weave::WeaverClient;
+use filament_weave::{FjallGroupStateStorage, WeaverClient};
 use iroh::address_lookup::{AddressLookup, EndpointData, Item as AddressLookupItem};
 use iroh::{Endpoint, EndpointId, RelayMode};
 use mls_rs::external_client::ExternalClient;
@@ -79,15 +79,20 @@ impl AddressLookup for TestAddressLookupEndpoint {
     }
 }
 
-#[must_use]
-pub fn test_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
-    WeaverClient::new(name.as_bytes().to_vec(), endpoint)
+pub async fn test_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
+    let dir = TempDir::new().expect("create temp dir for weaver client storage");
+    let storage = FjallGroupStateStorage::open(dir.path())
+        .await
+        .expect("open weaver client storage");
+    // Leak the TempDir so it lives as long as the process (tests manage
+    // cleanup via the test harness / process exit).
+    std::mem::forget(dir);
+    WeaverClient::new(name.as_bytes().to_vec(), endpoint, storage)
 }
 
 /// Alias for [`test_weaver_client`].
-#[must_use]
-pub fn test_yrs_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
-    test_weaver_client(name, endpoint)
+pub async fn test_yrs_weaver_client(name: &str, endpoint: Endpoint) -> WeaverClient {
+    test_weaver_client(name, endpoint).await
 }
 
 /// Safe to call multiple times.

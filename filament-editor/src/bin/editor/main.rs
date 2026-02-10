@@ -8,7 +8,7 @@ pub mod commands;
 use filament_core::PAXOS_ALPN;
 use filament_editor::CoordinatorActor;
 use filament_editor::types::{AppState, CoordinatorRequest};
-use filament_weave::WeaverClient;
+use filament_weave::{FjallGroupStateStorage, WeaverClient};
 use iroh::address_lookup::{DnsAddressLookup, MdnsAddressLookup, PkarrPublisher};
 use iroh::{Endpoint, SecretKey};
 use tokio::sync::mpsc;
@@ -83,8 +83,14 @@ async fn setup_coordinator(
 
     info!(addr = ?endpoint.addr(), "iroh endpoint ready");
 
+    let data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("filament-editor");
+    std::fs::create_dir_all(&data_dir)?;
+    let storage = FjallGroupStateStorage::open(data_dir.join("weaver_state")).await?;
+
     let identity = iroh_key.public().as_bytes().to_vec();
-    let group_client = WeaverClient::new(identity, endpoint.clone());
+    let group_client = WeaverClient::new(identity, endpoint.clone(), storage);
 
     let coordinator = CoordinatorActor::new(group_client, coordinator_rx, app_handle);
     coordinator.run().await;

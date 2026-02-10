@@ -1796,6 +1796,7 @@ version = "0.1.0"
 dependencies = [
  "bs58",
  "bytes",
+ "dirs",
  "error-stack",
  "filament-core",
  "filament-spool",

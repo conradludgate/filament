@@ -25,6 +25,7 @@ use super::{
 };
 use crate::connection::ConnectionManager;
 use crate::connector::{ProposalRequest, ProposalResponse};
+use crate::group_state::FjallGroupStateStorage;
 use crate::learner::{WeaverLearner, fingerprint_of_member};
 
 pub(crate) struct GroupActor<C, CS>
@@ -40,6 +41,7 @@ where
     #[allow(dead_code)]
     endpoint: Endpoint,
     connection_manager: ConnectionManager,
+    storage: FjallGroupStateStorage,
     request_rx: mpsc::Receiver<GroupRequest>,
     app_message_tx: mpsc::Sender<Vec<u8>>,
     event_tx: broadcast::Sender<WeaverEvent>,
@@ -52,6 +54,7 @@ where
     own_fingerprint: MemberFingerprint,
     message_seq: u64,
     received_seqs: ReceivedSeqs,
+    received_seqs_dirty: bool,
     pending_messages: Vec<PendingMessage>,
     join_epoch: Epoch,
     active_proposal: Option<ActiveProposal>,
@@ -198,8 +201,20 @@ struct ReceivedSeqs {
 }
 
 impl ReceivedSeqs {
-    fn new() -> Self {
-        Self::default()
+    fn from_watermark(watermark: StateVector) -> Self {
+        let senders = watermark
+            .into_iter()
+            .map(|(fp, hw)| {
+                (
+                    fp,
+                    SenderSeqs {
+                        confirmed: hw,
+                        ranges: rangemap::RangeInclusiveSet::new(),
+                    },
+                )
+            })
+            .collect();
+        Self { senders }
     }
 
     fn record(&mut self, sender: MemberFingerprint, seq: u64) {
@@ -253,6 +268,7 @@ where
         group_id: GroupId,
         endpoint: Endpoint,
         connection_manager: ConnectionManager,
+        storage: FjallGroupStateStorage,
         request_rx: mpsc::Receiver<GroupRequest>,
         app_message_tx: mpsc::Sender<Vec<u8>>,
         event_tx: broadcast::Sender<WeaverEvent>,
@@ -264,6 +280,19 @@ where
         let own_fingerprint = learner.own_fingerprint();
         let (acceptor_inbound_tx, acceptor_rx) = mpsc::channel(256);
 
+        let message_seq = storage
+            .get_message_seq(group_id.as_bytes())
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+
+        let received_seqs = storage
+            .get_watermark(group_id.as_bytes())
+            .ok()
+            .flatten()
+            .map(ReceivedSeqs::from_watermark)
+            .unwrap_or_default();
+
         Self {
             learner,
             proposer: Proposer::new(),
@@ -272,6 +301,7 @@ where
             group_id,
             endpoint,
             connection_manager,
+            storage,
             request_rx,
             app_message_tx,
             event_tx,
@@ -282,8 +312,9 @@ where
             acceptor_handles: HashMap::new(),
             connected_acceptors: BTreeSet::new(),
             own_fingerprint,
-            message_seq: 0,
-            received_seqs: ReceivedSeqs::new(),
+            message_seq,
+            received_seqs,
+            received_seqs_dirty: false,
             pending_messages: Vec::new(),
             join_epoch,
             active_proposal: None,
@@ -291,6 +322,29 @@ where
             last_epoch_advance: std::time::Instant::now(),
             key_rotation_interval,
         }
+    }
+
+    fn persist_message_seq(&self) {
+        if let Err(e) = self
+            .storage
+            .set_message_seq(self.group_id.as_bytes(), self.message_seq)
+        {
+            tracing::warn!(?e, "failed to persist message_seq");
+        }
+    }
+
+    fn persist_watermark(&mut self) {
+        if !self.received_seqs_dirty {
+            return;
+        }
+        let watermark = self.received_seqs.watermark();
+        if let Err(e) = self
+            .storage
+            .set_watermark(self.group_id.as_bytes(), &watermark)
+        {
+            tracing::warn!(?e, "failed to persist watermark");
+        }
+        self.received_seqs_dirty = false;
     }
 
     pub(crate) async fn run(mut self) {
@@ -327,6 +381,7 @@ where
 
                 _ = timeout_check.tick() => {
                     self.check_proposal_timeout();
+                    self.persist_watermark();
                 }
 
                 _ = key_rotation_check.tick(), if self.key_rotation_interval.is_some() => {
@@ -334,6 +389,9 @@ where
                 }
             }
         }
+
+        self.received_seqs_dirty = true;
+        self.persist_watermark();
 
         for (_, handle) in self.acceptor_handles.drain() {
             handle.abort();
@@ -390,6 +448,7 @@ where
             group_id: self.group_id,
             current_epoch: self.learner.mls_epoch(),
             own_fingerprint: self.own_fingerprint,
+            backfill_watermark: self.received_seqs.watermark(),
             connection_manager: self.connection_manager.clone(),
             outbound_rx,
             inbound_tx: self.acceptor_inbound_tx.clone(),
@@ -725,7 +784,9 @@ where
     ) {
         let seq = self.message_seq;
         self.message_seq += 1;
+        self.persist_message_seq();
         self.received_seqs.record(self.own_fingerprint, seq);
+        self.received_seqs_dirty = true;
 
         let auth_data = AuthData::update(seq);
         let authenticated_data = match auth_data.to_bytes() {
@@ -1575,6 +1636,7 @@ where
             return;
         }
         self.received_seqs.record(sender_fp, seq);
+        self.received_seqs_dirty = true;
 
         match &auth_data {
             AuthData::Update { .. } => {
@@ -1661,7 +1723,9 @@ where
     ) -> bool {
         let seq = self.message_seq;
         self.message_seq += 1;
+        self.persist_message_seq();
         self.received_seqs.record(self.own_fingerprint, seq);
+        self.received_seqs_dirty = true;
 
         let authenticated_data =
             match AuthData::compaction(seq, level, watermark.clone()).to_bytes() {
@@ -1947,7 +2011,7 @@ mod tests {
 
     #[test]
     fn received_seqs_multiple_senders() {
-        let mut rs = ReceivedSeqs::new();
+        let mut rs = ReceivedSeqs::default();
         let sender_a = MemberFingerprint([0xAA; 8]);
         let sender_b = MemberFingerprint([0xBB; 8]);
 
@@ -1966,7 +2030,7 @@ mod tests {
 
     #[test]
     fn received_seqs_confirm_compaction() {
-        let mut rs = ReceivedSeqs::new();
+        let mut rs = ReceivedSeqs::default();
         let sender = MemberFingerprint([0xCC; 8]);
 
         rs.record(sender, 1);

@@ -121,15 +121,22 @@ pre-migration state). This prevents sequence number reuse after crashes.
 | `filament-weave/src/group_state.rs` | `proposer_meta` keyspace with `get/set_message_seq` |
 | `filament-weave/src/lib.rs` | Added `group_state` module |
 
-### Not Yet Implemented
+### Persistence (Implemented)
 
-- **`state_vector` persistence**: Currently reset to empty on restart,
-  causing full re-backfill. Wasteful but correct (CRDTs are idempotent).
-  Could be persisted in `proposer_meta` for efficiency.
-- **`message_seq` loading in `GroupActor::run()`**: The storage
-  infrastructure is in place but `GroupActor` does not yet load or
-  persist `message_seq` during operation. The `get_message_seq` /
-  `set_message_seq` methods are available and tested.
+`GroupActor` now loads and persists both `message_seq` and the received
+message watermark via `FjallGroupStateStorage`:
+
+- **`message_seq`**: Loaded from `proposer_meta` at construction, persisted
+  after every increment (in `handle_send_message` and
+  `encrypt_and_send_to_acceptors`). Prevents sequence number reuse after
+  crash.
+- **Watermark (`ReceivedSeqs`)**: The contiguous high-water mark per sender
+  (`ReceivedSeqs::watermark()`) is loaded at construction (seeding each
+  `SenderSeqs.confirmed`) and persisted periodically on a 1-second tick
+  with a dirty flag. On reconnect, the persisted watermark is passed to
+  each `AcceptorActor` for backfill requests, avoiding full re-backfill.
+  Gaps between persisted watermark and actual received messages cause
+  harmless re-delivery (CRDTs are idempotent).
 
 ### Remaining In-Memory State
 
@@ -138,4 +145,5 @@ The following state is still lost on crash (acceptable):
 - `active_proposal` — pending proposal (restarted on next attempt)
 - `attempt` — proposal attempt number (reset to default)
 - `quorum_tracker` — quorum state (recreated)
-- `seen_messages` — deduplication set (reset; CRDTs handle duplicates)
+- `received_seqs` sparse ranges — only the contiguous watermark is
+  persisted; in-flight gaps are re-delivered on reconnect

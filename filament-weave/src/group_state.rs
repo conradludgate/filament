@@ -6,12 +6,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
+use filament_core::StateVector;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use mls_rs_core::group::{EpochRecord, GroupState, GroupStateStorage};
 use zeroize::Zeroizing;
 
 #[derive(Debug)]
-pub(crate) struct GroupStateError;
+pub struct GroupStateError;
 
 impl std::fmt::Display for GroupStateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,7 +30,7 @@ impl mls_rs_core::error::IntoAnyError for GroupStateError {
 
 /// Keys: group state = raw `group_id`, epoch records = `group_id || epoch_be_bytes`.
 #[derive(Clone)]
-pub(crate) struct FjallGroupStateStorage {
+pub struct FjallGroupStateStorage {
     inner: Arc<FjallGroupStateStorageInner>,
 }
 
@@ -41,7 +42,14 @@ struct FjallGroupStateStorageInner {
 }
 
 impl FjallGroupStateStorage {
-    pub(crate) async fn open(path: impl AsRef<Path>) -> Result<Self, Report<GroupStateError>> {
+    /// Open (or create) the storage database at the given path.
+    ///
+    /// # Errors
+    /// Returns `GroupStateError` if the underlying `fjall` database cannot be opened.
+    ///
+    /// # Panics
+    /// Panics if the blocking task spawned for I/O is cancelled.
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, Report<GroupStateError>> {
         let path = path.as_ref().to_owned();
         tokio::task::spawn_blocking(move || Self::open_sync(&path))
             .await
@@ -99,6 +107,38 @@ impl FjallGroupStateStorage {
         self.inner
             .proposer_meta
             .insert(&key, seq.to_be_bytes())
+            .map_err(|_| GroupStateError)
+    }
+
+    fn watermark_key(group_id: &[u8]) -> Vec<u8> {
+        let mut key = Vec::with_capacity(group_id.len() + 3);
+        key.extend_from_slice(b"wm:");
+        key.extend_from_slice(group_id);
+        key
+    }
+
+    pub(crate) fn get_watermark(
+        &self,
+        group_id: &[u8],
+    ) -> Result<Option<StateVector>, GroupStateError> {
+        let key = Self::watermark_key(group_id);
+        self.inner
+            .proposer_meta
+            .get(&key)
+            .map_err(|_| GroupStateError)
+            .map(|opt| opt.and_then(|slice| postcard::from_bytes(slice.as_ref()).ok()))
+    }
+
+    pub(crate) fn set_watermark(
+        &self,
+        group_id: &[u8],
+        watermark: &StateVector,
+    ) -> Result<(), GroupStateError> {
+        let key = Self::watermark_key(group_id);
+        let bytes = postcard::to_allocvec(watermark).map_err(|_| GroupStateError)?;
+        self.inner
+            .proposer_meta
+            .insert(&key, bytes)
             .map_err(|_| GroupStateError)
     }
 
@@ -357,5 +397,33 @@ mod tests {
         let err = GroupStateError;
         let dyn_err = err.into_dyn_error().unwrap();
         assert_eq!(dyn_err.to_string(), "group state storage error");
+    }
+
+    #[tokio::test]
+    async fn watermark_persists_across_reopens() {
+        use filament_core::MemberFingerprint;
+
+        let dir = TempDir::new().unwrap();
+        let group_id = [2u8; 32];
+        let mut wm = StateVector::new();
+        wm.insert(MemberFingerprint([1; 8]), 10);
+        wm.insert(MemberFingerprint([2; 8]), 25);
+        {
+            let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+            storage.set_watermark(&group_id, &wm).unwrap();
+        }
+        {
+            let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+            let loaded = storage.get_watermark(&group_id).unwrap();
+            assert_eq!(loaded, Some(wm));
+        }
+    }
+
+    #[tokio::test]
+    async fn watermark_defaults_to_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let storage = FjallGroupStateStorage::open(dir.path()).await.unwrap();
+        let wm = storage.get_watermark(&[3u8; 32]).unwrap();
+        assert_eq!(wm, None);
     }
 }

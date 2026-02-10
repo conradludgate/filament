@@ -43,7 +43,14 @@ pub(crate) type GroupRegistry = std::sync::Arc<
 
 use crate::connection::ConnectionManager;
 use crate::connector::ProposalRequest;
+use crate::group_state::FjallGroupStateStorage;
 use crate::learner::{WeaverLearner, fingerprint_of_member};
+
+pub(crate) struct WeaverInfra {
+    pub connection_manager: ConnectionManager,
+    pub storage: FjallGroupStateStorage,
+    pub group_registry: GroupRegistry,
+}
 
 /// Marker error for group operations. Use `error_stack::Report<WeaverError>` with
 /// context attachments for details.
@@ -285,10 +292,9 @@ impl Weaver {
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
-        connection_manager: &ConnectionManager,
+        infra: &WeaverInfra,
         acceptors: &[AcceptorId],
         protocol_name: &str,
-        group_registry: &GroupRegistry,
     ) -> Result<Self, Report<WeaverError>>
     where
         C: MlsConfig + Clone + Send + Sync + 'static,
@@ -333,7 +339,7 @@ impl Weaver {
             Ok::<_, Report<WeaverError>>((learner, group_id, group_info))
         })?;
 
-        let endpoint = connection_manager.endpoint();
+        let endpoint = infra.connection_manager.endpoint();
 
         if let Some(group_info) = group_info {
             for id in acceptors {
@@ -343,14 +349,7 @@ impl Weaver {
             }
         }
 
-        Ok(Self::spawn_actors(
-            learner,
-            group_id,
-            endpoint.clone(),
-            connection_manager.clone(),
-            Some(86400),
-            group_registry,
-        ))
+        Ok(Self::spawn_actors(learner, group_id, infra, Some(86400)))
     }
 
     #[allow(clippy::unused_async)]
@@ -358,9 +357,8 @@ impl Weaver {
         client: &Client<C>,
         signer: SignatureSecretKey,
         cipher_suite: CS,
-        connection_manager: &ConnectionManager,
+        infra: &WeaverInfra,
         welcome: &MlsMessage,
-        group_registry: &GroupRegistry,
     ) -> Result<JoinInfo, Report<WeaverError>>
     where
         C: MlsConfig + Clone + Send + Sync + 'static,
@@ -411,14 +409,7 @@ impl Weaver {
             ))
         })?;
 
-        let group = Self::spawn_actors(
-            learner,
-            group_id,
-            connection_manager.endpoint().clone(),
-            connection_manager.clone(),
-            key_rotation_interval_secs,
-            group_registry,
-        );
+        let group = Self::spawn_actors(learner, group_id, infra, key_rotation_interval_secs);
 
         Ok(JoinInfo {
             group,
@@ -429,10 +420,8 @@ impl Weaver {
     fn spawn_actors<C, CS>(
         learner: WeaverLearner<C, CS>,
         group_id: GroupId,
-        endpoint: Endpoint,
-        connection_manager: ConnectionManager,
+        infra: &WeaverInfra,
         key_rotation_interval_secs: Option<u64>,
-        group_registry: &GroupRegistry,
     ) -> Self
     where
         C: MlsConfig + Clone + Send + Sync + 'static,
@@ -453,7 +442,8 @@ impl Weaver {
         let (request_tx, request_rx) = mpsc::channel(64);
         let (app_message_tx, app_message_rx) = mpsc::channel(256);
 
-        group_registry
+        infra
+            .group_registry
             .lock()
             .unwrap()
             .insert(group_id, request_tx.clone());
@@ -463,8 +453,9 @@ impl Weaver {
         let actor = group_actor::GroupActor::new(
             learner,
             group_id,
-            endpoint,
-            connection_manager,
+            infra.connection_manager.endpoint().clone(),
+            infra.connection_manager.clone(),
+            infra.storage.clone(),
             request_rx,
             app_message_tx,
             event_tx.clone(),

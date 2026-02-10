@@ -16,7 +16,8 @@ use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use tokio::sync::mpsc;
 
 use crate::connection::ConnectionManager;
-use crate::group::{GroupRegistry, JoinInfo, Weaver, WeaverError};
+use crate::group::{GroupRegistry, JoinInfo, Weaver, WeaverError, WeaverInfra};
+use crate::group_state::FjallGroupStateStorage;
 
 type WeaverMlsConfig =
     WithIdentityProvider<BasicIdentityProvider, WithCryptoProvider<RustCryptoProvider, BaseConfig>>;
@@ -29,9 +30,8 @@ pub struct WeaverClient {
     client: Arc<Client<WeaverMlsConfig>>,
     signer: SignatureSecretKey,
     cipher_suite: WeaverCipherSuite,
-    connection_manager: ConnectionManager,
+    infra: WeaverInfra,
     welcome_rx: mpsc::Receiver<Box<MlsMessage>>,
-    group_registry: GroupRegistry,
 }
 
 impl WeaverClient {
@@ -45,7 +45,11 @@ impl WeaverClient {
     ///
     /// Panics if key generation or client building fails (should not happen
     /// with a correctly compiled `RustCryptoProvider`).
-    pub fn new(identity: impl Into<Vec<u8>>, endpoint: Endpoint) -> Self {
+    pub fn new(
+        identity: impl Into<Vec<u8>>,
+        endpoint: Endpoint,
+        storage: FjallGroupStateStorage,
+    ) -> Self {
         let crypto = RustCryptoProvider::default();
         let cipher_suite = crypto
             .cipher_suite_provider(CIPHER_SUITE)
@@ -77,13 +81,18 @@ impl WeaverClient {
             Self::incoming_loop(endpoint_clone, welcome_tx, registry_clone).await;
         });
 
+        let infra = WeaverInfra {
+            connection_manager,
+            storage,
+            group_registry,
+        };
+
         Self {
             client: Arc::new(client),
             signer: secret_key,
             cipher_suite,
-            connection_manager,
+            infra,
             welcome_rx,
-            group_registry,
         }
     }
 
@@ -126,7 +135,7 @@ impl WeaverClient {
     /// Returns this client's iroh endpoint public key (32 bytes).
     #[must_use]
     pub fn endpoint_id(&self) -> [u8; 32] {
-        *self.connection_manager.endpoint().id().as_bytes()
+        *self.infra.connection_manager.endpoint().id().as_bytes()
     }
 
     /// Generate a serialised key package containing this client's endpoint identity.
@@ -135,7 +144,7 @@ impl WeaverClient {
     /// Returns an error if key package generation or serialisation fails.
     pub fn generate_key_package(&self) -> Result<Vec<u8>, Report<WeaverError>> {
         let kp_ext = KeyPackageExt::new(
-            *self.connection_manager.endpoint().id().as_bytes(),
+            *self.infra.connection_manager.endpoint().id().as_bytes(),
             std::iter::empty::<String>(),
         );
         let mut kp_extensions = ExtensionList::default();
@@ -165,10 +174,9 @@ impl WeaverClient {
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
-            &self.connection_manager,
+            &self.infra,
             acceptors,
             protocol_name,
-            &self.group_registry,
         )
         .await
     }
@@ -184,9 +192,8 @@ impl WeaverClient {
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
-            &self.connection_manager,
+            &self.infra,
             welcome,
-            &self.group_registry,
         )
         .await
     }
@@ -232,7 +239,7 @@ impl WeaverClient {
         let public_key = PublicKey::from_bytes(&target)
             .map_err(|_| Report::new(WeaverError).attach("invalid target public key"))?;
 
-        let endpoint = self.connection_manager.endpoint();
+        let endpoint = self.infra.connection_manager.endpoint();
         let conn = endpoint
             .connect(public_key, PAXOS_ALPN)
             .await

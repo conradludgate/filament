@@ -16,6 +16,7 @@ pub(super) struct AcceptorActor {
     pub(super) group_id: GroupId,
     pub(super) current_epoch: Epoch,
     pub(super) own_fingerprint: MemberFingerprint,
+    pub(super) backfill_watermark: StateVector,
     pub(super) connection_manager: ConnectionManager,
     pub(super) outbound_rx: mpsc::Receiver<AcceptorOutbound>,
     pub(super) inbound_tx: mpsc::Sender<AcceptorInbound>,
@@ -105,7 +106,7 @@ impl AcceptorActor {
                     handshake_reader.map_decoder(|ldc| VersionedCodec::wrap(ldc, pv));
 
                 let backfill_request = MessageRequest::Backfill {
-                    state_vector: StateVector::default(),
+                    state_vector: self.backfill_watermark.clone(),
                     limit: u32::MAX,
                 };
                 if message_writer.send(backfill_request).await.is_ok() {

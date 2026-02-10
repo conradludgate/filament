@@ -41,3 +41,4 @@ pub(crate) mod rendezvous;
 
 pub use client::WeaverClient;
 pub use group::{JoinInfo, MemberInfo, Weaver, WeaverContext, WeaverError, WeaverEvent};
+pub use group_state::FjallGroupStateStorage;
