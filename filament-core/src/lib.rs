@@ -10,7 +10,6 @@ pub mod codec;
 pub mod crdt;
 pub mod error;
 pub mod extension;
-pub mod external_commit;
 pub mod proposal;
 pub mod protocol;
 pub mod sink_stream;
@@ -23,7 +22,6 @@ pub use extension::{
     GroupContextExt, GroupContextExtV1, GroupInfoExt, KeyPackageExt, LeafNodeExt, SyncProposal,
     CURRENT_PROTOCOL_VERSION, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE,
 };
-pub use external_commit::{decrypt_group_info, encrypt_group_info, QrPayload};
 pub use proposal::{AcceptorId, Attempt, Epoch, GroupProposal, MemberId, UnsignedProposal};
 pub use protocol::{
     AuthData, ClientId, EncryptedAppMessage, GroupId, GroupMessage, Handshake, HandshakeResponse,

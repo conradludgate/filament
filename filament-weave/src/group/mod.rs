@@ -18,7 +18,7 @@ use std::fmt;
 use error_stack::{Report, ResultExt};
 use filament_core::{
     AcceptorId, ClientId, Crdt, EncryptedAppMessage, Epoch, GroupContextExt, GroupId, GroupInfoExt,
-    Handshake, KeyPackageExt, LeafNodeExt, MessageId, QrPayload,
+    Handshake, KeyPackageExt, LeafNodeExt, MessageId,
 };
 use iroh::Endpoint;
 use mls_rs::client_builder::MlsConfig;
@@ -72,6 +72,48 @@ pub(crate) fn group_info_with_ext<C: mls_rs::client_builder::MlsConfig>(
         .group_info_message_internal(extensions, true)
         .change_context(WeaverError)?;
     msg.to_bytes().change_context(WeaverError)
+}
+
+/// Metadata extracted from a serialized `GroupInfo` for external commit joining.
+pub struct GroupInfoMetadata {
+    pub group_id: GroupId,
+    pub acceptor_ids: Vec<AcceptorId>,
+    pub confirmed_transcript_hash: Vec<u8>,
+}
+
+/// Parse a serialized `GroupInfo` and extract the metadata needed for external
+/// commit joining (group ID, acceptor list, confirmed transcript hash).
+///
+/// # Errors
+///
+/// Returns [`WeaverError`] if the bytes cannot be parsed as an MLS message
+/// or are not a valid `GroupInfo`.
+pub fn parse_group_info_metadata(
+    group_info_bytes: &[u8],
+) -> Result<GroupInfoMetadata, Report<WeaverError>> {
+    let msg = MlsMessage::from_bytes(group_info_bytes)
+        .change_context(WeaverError)
+        .attach("failed to parse GroupInfo")?;
+
+    let gi = msg
+        .as_group_info()
+        .ok_or_else(|| Report::new(WeaverError).attach("MLS message is not a GroupInfo"))?;
+
+    let group_id = GroupId::from_slice(&gi.group_context().group_id);
+    let confirmed_transcript_hash = gi.group_context().confirmed_transcript_hash.to_vec();
+
+    let acceptor_ids = gi
+        .extensions()
+        .get_as::<GroupInfoExt>()
+        .ok()
+        .flatten()
+        .map_or_else(Vec::new, |e| e.acceptors);
+
+    Ok(GroupInfoMetadata {
+        group_id,
+        acceptor_ids,
+        confirmed_transcript_hash,
+    })
 }
 
 enum GroupRequest {
@@ -417,6 +459,7 @@ impl Weaver {
         cipher_suite: CS,
         connection_manager: &ConnectionManager,
         group_info_bytes: &[u8],
+        tree_data: mls_rs::group::ExportedTree<'static>,
     ) -> Result<(JoinInfo, Vec<u8>), Report<WeaverError>>
     where
         C: MlsConfig + Clone + Send + Sync + 'static,
@@ -446,6 +489,7 @@ impl Weaver {
                 let (group, commit_msg) = client
                     .external_commit_builder()
                     .change_context(WeaverError)?
+                    .with_tree_data(tree_data)
                     .with_authenticated_data(invited_by_aad)
                     .build(group_info_msg)
                     .change_context(WeaverError)
@@ -634,8 +678,11 @@ impl Weaver {
 
     /// Generate a serialized `GroupInfo` suitable for external commit joins.
     ///
-    /// The returned bytes include the `ExternalPubExt` and ratchet tree so
-    /// a joiner can call `Client::commit_external` without further data.
+    /// The returned bytes include the `ExternalPubExt` so a joiner can
+    /// perform an external commit. The ratchet tree is excluded and must
+    /// be fetched separately from a spool.
+    ///
+    /// The raw bytes can be encoded directly into a QR code.
     ///
     /// # Errors
     ///
@@ -650,87 +697,6 @@ impl Weaver {
         reply_rx
             .await
             .map_err(|_| Report::new(WeaverError).attach("group actor dropped reply"))?
-    }
-
-    /// Generate a [`QrPayload`] for external commit joining.
-    ///
-    /// Generates a `GroupInfo`, encrypts it with a random AES-256-GCM key,
-    /// stores the ciphertext on the given spool, and returns the payload
-    /// (containing decryption material) to encode in a QR code.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WeaverError`] if `GroupInfo` generation, encryption, or
-    /// spool communication fails.
-    pub async fn generate_qr_payload(
-        &self,
-        spool_id: AcceptorId,
-        endpoint: &Endpoint,
-    ) -> Result<QrPayload, Report<WeaverError>> {
-        use filament_core::{Handshake, HandshakeResponse, PAXOS_ALPN, encrypt_group_info};
-        use futures::{SinkExt, StreamExt};
-        use iroh::PublicKey;
-
-        let group_info_bytes = self.generate_external_group_info().await?;
-
-        let mut key = [0u8; 32];
-        let mut nonce = [0u8; 12];
-        rand::Fill::fill(&mut key, &mut rand::rng());
-        rand::Fill::fill(&mut nonce, &mut rand::rng());
-
-        let ciphertext = encrypt_group_info(&key, &nonce, &group_info_bytes)
-            .map_err(|_| Report::new(WeaverError).attach("GroupInfo encryption failed"))?;
-
-        // Store on spool.
-        let spool_public_key = PublicKey::from_bytes(spool_id.as_bytes())
-            .map_err(|_| Report::new(WeaverError).attach("invalid spool public key"))?;
-        let conn = endpoint
-            .connect(spool_public_key, PAXOS_ALPN)
-            .await
-            .change_context(WeaverError)
-            .attach("failed to connect to spool")?;
-
-        let (send, recv) = conn.open_bi().await.change_context(WeaverError)?;
-        let codec = tokio_util::codec::LengthDelimitedCodec::builder()
-            .max_frame_length(16 * 1024 * 1024)
-            .new_codec();
-        let mut writer = tokio_util::codec::FramedWrite::new(send, codec.clone());
-        let mut reader = tokio_util::codec::FramedRead::new(recv, codec);
-
-        let handshake = Handshake::StoreGroupInfo {
-            group_id: self.group_id,
-            ciphertext: ciphertext.into(),
-        };
-        let hs_bytes = postcard::to_allocvec(&handshake).change_context(WeaverError)?;
-
-        writer
-            .send(hs_bytes.into())
-            .await
-            .change_context(WeaverError)?;
-
-        let resp_bytes = reader
-            .next()
-            .await
-            .ok_or_else(|| Report::new(WeaverError).attach("spool closed before response"))?
-            .change_context(WeaverError)?;
-
-        let resp: HandshakeResponse =
-            postcard::from_bytes(&resp_bytes).change_context(WeaverError)?;
-
-        match resp {
-            HandshakeResponse::Ok => {}
-            other => {
-                return Err(Report::new(WeaverError)
-                    .attach(format!("spool rejected group info: {other:?}")));
-            }
-        }
-
-        Ok(QrPayload {
-            spool_id,
-            group_id: self.group_id,
-            key,
-            nonce,
-        })
     }
 
     /// Flush local CRDT changes and broadcast. No-op if no pending changes.

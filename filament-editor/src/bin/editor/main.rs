@@ -86,7 +86,7 @@ async fn setup_coordinator(
     let identity = iroh_key.public().as_bytes().to_vec();
     let group_client = WeaverClient::new(identity, endpoint.clone());
 
-    let coordinator = CoordinatorActor::new(group_client, endpoint, coordinator_rx, app_handle);
+    let coordinator = CoordinatorActor::new(group_client, coordinator_rx, app_handle);
     coordinator.run().await;
 
     Ok(())

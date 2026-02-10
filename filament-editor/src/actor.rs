@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use filament_core::GroupId;
 use filament_weave::{Weaver, WeaverClient};
-use iroh::Endpoint;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use yrs::Transact;
@@ -19,7 +18,6 @@ use crate::yrs_crdt::YrsCrdt;
 
 pub struct CoordinatorActor<E: EventEmitter> {
     group_client: WeaverClient,
-    endpoint: Endpoint,
     welcome_rx: mpsc::Receiver<bytes::Bytes>,
     doc_actors: HashMap<GroupId, mpsc::Sender<DocRequest>>,
     request_rx: mpsc::Receiver<CoordinatorRequest>,
@@ -30,14 +28,12 @@ pub struct CoordinatorActor<E: EventEmitter> {
 impl<E: EventEmitter> CoordinatorActor<E> {
     pub fn new(
         mut group_client: WeaverClient,
-        endpoint: Endpoint,
         request_rx: mpsc::Receiver<CoordinatorRequest>,
         emitter: E,
     ) -> Self {
         let welcome_rx = group_client.take_welcome_rx();
         Self {
             group_client,
-            endpoint,
             welcome_rx,
             doc_actors: HashMap::new(),
             request_rx,
@@ -117,14 +113,12 @@ impl<E: EventEmitter> CoordinatorActor<E> {
     }
 
     async fn join_external(&mut self, invite_b58: &str) -> Result<DocumentInfo, String> {
-        let bytes = bs58::decode(invite_b58)
+        let group_info_bytes = bs58::decode(invite_b58)
             .into_vec()
             .map_err(|e| format!("invalid base58: {e}"))?;
-        let qr = filament_core::QrPayload::from_bytes(&bytes)
-            .map_err(|e| format!("invalid invite payload: {e}"))?;
         let join_info = self
             .group_client
-            .join_external(&qr)
+            .join_external(&group_info_bytes)
             .await
             .map_err(|e| format!("external join failed: {e:?}"))?;
 
@@ -174,14 +168,7 @@ impl<E: EventEmitter> CoordinatorActor<E> {
         };
 
         let (doc_tx, doc_rx) = mpsc::channel(64);
-        let actor = DocumentActor::new(
-            group,
-            crdt,
-            group_id,
-            self.endpoint.clone(),
-            doc_rx,
-            self.emitter.clone(),
-        );
+        let actor = DocumentActor::new(group, crdt, group_id, doc_rx, self.emitter.clone());
         tokio::spawn(actor.run());
 
         self.doc_actors.insert(group_id, doc_tx);

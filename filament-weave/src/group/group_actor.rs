@@ -402,7 +402,7 @@ where
                     );
                     self.learner
                         .group()
-                        .group_info_message_allowing_ext_commit_with_extensions(true, extensions)
+                        .group_info_message_allowing_ext_commit_with_extensions(false, extensions)
                         .change_context(WeaverError)
                         .attach("failed to generate external commit GroupInfo")?
                         .to_bytes()

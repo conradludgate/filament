@@ -115,6 +115,20 @@ where
             .ok_or_else(|| Report::new(AcceptorError).attach("missing GroupContextExt"))
     }
 
+    pub(crate) fn confirmed_transcript_hash(&self) -> &[u8] {
+        &self
+            .external_group
+            .group_context()
+            .confirmed_transcript_hash
+    }
+
+    pub(crate) fn export_tree(&self) -> Result<Vec<u8>, Report<AcceptorError>> {
+        self.external_group
+            .export_tree()
+            .change_context(AcceptorError)
+            .attach("failed to export ratchet tree")
+    }
+
     fn get_member_public_key(&self, member_id: MemberId) -> Option<SignaturePublicKey> {
         self.external_group
             .roster()

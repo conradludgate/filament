@@ -117,7 +117,6 @@ pub(crate) struct FjallStateStore {
     latest_epoch: RwLock<HashMap<GroupId, Epoch>>,
     accepted_cache: quick_cache::sync::Cache<(GroupId, Epoch), Arc<(GroupProposal, GroupMessage)>>,
     message_cache: quick_cache::sync::Cache<MessageId, Arc<EncryptedAppMessage>>,
-    encrypted_group_info: RwLock<HashMap<GroupId, bytes::Bytes>>,
 }
 
 impl FjallStateStore {
@@ -140,7 +139,6 @@ impl FjallStateStore {
             latest_epoch: RwLock::new(HashMap::new()),
             accepted_cache: quick_cache::sync::Cache::new(ACCEPTED_CACHE_CAPACITY),
             message_cache: quick_cache::sync::Cache::new(MESSAGE_CACHE_CAPACITY),
-            encrypted_group_info: RwLock::new(HashMap::new()),
         })
     }
 
@@ -680,30 +678,6 @@ impl SharedFjallStateStore {
     #[must_use]
     pub fn database(&self) -> &Database {
         self.inner.database()
-    }
-
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
-    pub fn store_encrypted_group_info(&self, group_id: &GroupId, ciphertext: bytes::Bytes) {
-        self.inner
-            .encrypted_group_info
-            .write()
-            .expect("lock poisoned")
-            .insert(*group_id, ciphertext);
-    }
-
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
-    #[must_use]
-    pub fn get_encrypted_group_info(&self, group_id: &GroupId) -> Option<bytes::Bytes> {
-        self.inner
-            .encrypted_group_info
-            .read()
-            .expect("lock poisoned")
-            .get(group_id)
-            .cloned()
     }
 }
 

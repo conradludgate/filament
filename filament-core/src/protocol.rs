@@ -72,13 +72,14 @@ pub enum Handshake {
     JoinMessages(GroupId, MemberFingerprint),
     /// Deliver a serialized MLS `Welcome` message.
     SendWelcome(Bytes),
-    /// Store encrypted `GroupInfo` for external commit joins.
-    StoreGroupInfo {
+    /// Fetch the ratchet tree for an external commit join.
+    ///
+    /// The `confirmed_transcript_hash` is used to verify epoch consistency
+    /// between the joiner's `GroupInfo` and the spool's group state.
+    FetchTree {
         group_id: GroupId,
-        ciphertext: Bytes,
+        confirmed_transcript_hash: Bytes,
     },
-    /// Fetch previously stored encrypted `GroupInfo`.
-    FetchGroupInfo { group_id: GroupId },
     /// Submit an external commit to join a group.
     ExternalCommit { group_id: GroupId, commit: Bytes },
 }
@@ -89,7 +90,7 @@ pub enum HandshakeResponse {
     GroupNotFound,
     InvalidGroupInfo(String),
     Error(String),
-    /// Response carrying opaque bytes (used for `FetchGroupInfo`).
+    /// Response carrying opaque bytes (used for `FetchTree`).
     Data(Bytes),
 }
 
@@ -612,12 +613,9 @@ mod tests {
             Handshake::CreateGroup(Bytes::from_static(&[1, 2, 3])),
             Handshake::JoinMessages(GroupId::new([0; 32]), MemberFingerprint([1; 8])),
             Handshake::SendWelcome(Bytes::from_static(&[4, 5, 6])),
-            Handshake::StoreGroupInfo {
+            Handshake::FetchTree {
                 group_id: GroupId::new([7; 32]),
-                ciphertext: Bytes::from_static(&[8, 9]),
-            },
-            Handshake::FetchGroupInfo {
-                group_id: GroupId::new([10; 32]),
+                confirmed_transcript_hash: Bytes::from_static(&[8, 9]),
             },
             Handshake::ExternalCommit {
                 group_id: GroupId::new([11; 32]),

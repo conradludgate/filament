@@ -2280,9 +2280,41 @@ async fn test_multi_acceptor_message_delivery() {
 
 /// Test 1: Happy path external commit join.
 ///
-/// Alice creates a group with an acceptor, generates a QR payload
-/// (encrypted GroupInfo stored on spool), Bob uses the payload to
-/// join via external commit.
+/// The GroupInfo payload (without ratchet tree) must fit in a QR code.
+/// Version 15 QR at medium EC holds 412 binary bytes.
+#[tokio::test]
+async fn test_external_group_info_fits_qr_code() {
+    init_tracing();
+    let discovery = TestAddressLookup::new();
+
+    let (_acceptor_task, acceptor_id, _dir) = spawn_acceptor(&discovery).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let alice = test_weaver_client("alice", test_endpoint(&discovery).await);
+    let alice_group = alice
+        .create(std::slice::from_ref(&acceptor_id), "none")
+        .await
+        .expect("create group");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let group_info_bytes = alice_group
+        .generate_external_group_info()
+        .await
+        .expect("generate external group info");
+
+    let len = group_info_bytes.len();
+    eprintln!("GroupInfo payload size: {len} bytes");
+    assert!(
+        len <= 412,
+        "GroupInfo ({len} bytes) exceeds QR v15 medium-EC capacity (412 bytes)"
+    );
+
+    alice_group.shutdown().await;
+}
+
+/// Alice creates a group with an acceptor, generates GroupInfo bytes,
+/// Bob uses the payload to join via external commit.
 #[tokio::test]
 async fn test_external_commit_join() {
     init_tracing();
@@ -2293,7 +2325,6 @@ async fn test_external_commit_join() {
 
     // Alice creates group with acceptor
     let alice = test_weaver_client("alice", test_endpoint(&discovery).await);
-    let alice_endpoint = test_endpoint(&discovery).await;
 
     let mut alice_group = alice
         .create(std::slice::from_ref(&acceptor_id), "none")
@@ -2302,19 +2333,22 @@ async fn test_external_commit_join() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Alice generates QR payload (encrypts GroupInfo, stores on spool)
-    let qr_payload = alice_group
-        .generate_qr_payload(acceptor_id, &alice_endpoint)
+    // Alice generates GroupInfo bytes (no ratchet tree, suitable for QR code)
+    let group_info_bytes = alice_group
+        .generate_external_group_info()
         .await
-        .expect("generate QR payload");
+        .expect("generate external group info");
 
-    tracing::info!(?qr_payload.group_id, "Alice generated QR payload");
+    tracing::info!(
+        len = group_info_bytes.len(),
+        "Alice generated GroupInfo for QR"
+    );
 
     // Bob scans QR code and joins via external commit
     let bob = test_weaver_client("bob", test_endpoint(&discovery).await);
 
     let join_info = bob
-        .join_external(&qr_payload)
+        .join_external(&group_info_bytes)
         .await
         .expect("bob external commit join");
     let mut bob_group = join_info.group;

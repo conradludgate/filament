@@ -258,14 +258,16 @@ where
         }
     }
 
-    pub fn store_encrypted_group_info(&self, group_id: &GroupId, ciphertext: bytes::Bytes) {
-        self.state_store
-            .store_encrypted_group_info(group_id, ciphertext);
-    }
-
-    #[must_use]
-    pub fn get_encrypted_group_info(&self, group_id: &GroupId) -> Option<bytes::Bytes> {
-        self.state_store.get_encrypted_group_info(group_id)
+    pub fn export_tree(
+        &self,
+        group_id: &GroupId,
+        confirmed_transcript_hash: &[u8],
+    ) -> Option<Vec<u8>> {
+        let (acceptor, _state) = self.get_group(group_id)?;
+        if acceptor.confirmed_transcript_hash() != confirmed_transcript_hash {
+            return None;
+        }
+        acceptor.export_tree().ok()
     }
 
     /// Apply an external commit through the spool's Paxos identity.

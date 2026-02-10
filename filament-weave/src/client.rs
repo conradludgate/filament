@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use error_stack::{Report, ResultExt};
 use filament_core::{
-    AcceptorId, KeyPackageExt, LeafNodeExt, QrPayload, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE,
+    AcceptorId, KeyPackageExt, LeafNodeExt, SYNC_EXTENSION_TYPE, SYNC_PROPOSAL_TYPE,
 };
 use iroh::Endpoint;
 use mls_rs::client_builder::{BaseConfig, WithCryptoProvider, WithIdentityProvider};
@@ -174,24 +174,35 @@ impl WeaverClient {
         std::mem::replace(&mut self.welcome_rx, empty_rx)
     }
 
-    /// Join a group via an external commit using a [`QrPayload`].
+    /// Join a group via an external commit using raw `GroupInfo` bytes.
     ///
-    /// 1. Connects to the spool specified in the payload.
-    /// 2. Fetches the encrypted `GroupInfo`.
-    /// 3. Decrypts it using the key/nonce from the payload.
-    /// 4. Creates an external commit.
-    /// 5. Submits the commit back to the spool.
+    /// 1. Parses the `GroupInfo` to extract the acceptor list and
+    ///    confirmed transcript hash.
+    /// 2. Connects to a spool and fetches the ratchet tree.
+    /// 3. Creates an external commit using the `GroupInfo` + tree.
+    /// 4. Submits the commit back to the spool.
     ///
     /// # Errors
     ///
     /// Returns [`WeaverError`] if any step fails.
-    pub async fn join_external(&self, qr: &QrPayload) -> Result<JoinInfo, Report<WeaverError>> {
-        use filament_core::{Handshake, HandshakeResponse, PAXOS_ALPN, decrypt_group_info};
+    pub async fn join_external(
+        &self,
+        group_info_bytes: &[u8],
+    ) -> Result<JoinInfo, Report<WeaverError>> {
+        use filament_core::{Handshake, HandshakeResponse, PAXOS_ALPN};
         use futures::{SinkExt, StreamExt};
         use iroh::PublicKey;
+        use mls_rs::group::ExportedTree;
+
+        let metadata = crate::group::parse_group_info_metadata(group_info_bytes)?;
+
+        let spool_id = metadata
+            .acceptor_ids
+            .first()
+            .ok_or_else(|| Report::new(WeaverError).attach("GroupInfo has no acceptors"))?;
 
         let endpoint = self.connection_manager.endpoint();
-        let spool_public_key = PublicKey::from_bytes(qr.spool_id.as_bytes())
+        let spool_public_key = PublicKey::from_bytes(spool_id.as_bytes())
             .map_err(|_| Report::new(WeaverError).attach("invalid spool public key"))?;
 
         let send_handshake = |handshake: Handshake| {
@@ -230,18 +241,17 @@ impl WeaverClient {
             }
         };
 
-        // Fetch encrypted `GroupInfo` from spool.
-        let resp = send_handshake(Handshake::FetchGroupInfo {
-            group_id: qr.group_id,
+        // Fetch the ratchet tree from spool.
+        let resp = send_handshake(Handshake::FetchTree {
+            group_id: metadata.group_id,
+            confirmed_transcript_hash: metadata.confirmed_transcript_hash.into(),
         })
         .await?;
 
-        let ciphertext = match resp {
+        let tree_bytes = match resp {
             HandshakeResponse::Data(data) => data,
             HandshakeResponse::GroupNotFound => {
-                return Err(
-                    Report::new(WeaverError).attach("encrypted GroupInfo not found on spool")
-                );
+                return Err(Report::new(WeaverError).attach("ratchet tree not found on spool"));
             }
             other => {
                 return Err(Report::new(WeaverError)
@@ -249,23 +259,24 @@ impl WeaverClient {
             }
         };
 
-        // Decrypt GroupInfo.
-        let group_info_bytes = decrypt_group_info(&qr.key, &qr.nonce, &ciphertext)
-            .map_err(|_| Report::new(WeaverError).attach("GroupInfo decryption failed"))?;
+        let tree_data = ExportedTree::from_bytes(&tree_bytes)
+            .change_context(WeaverError)
+            .attach("failed to parse ratchet tree")?;
 
-        // Create external commit.
+        // Create external commit with the tree data.
         let (join_info, commit_bytes) = Weaver::join_external(
             &self.client,
             self.signer.clone(),
             self.cipher_suite.clone(),
             &self.connection_manager,
-            &group_info_bytes,
+            group_info_bytes,
+            tree_data,
         )
         .await?;
 
         // Submit external commit to spool.
         let resp = send_handshake(Handshake::ExternalCommit {
-            group_id: qr.group_id,
+            group_id: metadata.group_id,
             commit: commit_bytes.into(),
         })
         .await?;
